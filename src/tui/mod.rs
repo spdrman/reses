@@ -46,7 +46,8 @@ pub trait View {
     fn title(&self) -> String;
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx);
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition;
-    /// Stub for the red tests: pastes go nowhere yet.
+    /// Text pasted into the terminal, whole. It never arrives as keys (bracketed paste is on),
+    /// so a paste can't press d and then y; a view with a text input takes it, the rest ignore it.
     fn on_paste(&mut self, text: &str, ctx: &mut Ctx) -> Transition {
         let _ = (text, ctx);
         Transition::None
@@ -300,11 +301,13 @@ impl App {
         self.apply(t);
     }
 
-    /// Stub for the red tests: a paste still arrives as keys.
+    /// Hand a paste to the top view.
     pub fn paste(&mut self, text: &str) {
-        for c in text.chars() {
-            self.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-        }
+        let Some(top) = self.stack.last_mut() else {
+            return;
+        };
+        let t = top.on_paste(text, &mut self.ctx);
+        self.apply(t);
     }
 
     /// Hand finished jobs to the views. Returns how many there were.
@@ -351,10 +354,15 @@ impl App {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let account = top
-            .session()
-            .or(self.ctx.session.as_ref())
-            .map(|s| format!("{} ({})", s.profile.name, s.region));
+        let account = top.session().or(self.ctx.session.as_ref()).map(|s| {
+            format!(
+                "{} ({})",
+                text::escape(&s.profile.name),
+                text::escape(&s.region)
+            )
+        });
+        // Titles carry keys, buckets and prefixes straight from S3.
+        let title = text::escape(&top.title()).into_owned();
         let bar = brand::bar_style();
         match image {
             Some((logo, cols)) => {
@@ -370,7 +378,7 @@ impl App {
                     logo,
                 );
                 let lines = vec![
-                    Line::from(format!(" {}", top.title())),
+                    Line::from(format!(" {title}")),
                     Line::from(account.map(|a| format!(" {a}")).unwrap_or_default()),
                 ];
                 frame.render_widget(Paragraph::new(lines).style(bar), rest);
@@ -378,34 +386,112 @@ impl App {
             None => {
                 let mut spans = brand::wordmark(bar);
                 let who = account.map(|a| format!("  {a}")).unwrap_or_default();
-                spans.push(Span::styled(format!("  {}{who}", top.title()), bar));
+                spans.push(Span::styled(format!("  {title}{who}"), bar));
                 frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), header);
             }
         }
 
         top.render(frame, body, &self.ctx);
 
+        // Errors say so in words as well as in red, so NO_COLOR or a theme where red is
+        // faint still tells them from news. Info is the terminal's own colour, which reads on
+        // every theme, where green did not on a light one.
         let footer_line = match &self.ctx.status {
-            Some(Status::Error(m)) => {
-                Line::styled(format!(" {m}"), Style::default().fg(Color::Red))
-            }
-            Some(Status::Info(m)) => {
-                Line::styled(format!(" {m}"), Style::default().fg(Color::Green))
-            }
-            None => {
-                let mut spans = Vec::new();
-                for (k, what) in top.hints() {
-                    spans.push(Span::styled(
-                        format!(" {k} "),
-                        Style::default().add_modifier(Modifier::REVERSED),
-                    ));
-                    spans.push(Span::raw(format!(" {what}  ")));
-                }
-                Line::from(spans)
-            }
+            Some(Status::Error(m)) => Line::styled(
+                format!(" error: {}", text::escape(m)),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Some(Status::Info(m)) => Line::raw(format!(" {}", text::escape(m))),
+            None => hints_line(&top.hints(), footer.width as usize),
         };
         frame.render_widget(Paragraph::new(footer_line), footer);
     }
+}
+
+/// The key hints that fit in `cols` columns. Views list hints most important first, so the
+/// ones that don't fit come off the end, except `q`, which always stays: without it an 80
+/// column terminal lost the only hint for getting out.
+fn hints_line(hints: &[(&'static str, &'static str)], cols: usize) -> Line<'static> {
+    let cost = |(k, what): &(&str, &str)| text::width(k) + text::width(what) + 5;
+    let quit = hints.iter().find(|(k, _)| *k == "q").copied();
+    let mut budget = cols.saturating_sub(quit.as_ref().map_or(0, cost));
+    let mut kept: Vec<(&'static str, &'static str)> = Vec::new();
+    // Take hints in order while they fit, then put q back at the end.
+    for h in hints.iter().filter(|(k, _)| *k != "q") {
+        if cost(h) > budget {
+            break;
+        }
+        budget -= cost(h);
+        kept.push(*h);
+    }
+    kept.extend(quit);
+    let mut spans = Vec::new();
+    for (k, what) in kept {
+        spans.push(Span::styled(
+            format!(" {k} "),
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+        spans.push(Span::raw(format!(" {what}  ")));
+    }
+    Line::from(spans)
+}
+
+/// How long quitting waits for deletes still on their way to S3.
+const QUIT_DRAIN: Duration = Duration::from_secs(5);
+
+/// Put the terminal into the app's mode: raw, the alternate screen, and bracketed paste, so a
+/// paste arrives as one event and not as keys.
+fn enter_screen() -> std::io::Result<()> {
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::terminal::EnterAlternateScreen,
+        ratatui::crossterm::event::EnableBracketedPaste
+    )
+}
+
+/// Undo `enter_screen`, leaving the terminal as the shell expects it.
+fn leave_screen() {
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableBracketedPaste
+    );
+    ratatui::restore();
+}
+
+/// The line printed after the terminal is back, for each delete that hadn't finished when the
+/// wait at quit ran out.
+fn dropped_delete_line(bucket: &str, key: &str) -> String {
+    format!(
+        "reses: quit before this delete finished, so it may not have happened: s3://{}/{}",
+        text::escape(bucket),
+        text::escape(key)
+    )
+}
+
+/// Signals that should end the app through its own exit, restoring the terminal on the way:
+/// a kill, a closed terminal, or an interrupt sent from outside (ctrl-c itself is a key here).
+#[cfg(unix)]
+fn quit_on_signals() -> std::io::Result<Arc<std::sync::atomic::AtomicBool>> {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for sig in [SIGTERM, SIGINT, SIGHUP] {
+        signal_hook::flag::register(sig, Arc::clone(&flag))?;
+    }
+    Ok(flag)
+}
+
+/// Ctrl-z: hand the terminal back, stop the way any program does, and take the screen again
+/// when the shell resumes us.
+#[cfg(unix)]
+fn suspend<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+) -> std::io::Result<()> {
+    leave_screen();
+    // The default action for SIGTSTP stops the process; this returns after SIGCONT.
+    signal_hook::low_level::emulate_default_handler(signal_hook::consts::SIGTSTP)?;
+    enter_screen()?;
+    terminal.clear()
 }
 
 /// Run the interactive UI until the user quits.
@@ -416,8 +502,14 @@ pub fn run(
     local_offset: UtcOffset,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load(&config_path)?;
+    #[cfg(unix)]
+    let signalled = quit_on_signals()?;
 
     let mut terminal = ratatui::init();
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::EnableBracketedPaste
+    );
     // After entering the alternate screen, as the picker asks, and before the job pool:
     // like the local offset, it's read while nothing else is running.
     let brand = brand::Brand::detect();
@@ -435,19 +527,51 @@ pub fn run(
     ));
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {
+            #[cfg(unix)]
+            if signalled.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             terminal.draw(|f| app.render(f))?;
-            if event::poll(Duration::from_millis(50))?
-                && let Event::Key(key) = event::read()?
-            {
-                // A key press clears the last status message so hints come back.
-                app.ctx.status = None;
-                app.key(key);
+            if event::poll(Duration::from_millis(50))? {
+                match event::read()? {
+                    #[cfg(unix)]
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Press
+                            && key.code == KeyCode::Char('z')
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        suspend(&mut terminal)?;
+                    }
+                    Event::Key(key) => {
+                        // A key press clears the last status message so hints come back.
+                        app.ctx.status = None;
+                        app.key(key);
+                    }
+                    Event::Paste(text) => {
+                        app.ctx.status = None;
+                        app.paste(&text);
+                    }
+                    _ => {}
+                }
             }
             app.pump();
         }
+        // Deletes still queued get a bounded wait, with the screen saying what it waits for.
+        let waiting = app.ctx.jobs.deletes_outstanding();
+        if waiting > 0 {
+            let noun = if waiting == 1 { "delete" } else { "deletes" };
+            app.ctx.info(format!(
+                "Waiting for {waiting} {noun} to reach S3 before quitting..."
+            ));
+            terminal.draw(|f| app.render(f))?;
+        }
         Ok(())
     })();
-    ratatui::restore();
+    let dropped = app.ctx.jobs.finish(QUIT_DRAIN);
+    leave_screen();
+    for (bucket, key) in &dropped {
+        eprintln!("{}", dropped_delete_line(bucket, key));
+    }
     result
 }
 
