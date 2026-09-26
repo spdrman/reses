@@ -68,6 +68,7 @@ fn sdk_accepts(text: &str) -> bool {
     .is_ok()
 }
 
+/// A complete profile under `name`, with the fake test keys.
 fn profile(name: &str) -> Profile {
     Profile {
         name: name.into(),
@@ -111,6 +112,7 @@ fn other_sections(dump: &str, skip: &str) -> Vec<(String, Vec<String>)> {
     out
 }
 
+/// One item line in the oracle's dump format.
 fn item(k: &str, v: &str) -> String {
     format!("item {} {}", h(k), h(v))
 }
@@ -311,6 +313,7 @@ fn updating_a_commented_header_section_does_not_add_a_duplicate() {
     assert!(oracle_dump(&path).starts_with("strict ok\n"));
 }
 
+/// An upsert lands in `[ work ]` rather than adding a second `work` section.
 #[test]
 fn updating_a_padded_header_edits_that_section() {
     // aws-config trims `[ work ]` to `work`, so an upsert of `work` has to land in it rather
@@ -346,6 +349,7 @@ fn save_refuses_a_file_with_duplicate_sections() {
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
 }
 
+/// A file either reader refuses is never written, and stays byte for byte as it was.
 #[test]
 fn a_file_either_reader_refuses_is_never_written() {
     for text in [
@@ -378,6 +382,7 @@ fn default_is_not_a_profile_name_reses_writes() {
     assert!(matches!(err, ProfileError::Invalid(_)), "{err:?}");
 }
 
+/// DEFAULT values don't leak into other profiles, because aws-config doesn't do that.
 #[test]
 fn default_section_is_not_inherited_by_the_sdk() {
     // configparser would give `a` the DEFAULT region, but aws-config treats DEFAULT as one more
@@ -440,6 +445,7 @@ aws_security_token = FAKELEGACYTOKEN\n\
 aws_session_token = FAKESESSIONTOKEN\n\
 note = keep\n";
 
+/// With both token keys present, the legacy one is what reses reads, as botocore does.
 #[test]
 fn security_token_wins_over_session_token_like_botocore() {
     // botocore's SharedCredentialProvider checks TOKENS = ['aws_security_token',
@@ -454,6 +460,7 @@ fn security_token_wins_over_session_token_like_botocore() {
     );
 }
 
+/// A file with only the legacy token key still gives the profile a token.
 #[test]
 fn security_token_alone_is_read() {
     let dir = tempfile::tempdir().unwrap();
@@ -469,6 +476,7 @@ fn security_token_alone_is_read() {
     assert_eq!(p.session_token.as_deref(), Some("FAKELEGACYTOKEN"));
 }
 
+/// An empty legacy token still wins, so the profile has no token, as in botocore.
 #[test]
 fn an_empty_security_token_still_shadows_the_session_token_like_botocore() {
     let dir = tempfile::tempdir().unwrap();
@@ -484,6 +492,7 @@ fn an_empty_security_token_still_shadows_the_session_token_like_botocore() {
     assert_eq!(p.session_token, None);
 }
 
+/// Upsert swaps the legacy token for aws_session_token, continuation lines and all.
 #[test]
 fn upsert_replaces_the_legacy_token_with_the_session_token() {
     let dir = tempfile::tempdir().unwrap();
@@ -510,6 +519,7 @@ fn upsert_replaces_the_legacy_token_with_the_session_token() {
     );
 }
 
+/// Clearing the token removes both spellings of it and nothing else.
 #[test]
 fn clearing_the_token_removes_both_spellings() {
     let dir = tempfile::tempdir().unwrap();
@@ -544,6 +554,7 @@ note = keep\n\
 aws_access_key_id = AKIDEXAMPLE2\n\
 aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY2\n";
 
+/// Continuation lines join into the value the way aws-config joins them.
 #[test]
 fn reading_joins_continuation_lines_like_the_sdk() {
     let dir = tempfile::tempdir().unwrap();

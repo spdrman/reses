@@ -538,6 +538,7 @@ fn clearing_the_last_line_of_the_file_keeps_no_trailing_newline() {
 
 // ---- reading goes through aws-config ----
 
+/// A ` #` or ` ;` comment after a value is dropped, the way aws-config reads it.
 #[test]
 fn inline_comment_after_whitespace_is_dropped_like_the_sdk() {
     let dir = tempfile::tempdir().unwrap();
@@ -550,6 +551,7 @@ fn inline_comment_after_whitespace_is_dropped_like_the_sdk() {
     assert_eq!(p.region.as_deref(), Some("us-east-1"));
 }
 
+/// A `[profile x]` section in the credentials file isn't listed.
 #[test]
 fn profile_prefixed_section_is_ignored_like_the_sdk() {
     // aws-config ignores `[profile x]` in the credentials file, so reses can't connect with it
@@ -561,6 +563,7 @@ fn profile_prefixed_section_is_ignored_like_the_sdk() {
     assert!(file.profiles().is_empty(), "{:?}", file.profiles());
 }
 
+/// A file aws-config can't parse fails to load, and the error names the file.
 #[test]
 fn a_file_the_sdk_cannot_parse_fails_to_load_naming_the_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -570,6 +573,7 @@ fn a_file_the_sdk_cannot_parse_fails_to_load_naming_the_path() {
     assert!(err.to_string().contains("credentials"), "{err}");
 }
 
+/// Names aws-config would skip are refused, and every character it allows works.
 #[test]
 fn names_the_sdk_would_ignore_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
@@ -601,6 +605,7 @@ fn names_the_sdk_would_ignore_are_rejected() {
     assert_eq!(file.get(fine).unwrap().name, fine);
 }
 
+/// A leading `~` in the override becomes the home directory.
 #[test]
 fn path_expands_a_leading_tilde_like_the_sdk() {
     let p = credentials_path_from(

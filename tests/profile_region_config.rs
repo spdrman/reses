@@ -121,6 +121,7 @@ fn profile_prefix_needs_a_space_before_the_name() {
 
 // ---- aws-config's rules ----
 
+/// The region aws-config finds for `profile` in a config file holding `text`.
 fn region_in(text: &str, profile: &str) -> Option<String> {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config");
@@ -128,6 +129,7 @@ fn region_in(text: &str, profile: &str) -> Option<String> {
     region_from_config_file(&path, profile)
 }
 
+/// `[profile default]` wins over `[default]` whichever comes first.
 #[test]
 fn profile_default_beats_plain_default_in_either_order_like_the_sdk() {
     let a = "[profile default]\nregion = sa-east-1\n[default]\nregion = us-east-2\n";
@@ -136,6 +138,7 @@ fn profile_default_beats_plain_default_in_either_order_like_the_sdk() {
     assert_eq!(region_in(b, "default").as_deref(), Some("sa-east-1"));
 }
 
+/// Quoted and multi-word profile names give no region, since aws-config skips them.
 #[test]
 fn names_the_sdk_rejects_give_no_region() {
     let text =
@@ -145,6 +148,7 @@ fn names_the_sdk_rejects_give_no_region() {
     assert_eq!(region_in(text, "a b"), None);
 }
 
+/// A trailing comment isn't part of the region.
 #[test]
 fn inline_comment_is_dropped_from_the_region() {
     assert_eq!(
@@ -153,11 +157,13 @@ fn inline_comment_is_dropped_from_the_region() {
     );
 }
 
+/// `region =` with nothing after it counts as no region.
 #[test]
 fn empty_region_is_none() {
     assert_eq!(region_in("[profile work]\nregion =\n", "work"), None);
 }
 
+/// AWS_CONFIG_FILE points the lookup at another file.
 #[test]
 fn region_from_config_honours_aws_config_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -173,6 +179,7 @@ fn region_from_config_honours_aws_config_file() {
     );
 }
 
+/// Without an override the lookup uses ~/.aws/config, and `~` in an override is expanded.
 #[test]
 fn region_from_config_expands_a_tilde_and_falls_back_to_home() {
     let dir = tempfile::tempdir().unwrap();
@@ -198,6 +205,7 @@ fn region_from_config_expands_a_tilde_and_falls_back_to_home() {
     );
 }
 
+/// A leading `~` in AWS_CONFIG_FILE becomes the home directory.
 #[test]
 fn config_path_expands_a_leading_tilde() {
     assert_eq!(
