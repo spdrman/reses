@@ -29,6 +29,7 @@ pub fn quarantine(path: &Path) -> io::Result<()> {
     set_quarantine(path, &quarantine_value(now))
 }
 
+/// I write the quarantine attribute straight onto the file with setxattr.
 #[cfg(target_os = "macos")]
 fn set_quarantine(path: &Path, value: &str) -> io::Result<()> {
     rustix::fs::setxattr(
@@ -40,6 +41,7 @@ fn set_quarantine(path: &Path, value: &str) -> io::Result<()> {
     .map_err(io::Error::from)
 }
 
+/// I have no quarantine attribute to set off macOS, so I succeed without doing anything.
 #[cfg(not(target_os = "macos"))]
 fn set_quarantine(path: &Path, value: &str) -> io::Result<()> {
     let _ = (path, value);

@@ -1,3 +1,10 @@
+//! Tests for the job pool: which queue a job waits in, what a stale generation skips, panics
+//! inside a job, `finish` at shutdown, and how far a header peek reads.
+//!
+//! I use a store that holds every call at a gate and logs the order calls arrived in, so a
+//! test can line jobs up behind a busy worker and then check who went first. Nothing sleeps:
+//! the only timer is a ceiling that fails a test when a broken pool would otherwise hang it.
+
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +27,7 @@ struct Gated {
 }
 
 impl Gated {
+    /// I build a shut gate over a store holding one small email per test key.
     fn new() -> Arc<Self> {
         let inner = MemoryStore::new();
         for k in ["busy", "a", "b", "c", "d", "fine"] {
@@ -34,6 +42,8 @@ impl Gated {
         })
     }
 
+    /// I log a call and hold it at the gate until the test opens it. A get of "explode" panics
+    /// instead, before it's logged.
     fn enter(&self, what: String) {
         if what == "get explode" {
             panic!("boom on explode");
@@ -65,21 +75,25 @@ impl Gated {
         }
     }
 
+    /// I open the gate, letting every held call and every later one through.
     fn release(&self) {
         *self.open.lock().unwrap() = true;
         self.opened.notify_all();
     }
 
+    /// I return the calls in the order they reached the store.
     fn log(&self) -> Vec<String> {
         self.log.lock().unwrap().clone()
     }
 }
 
 impl Store for Gated {
+    /// I log the call, wait at the gate, then list the buckets.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         self.enter("buckets".into());
         self.inner.list_buckets()
     }
+    /// I log the call, wait at the gate, then list.
     fn list(
         &self,
         bucket: &str,
@@ -90,20 +104,24 @@ impl Store for Gated {
         self.enter("list".into());
         self.inner.list(bucket, prefix, delimiter, token)
     }
+    /// I log the call as a peek, wait at the gate, then read the range.
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
         self.enter(format!("peek {key}"));
         self.inner.get_range(bucket, key, start, end)
     }
+    /// I log the call, wait at the gate, then read the object.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         self.enter(format!("get {key}"));
         self.inner.get(bucket, key)
     }
+    /// I log the call, wait at the gate, then delete.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         self.enter(format!("delete {key}"));
         self.inner.delete(bucket, key)
     }
 }
 
+/// I build a small plain text email with `subject` in its headers and body.
 fn email(subject: &str) -> Vec<u8> {
     format!(
         "From: A <a@example.com>\r\nTo: b@example.com\r\nSubject: {subject}\r\n\
@@ -113,6 +131,7 @@ fn email(subject: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// I build a 64 byte peek of `key`.
 fn peek(key: &str) -> Job {
     Job::Peek {
         bucket: B.into(),
@@ -121,6 +140,7 @@ fn peek(key: &str) -> Job {
     }
 }
 
+/// I build a whole-object get of `key`.
 fn get(key: &str) -> Job {
     Job::Get {
         bucket: B.into(),
@@ -128,6 +148,7 @@ fn get(key: &str) -> Job {
     }
 }
 
+/// I build a delete of `key`.
 fn delete(key: &str) -> Job {
     Job::Delete {
         bucket: B.into(),
@@ -135,6 +156,7 @@ fn delete(key: &str) -> Job {
     }
 }
 
+/// I build a folder listing of the test bucket's root.
 fn list() -> Job {
     Job::List {
         bucket: B.into(),
@@ -347,6 +369,7 @@ fn open_decodes_on_the_worker() {
     }
 }
 
+/// I build an open of `key`.
 fn open(key: &str) -> Job {
     Job::Open {
         bucket: B.into(),
@@ -514,9 +537,11 @@ impl Ranges {
 }
 
 impl Store for Ranges {
+    /// I pass this straight through to the wrapped store.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         self.inner.list_buckets()
     }
+    /// I pass this straight through to the wrapped store.
     fn list(
         &self,
         bucket: &str,
@@ -526,13 +551,16 @@ impl Store for Ranges {
     ) -> Result<Listing, S3Error> {
         self.inner.list(bucket, prefix, delimiter, token)
     }
+    /// I record the range asked for, then read it through the wrapped store.
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
         self.asked.lock().unwrap().push((start, end));
         self.inner.get_range(bucket, key, start, end)
     }
+    /// I pass this straight through to the wrapped store.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         self.inner.get(bucket, key)
     }
+    /// I pass this straight through to the wrapped store.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         self.inner.delete(bucket, key)
     }

@@ -1,3 +1,10 @@
+//! Tests for the accounts screen: the profile list, the add form, and what saving writes.
+//!
+//! I point each test at a credentials file in a temp dir and swap the connector for one that
+//! hands out an in-memory store, so nothing touches ~/.aws or the network. The secret and token
+//! are distinctive fake strings, which lets the tests check that neither ever reaches the
+//! screen or an error message, whole or in pieces.
+
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -28,6 +35,7 @@ aws_secret_access_key = fakeWorkSecret
 region = ap-southeast-2
 ";
 
+/// I build a store with two buckets, enough for the browser a connect opens to show something.
 fn store() -> Arc<MemoryStore> {
     let s = MemoryStore::new();
     s.create_bucket("mail-archive");
@@ -56,21 +64,25 @@ fn app(dir: &Path, creds: Option<&str>, default: Option<&str>) -> App {
     app
 }
 
+/// I build a ctrl chord for `c`.
 fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
+/// I press a key and let the jobs it started settle.
 fn press(app: &mut App, code: KeyCode) {
     app.key(key(code));
     settle(app);
 }
 
+/// I find the first screen line holding `needle`, and fail with the whole screen if none does.
 fn line_with<'a>(text: &'a str, needle: &str) -> &'a str {
     text.lines()
         .find(|l| l.contains(needle))
         .unwrap_or_else(|| panic!("no line with {needle:?} in:\n{text}"))
 }
 
+/// I return the error on the status line, and fail if there isn't one.
 fn status_error(app: &App) -> String {
     match &app.ctx.status {
         Some(Status::Error(m)) => m.clone(),
@@ -88,6 +100,7 @@ fn fill_form(app: &mut App, name: &str, key_id: &str, secret: &str, token: &str,
     }
 }
 
+/// I press ctrl-s on the form and let whatever it started settle.
 fn save(app: &mut App) {
     app.key(ctrl('s'));
     settle(app);

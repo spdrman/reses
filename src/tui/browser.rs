@@ -1,4 +1,13 @@
 //! Browse buckets and folders, find stored email, save a folder as the inbox.
+//!
+//! SES drops raw mail into S3 wherever its receipt rule says, and people rarely remember the
+//! exact prefix, so this screen lets them walk the account like a file manager until they find
+//! it. I list one level at a time with a delimiter and peek the first few KB of each object on
+//! screen to mark which ones look like email. `s` runs a flat listing of everything below a
+//! folder and groups the email it finds by folder, for when the mail is buried deeper. `i`
+//! saves the current (or found) folder as the inbox and opens it. Every listing is paged with
+//! a guard against a server that never stops handing out tokens, and every job is stamped with
+//! a generation so work for a folder I've left gets skipped instead of run.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -34,6 +43,7 @@ struct Paging {
 }
 
 impl Paging {
+    /// I start a fresh run with no pages seen and `max` as the cap.
     fn new(max: usize) -> Self {
         Self {
             pages: 0,
@@ -124,6 +134,8 @@ pub struct BrowserScreen {
 }
 
 impl BrowserScreen {
+    /// I build a browser at the bucket list with nothing loaded yet. It fetches on first focus,
+    /// and borrows ctx.session then if it wasn't given one.
     pub fn new() -> Self {
         Self {
             started: false,
@@ -150,6 +162,8 @@ impl BrowserScreen {
         }
     }
 
+    /// I move to `location`: bump the generation so peeks for the old place are skipped, clear
+    /// everything I knew about it, and submit the first listing for the new one.
     fn go(&mut self, location: Location, ctx: &mut Ctx) {
         self.generation.bump();
         self.location = location;
@@ -181,6 +195,8 @@ impl BrowserScreen {
         }
     }
 
+    /// I go up a level, from a folder to its parent or from a bucket root to the bucket list,
+    /// and remember where I came from so it's selected once the listing shows it.
     fn up(&mut self, ctx: &mut Ctx) {
         let Location::Folder { bucket, prefix } = self.location.clone() else {
             return;
@@ -205,6 +221,7 @@ impl BrowserScreen {
         }
     }
 
+    /// I open the selected bucket or folder. Objects don't open from here; the inbox does that.
     fn open_selected(&mut self, ctx: &mut Ctx) {
         let Some(&row) = self.rows.get(self.selected) else {
             return;
@@ -231,6 +248,7 @@ impl BrowserScreen {
         }
     }
 
+    /// I return the folder prefix I'm in, or an empty one on the bucket list.
     fn prefix(&self) -> &str {
         match &self.location {
             Location::Folder { prefix, .. } => prefix,
@@ -238,6 +256,7 @@ impl BrowserScreen {
         }
     }
 
+    /// I give the name a row shows, with the current prefix taken off folders and objects.
     fn row_name(&self, row: Row) -> &str {
         let prefix = self.prefix();
         match row {
@@ -252,6 +271,8 @@ impl BrowserScreen {
         }
     }
 
+    /// I rebuild the filtered rows from buckets, folders and objects, then put the cursor back on
+    /// the row I came out of, or keep it on the same row while more pages land.
     fn rebuild_rows(&mut self) {
         let keep = self.rows.get(self.selected).copied();
         let all = (0..self.buckets.len())
@@ -282,6 +303,7 @@ impl BrowserScreen {
         self.clamp();
     }
 
+    /// I keep the selection inside the rows and scroll the window just enough to show it.
     fn clamp(&mut self) {
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
         let visible = self.visible.max(1);
@@ -327,6 +349,7 @@ impl BrowserScreen {
         }
     }
 
+    /// I move the selection by `delta` rows, clamped at both ends.
     fn move_by(&mut self, delta: isize) {
         let n = self.rows.len();
         if n == 0 {
@@ -336,6 +359,8 @@ impl BrowserScreen {
         self.clamp();
     }
 
+    /// I save this folder as the inbox in the config, and reset the stack to an inbox on this
+    /// browser's session. If the config won't save I put the old inbox back and stay here.
     fn save_inbox(&mut self, bucket: String, prefix: String, ctx: &mut Ctx) -> Transition {
         let Some(session) = self.session.clone() else {
             ctx.error("no account is connected");
@@ -368,6 +393,8 @@ impl BrowserScreen {
         Transition::Reset(Box::new(InboxScreen::new(inbox)))
     }
 
+    /// I start a search below the current folder. On the bucket list there's nothing to search,
+    /// so I say so instead.
     fn start_search(&mut self, ctx: &mut Ctx) {
         let Location::Folder { bucket, prefix } = &self.location else {
             ctx.error("open a bucket first, then press s to search it");
@@ -383,6 +410,8 @@ impl BrowserScreen {
         self.search = Some(search);
     }
 
+    /// I handle a key while the filter is being typed. I return false for keys the filter
+    /// doesn't want, so the caller can treat them as navigation.
     fn filter_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             // A ctrl or alt chord is a command, not text for the filter.
@@ -412,6 +441,9 @@ impl BrowserScreen {
         true
     }
 
+    /// I handle a key in the folder view: the filter first when it's being typed, then movement,
+    /// opening, going up, reload, search and saving the inbox. Afterwards I peek whatever is
+    /// now on screen.
     fn folder_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.editing_filter && self.filter_key(key) {
             self.peek_visible(ctx);
@@ -454,6 +486,8 @@ impl BrowserScreen {
         Transition::None
     }
 
+    /// I handle a key while search results are up: move, stop, close, jump to a folder, or save
+    /// one as the inbox.
     fn search_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         let Some(search) = self.search.as_mut() else {
             return Transition::None;
@@ -496,6 +530,9 @@ impl BrowserScreen {
         Transition::None
     }
 
+    /// I take in a finished listing. Buckets replace the list; a folder page is appended and I
+    /// follow its continuation token until the pager says stop; an error goes on screen and the
+    /// status line. Then I rebuild the rows and peek what became visible.
     fn listing_done(&mut self, result: &Result<Outcome, S3Error>, ctx: &mut Ctx) {
         match result {
             Ok(Outcome::Buckets(buckets)) => {
@@ -561,6 +598,7 @@ impl BrowserScreen {
         self.peek_visible(ctx);
     }
 
+    /// I spell out where I am for the header and for error messages.
     fn path(&self) -> String {
         match &self.location {
             Location::Buckets => "buckets".into(),
@@ -568,6 +606,8 @@ impl BrowserScreen {
         }
     }
 
+    /// I build the counts line: buckets, or folders, objects and emails, noting how many
+    /// objects are still unchecked and whether a listing is still loading.
     fn summary(&self) -> String {
         let mut parts = Vec::new();
         match &self.location {
@@ -602,6 +642,8 @@ impl BrowserScreen {
         parts.join(" · ")
     }
 
+    /// I draw the folder view: the path and counts on top, then either a message saying why
+    /// there are no rows or the visible window of rows with sizes and email marks.
     fn render_folder(&mut self, frame: &mut Frame, area: Rect) {
         let [head, body] =
             Layout::vertical([Constraint::Length(HEADER_LINES), Constraint::Min(1)]).areas(area);
@@ -735,16 +777,19 @@ impl BrowserScreen {
 }
 
 impl Default for BrowserScreen {
+    /// I start at the bucket list, like `new`.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl View for BrowserScreen {
+    /// I use one title for every level of the browser.
     fn title(&self) -> String {
         "Browse S3".into()
     }
 
+    /// I draw the search results while a search is open and the folder view otherwise.
     fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         match self.search.as_mut() {
             Some(search) => search.render(frame, area),
@@ -757,6 +802,7 @@ impl View for BrowserScreen {
         self.session.as_ref()
     }
 
+    /// I route a key to the search while one is open and to the folder view otherwise.
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.search.is_some() {
             self.search_key(key, ctx)
@@ -776,6 +822,8 @@ impl View for BrowserScreen {
         Transition::None
     }
 
+    /// I match a finished job to what asked for it: the listing, a peek for this folder (which
+    /// sets the object's mark), or the open search. Anything else is stale and I drop it.
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
         if Some(done.id) == self.list_job {
             self.listing_done(&done.result, ctx);
@@ -795,6 +843,8 @@ impl View for BrowserScreen {
         Transition::None
     }
 
+    /// I pick up ctx.session if I don't have one yet and start at the bucket list the first
+    /// time I'm shown.
     fn on_focus(&mut self, ctx: &mut Ctx) {
         if self.session.is_none() {
             self.session = ctx.session.clone();
@@ -805,6 +855,8 @@ impl View for BrowserScreen {
         }
     }
 
+    /// I show the keys for the mode I'm in: search results, filter typing, the bucket list or
+    /// a folder.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         if let Some(search) = &self.search {
             let mut h = vec![("enter", "go there"), ("i", "save inbox")];
@@ -863,6 +915,7 @@ struct Search {
 }
 
 impl Search {
+    /// I set up a search of everything under `bucket/prefix`, paged no further than `max_pages`.
     fn new(bucket: String, prefix: String, max_pages: usize, session: Option<Session>) -> Self {
         Self {
             session,
@@ -887,10 +940,14 @@ impl Search {
         }
     }
 
+    /// I say whether the search still has work to do: not stopped, and not yet finished
+    /// listing and checking.
     fn running(&self) -> bool {
         !self.stopped && !(self.listing_done && self.queue.is_empty() && self.in_flight.is_empty())
     }
 
+    /// I submit the next page of the flat listing (no delimiter, so every object below the
+    /// prefix comes back).
     fn list(&mut self, token: Option<String>, ctx: &mut Ctx) {
         let job = Job::List {
             bucket: self.bucket.clone(),
@@ -904,12 +961,15 @@ impl Search {
         }
     }
 
+    /// I record why the search failed, put it on the status line, and stop.
     fn fail(&mut self, msg: String, ctx: &mut Ctx) {
         self.error = Some(msg.clone());
         ctx.error(msg);
         self.stop();
     }
 
+    /// I stop the search: bump the generation so queued peeks are skipped, and forget
+    /// everything still waiting.
     fn stop(&mut self) {
         self.generation.bump();
         self.stopped = true;
@@ -918,6 +978,8 @@ impl Search {
         self.in_flight.clear();
     }
 
+    /// I top up the peeks in flight to `SEARCH_IN_FLIGHT`, so the queue drains without flooding
+    /// the pool and a stop leaves little behind.
     fn fill(&mut self, ctx: &mut Ctx) {
         while self.in_flight.len() < SEARCH_IN_FLIGHT
             && let Some(key) = self.queue.pop_front()
@@ -939,6 +1001,9 @@ impl Search {
         }
     }
 
+    /// I take in a finished search job. A listing page queues its objects for peeking and
+    /// follows the next token; a peek that looks like email counts toward its folder. Then I
+    /// refill the in-flight peeks.
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) {
         if self.stopped {
             return;
@@ -992,10 +1057,12 @@ impl Search {
         self.fill(ctx);
     }
 
+    /// I return the folder under the cursor in the search results.
     fn selected_folder(&self) -> Option<String> {
         self.folders.keys().nth(self.selected).cloned()
     }
 
+    /// I move the search cursor by `delta`, clamped to the folders found.
     fn move_by(&mut self, delta: isize) {
         let n = self.folders.len();
         if n == 0 {
@@ -1004,6 +1071,8 @@ impl Search {
         self.selected = self.selected.saturating_add_signed(delta).min(n - 1);
     }
 
+    /// I draw the search: what's being searched, how far it has got, why it stopped early if
+    /// it did, and then the folders holding email with their counts.
     fn render(&mut self, frame: &mut Frame, area: Rect) {
         let [head, body] = Layout::vertical([
             Constraint::Length(HEADER_LINES + u16::from(self.note.is_some())),
@@ -1125,6 +1194,7 @@ impl Search {
     }
 }
 
+/// I compare two rows by kind and index, since `Row` doesn't derive `PartialEq`.
 fn same_row(a: Row, b: Row) -> bool {
     matches!(
         (a, b),
@@ -1133,6 +1203,7 @@ fn same_row(a: Row, b: Row) -> bool {
     )
 }
 
+/// I spell a count with its noun, adding an s unless there's exactly one.
 fn plural(n: usize, what: &str) -> String {
     if n == 1 {
         format!("1 {what}")

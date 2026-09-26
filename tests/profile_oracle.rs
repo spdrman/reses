@@ -276,6 +276,7 @@ fn the_cases_cover_both_verdicts_of_both_readers() {
 
 // ---- what a section header means ----
 
+/// `[personal]   # my own account` is the profile `personal`, not part of `work` above it.
 #[test]
 fn header_with_trailing_comment_is_its_own_profile() {
     let dir = tempfile::tempdir().unwrap();
@@ -293,6 +294,8 @@ fn header_with_trailing_comment_is_its_own_profile() {
     assert_eq!(file.get("personal").unwrap().access_key_id, "AKIDEXAMPLE2");
 }
 
+/// An upsert into a section whose header carries a comment edits that section in place, and
+/// keeps the comment, instead of appending a second `[personal]`.
 #[test]
 fn updating_a_commented_header_section_does_not_add_a_duplicate() {
     let dir = tempfile::tempdir().unwrap();
@@ -333,6 +336,7 @@ fn updating_a_padded_header_edits_that_section() {
     );
 }
 
+/// A file that already repeats a section is refused on save, naming the section, and left alone.
 #[test]
 fn save_refuses_a_file_with_duplicate_sections() {
     let dir = tempfile::tempdir().unwrap();
@@ -374,6 +378,7 @@ fn a_file_either_reader_refuses_is_never_written() {
     }
 }
 
+/// I won't write a `DEFAULT` profile, since configparser would fold it into every other one.
 #[test]
 fn default_is_not_a_profile_name_reses_writes() {
     let dir = tempfile::tempdir().unwrap();
@@ -403,6 +408,8 @@ fn default_section_is_not_inherited_by_the_sdk() {
 
 // ---- has_section ----
 
+/// `has_section` answers for any section configparser would list, even one without keys, so
+/// the account form asks before it writes keys into something the user already has.
 #[test]
 fn has_section_sees_incomplete_sections_too() {
     let dir = tempfile::tempdir().unwrap();
@@ -426,6 +433,7 @@ fn has_section_sees_incomplete_sections_too() {
     assert!(!CredentialsFile::load(&path).unwrap().has_section("hidden"));
 }
 
+/// A section I've just upserted counts before it's saved.
 #[test]
 fn has_section_sees_a_section_added_by_upsert() {
     let dir = tempfile::tempdir().unwrap();
@@ -571,6 +579,8 @@ fn reading_joins_continuation_lines_like_the_sdk() {
     );
 }
 
+/// Rewriting a continued value replaces the whole value, so no old continuation line is left
+/// to glue itself onto the new one. Other keys and the next section keep theirs.
 #[test]
 fn rewriting_a_key_drops_its_continuation_lines() {
     let dir = tempfile::tempdir().unwrap();
@@ -596,6 +606,7 @@ fn rewriting_a_key_drops_its_continuation_lines() {
     assert_eq!(oracle_section(&path, "b"), before_b);
 }
 
+/// Removing a continued key takes its continuation lines with it, blank-line gaps included.
 #[test]
 fn removing_a_token_or_region_drops_its_continuation_lines() {
     let dir = tempfile::tempdir().unwrap();
@@ -626,6 +637,7 @@ fn removing_a_token_or_region_drops_its_continuation_lines() {
     );
 }
 
+/// A new key goes after the last continuation line, not between a value and its tail.
 #[test]
 fn adding_a_key_after_a_continued_value_does_not_split_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -650,6 +662,7 @@ fn adding_a_key_after_a_continued_value_does_not_split_it() {
     );
 }
 
+/// The configparser oracle is only trusted on the Python that .python-version pins.
 #[test]
 fn the_oracle_runs_on_the_pinned_python() {
     // configparser is the reference here, and its behaviour can change between Python

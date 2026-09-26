@@ -56,6 +56,7 @@ struct Row {
 }
 
 impl Row {
+    /// I return the decoded headers once the peek has landed and turned out to be mail.
     fn summary(&self) -> Option<&Summary> {
         match &self.head {
             Head::Mail(s) => Some(s),
@@ -63,6 +64,7 @@ impl Row {
         }
     }
 
+    /// I give the subject flattened to one line, or a placeholder when it's missing or blank.
     fn subject(&self) -> String {
         match self.summary() {
             Some(s) if !s.subject.trim().is_empty() => clean(s.subject.trim()),
@@ -134,6 +136,8 @@ pub struct InboxScreen {
 }
 
 impl InboxScreen {
+    /// I build an inbox for the saved folder with nothing listed yet. It loads on first focus
+    /// and takes ctx.session then, which it keeps from that point on.
     pub fn new(inbox: Inbox) -> Self {
         Self {
             inbox,
@@ -184,6 +188,7 @@ impl InboxScreen {
         self
     }
 
+    /// I spell out the inbox folder as an s3:// URL for the title and messages.
     fn location(&self) -> String {
         format!("s3://{}/{}", self.inbox.bucket, self.inbox.prefix)
     }
@@ -214,11 +219,15 @@ impl InboxScreen {
         self.list_page(None, ctx);
     }
 
+    /// I queue a job on this inbox's own session, stamped with `generation`. None when no
+    /// account is connected.
     fn submit(&mut self, job: Job, generation: &Generation, ctx: &mut Ctx) -> Option<JobId> {
         let session = self.session.as_ref()?;
         Some(ctx.submit_to(session, job, Some(generation)))
     }
 
+    /// I submit one listing page of the inbox folder, following `token` when there is one, and
+    /// put an error on screen if there's no session to list with.
     fn list_page(&mut self, token: Option<String>, ctx: &mut Ctx) {
         let job = Job::List {
             bucket: self.inbox.bucket.clone(),
@@ -337,11 +346,14 @@ impl InboxScreen {
         }
     }
 
+    /// I keep only keys sitting directly in the inbox folder, not in a subfolder below it.
     fn is_direct_child(&self, key: &str) -> bool {
         key.strip_prefix(self.inbox.prefix.as_str())
             .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
     }
 
+    /// I turn a listing error into a sentence the user can act on, naming the bucket or the
+    /// profile, with a hint about the key that gets them out of it.
     fn list_error(&self, e: &S3Error) -> String {
         let profile = self
             .session
@@ -435,17 +447,20 @@ impl InboxScreen {
             .unwrap_or(0);
     }
 
+    /// I put the cursor at `pos` in the visible rows, clamped, and remember which row that is.
     fn select(&mut self, pos: usize) {
         self.sel_pos = pos.min(self.view.len().saturating_sub(1));
         self.selected = self.view.get(self.sel_pos).copied();
     }
 
+    /// I return the row under the cursor, if its slot still holds one.
     fn current(&self) -> Option<&Row> {
         self.view
             .get(self.sel_pos)
             .and_then(|&slot| self.rows[slot].as_ref())
     }
 
+    /// I drop a deleted message's row and keep the cursor on the row that slides into its place.
     fn remove_row(&mut self, key: &str) {
         self.refresh_view();
         let Some(slot) = self.index.remove(key) else {
@@ -475,6 +490,8 @@ impl InboxScreen {
         self.dirty = true;
     }
 
+    /// I type into the filter: characters, backspace, enter to keep it and esc to clear it.
+    /// Ctrl and alt chords are ignored.
     fn on_filter_key(&mut self, key: KeyEvent) {
         match key.code {
             // A ctrl or alt chord is a command, not text: ctrl-a shouldn't type an a.
@@ -499,6 +516,8 @@ impl InboxScreen {
         self.dirty = true;
     }
 
+    /// I draw the message table. I size the columns to the width (Date and Size go when it's
+    /// narrow), cut every cell by display width, and show dates in the local offset.
     fn render_table(&mut self, frame: &mut Frame, area: Rect, offset_hint: UtcOffset) {
         let now_utc = self.now.unwrap_or_else(OffsetDateTime::now_utc);
         // At the very edge of the calendar the local offset has no room: stay in UTC.
@@ -587,6 +606,8 @@ impl InboxScreen {
 }
 
 impl View for InboxScreen {
+    /// I title the inbox with its location and, once it has loaded, how many messages it holds
+    /// and how many objects weren't email.
     fn title(&self) -> String {
         let mut t = format!("Inbox {}", self.location());
         if self.error.is_none() && self.started {
@@ -600,6 +621,8 @@ impl View for InboxScreen {
         t
     }
 
+    /// I draw the inbox: an error, an empty message or the table, the filter line when it's in
+    /// use, and the delete confirmation on top when one is open.
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx) {
         self.refresh_view();
         let show_filter = self.typing || !self.filter.is_empty();
@@ -696,6 +719,8 @@ impl View for InboxScreen {
         }
     }
 
+    /// I handle the key, then ask for the rows now on screen to be peeked unless the key moved
+    /// me to another screen.
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         let t = self.handle_key(key, ctx);
         if matches!(t, Transition::None) {
@@ -717,6 +742,9 @@ impl View for InboxScreen {
         Transition::None
     }
 
+    /// I take in a finished job: a delete (mine or one the message screen handed over), a
+    /// listing page, or a header peek. Results for jobs I never submitted, or from an older
+    /// generation, are dropped.
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
         // A delete from this screen or from the message screen: either way the row goes.
         if let Job::Delete { bucket, key } = &done.job {
@@ -819,6 +847,7 @@ impl View for InboxScreen {
         Transition::None
     }
 
+    /// I pick up ctx.session the first time I'm shown and start the first load.
     fn on_focus(&mut self, ctx: &mut Ctx) {
         if self.session.is_none() {
             self.session = ctx.session.clone();
@@ -828,16 +857,19 @@ impl View for InboxScreen {
         }
     }
 
+    /// I keep the rows on screen peeked on every tick, so a resize fills in without a key press.
     fn on_tick(&mut self, ctx: &mut Ctx) {
         if self.started && self.error.is_none() {
             self.request_window(ctx);
         }
     }
 
+    /// I report my own session, so the header bar names the account this inbox reads.
     fn session(&self) -> Option<&Session> {
         self.session.as_ref()
     }
 
+    /// I show the keys the list takes, or just the filter keys while one is being typed.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         if self.typing {
             return vec![("enter", "done"), ("esc", "clear filter")];
@@ -855,6 +887,9 @@ impl View for InboxScreen {
 }
 
 impl InboxScreen {
+    /// I handle a key. An open delete confirmation takes it first (only a bare y deletes); then
+    /// the filter while it's being typed; then movement, open, delete, filter, refresh and the
+    /// accounts screen.
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if let Some(target) = self.confirm.take() {
             // Only a bare y: ctrl-y, or a y that came in as part of something else, cancels.
@@ -1024,6 +1059,7 @@ fn chunk(s: &str, cols: usize) -> Vec<String> {
     rows
 }
 
+/// I default saved attachments and text to ~/Downloads.
 fn default_downloads() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Downloads")
 }
@@ -1077,6 +1113,7 @@ fn sorted_rows() -> usize {
     SORTED_ROWS.with(std::cell::Cell::get)
 }
 
+/// I zero the per-thread sort counter a test reads to check how often rows get sorted.
 #[cfg(test)]
 fn sorted_rows_reset() {
     SORTED_ROWS.with(|c| c.set(0));
@@ -1106,6 +1143,7 @@ pub(super) mod fixtures {
     }
 
     impl Timed {
+        /// I build an empty store that records when each object was received.
         pub fn new() -> Arc<Self> {
             Arc::new(Self {
                 inner: MemoryStore::new(),
@@ -1122,15 +1160,18 @@ pub(super) mod fixtures {
             self.put_received(bucket, key, data, at);
         }
 
+        /// I store an object and record `at` as its received time.
         pub fn put_received(&self, bucket: &str, key: &str, data: &[u8], at: OffsetDateTime) {
             self.inner.put(bucket, key, data);
             self.received.lock().unwrap().insert(key.to_string(), at);
         }
 
+        /// I create an empty bucket in the wrapped store.
         pub fn create_bucket(&self, bucket: &str) {
             self.inner.create_bucket(bucket);
         }
 
+        /// I say whether the wrapped store still holds `bucket/key`.
         pub fn contains(&self, bucket: &str, key: &str) -> bool {
             self.inner.contains(bucket, key)
         }
@@ -1142,9 +1183,11 @@ pub(super) mod fixtures {
     }
 
     impl Store for Timed {
+        /// I pass this straight through to the wrapped store.
         fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
             self.inner.list_buckets()
         }
+        /// I list through the wrapped store and stamp each object with its recorded received time.
         fn list(
             &self,
             bucket: &str,
@@ -1161,6 +1204,7 @@ pub(super) mod fixtures {
             }
             Ok(listing)
         }
+        /// I count the ranged get as a header peek, then pass it through.
         fn get_range(
             &self,
             bucket: &str,
@@ -1171,9 +1215,11 @@ pub(super) mod fixtures {
             self.peeks.fetch_add(1, Ordering::SeqCst);
             self.inner.get_range(bucket, key, start, end)
         }
+        /// I pass this straight through to the wrapped store.
         fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
             self.inner.get(bucket, key)
         }
+        /// I pass this straight through to the wrapped store.
         fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
             self.inner.delete(bucket, key)
         }
@@ -1186,9 +1232,12 @@ pub(super) mod fixtures {
     }
 
     impl Store for Endless {
+        /// I have no buckets to list.
         fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
             Ok(Vec::new())
         }
+        /// I hand back one new object per call with a token from `next`, so the listing never ends
+        /// on its own.
         fn list(
             &self,
             _: &str,
@@ -1207,17 +1256,21 @@ pub(super) mod fixtures {
                 next_token: Some((self.next)(n)),
             })
         }
+        /// I answer every peek with bytes that are not mail.
         fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
             Ok(b"not mail".to_vec())
         }
+        /// I answer every get with bytes that are not mail.
         fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
             Ok(b"not mail".to_vec())
         }
+        /// I pretend every delete worked.
         fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
             Ok(())
         }
     }
 
+    /// I give the inbox config every fixture points at.
     pub fn inbox() -> Inbox {
         Inbox {
             profile: "test".into(),
@@ -1244,6 +1297,7 @@ pub(super) mod fixtures {
         .into_bytes()
     }
 
+    /// I build the AccessDenied error S3 sends for a missing permission.
     pub fn access_denied() -> S3Error {
         S3Error::Service {
             status: 403,
@@ -1260,9 +1314,11 @@ pub(super) mod fixtures {
     }
 
     impl Store for Failing {
+        /// I pass this straight through to the wrapped store.
         fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
             self.inner.list_buckets()
         }
+        /// I fail the listing with `list_err` when one is set, and list normally otherwise.
         fn list(
             &self,
             bucket: &str,
@@ -1275,6 +1331,7 @@ pub(super) mod fixtures {
                 None => self.inner.list(bucket, prefix, delimiter, token),
             }
         }
+        /// I pass this straight through to the wrapped store.
         fn get_range(
             &self,
             bucket: &str,
@@ -1284,9 +1341,11 @@ pub(super) mod fixtures {
         ) -> Result<Vec<u8>, S3Error> {
             self.inner.get_range(bucket, key, start, end)
         }
+        /// I pass this straight through to the wrapped store.
         fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
             self.inner.get(bucket, key)
         }
+        /// I fail the delete with `delete_err` when one is set, and delete normally otherwise.
         fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
             match &self.delete_err {
                 Some(e) => Err(e.clone()),
@@ -1313,6 +1372,8 @@ mod tests {
 
     const NOW: time::OffsetDateTime = datetime!(2026-09-25 15:00 UTC);
 
+    /// I build an app showing an inbox on `store`, with a fixed clock and a downloads folder
+    /// in a temp dir that lives as long as the returned guard.
     fn app_with(store: Arc<dyn Store>) -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ctx = testing::ctx(dir.path(), Some(store));
@@ -1357,12 +1418,14 @@ mod tests {
         s
     }
 
+    /// I find the first screen line holding `needle`, and fail with the whole screen if none does.
     fn line_with<'a>(scr: &'a str, needle: &str) -> &'a str {
         scr.lines()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("no line contains {needle:?} in:\n{scr}"))
     }
 
+    /// I read the title of the screen on top of the stack.
     fn top_title(app: &App) -> String {
         app.stack.last().unwrap().title()
     }
@@ -1598,6 +1661,8 @@ mod tests {
         assert!(pos("Invoice for September") < pos("Old news"), "{scr}");
     }
 
+    /// I hand a finished job to every screen on the stack, the way the job pump does, and apply
+    /// the top screen's transition.
     fn deliver(app: &mut App, done: &crate::tui::jobs::Done) {
         let last = app.stack.len() - 1;
         let mut top = crate::tui::Transition::None;
@@ -1934,6 +1999,7 @@ mod tests {
         assert!(screen(&mut app, 80, 10).contains("Numbered 29"));
     }
 
+    /// I find the screen line holding `needle`, if any.
     fn row_with<'a>(scr: &'a str, needle: &str) -> Option<&'a str> {
         scr.lines().find(|l| l.contains(needle))
     }

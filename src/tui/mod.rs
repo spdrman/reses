@@ -44,7 +44,9 @@ pub(crate) enum Transition {
 pub(crate) trait View {
     /// Shown in the header bar.
     fn title(&self) -> String;
+    /// Draw the view into `area`, the space between the header bar and the status line.
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx);
+    /// Handle a key the shell didn't take for itself, and say what should happen next.
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition;
     /// Text pasted into the terminal, whole. It never arrives as keys (bracketed paste is on),
     /// so a paste can't press d and then y; a view with a text input takes it, the rest ignore it.
@@ -110,6 +112,7 @@ impl Session {
 /// A bare profile name as a `Profile`, so `Session::connect("work", None)` reads naturally. The
 /// keys stay empty: the SDK reads them from the AWS files when it needs them.
 impl From<&str> for Profile {
+    /// I build a profile that carries only its name.
     fn from(name: &str) -> Self {
         Profile {
             name: name.to_string(),
@@ -120,6 +123,7 @@ impl From<&str> for Profile {
 
 /// The owned-string form of the conversion above.
 impl From<String> for Profile {
+    /// I build a profile that carries only its name, taking the string as is.
     fn from(name: String) -> Self {
         Profile {
             name,
@@ -152,6 +156,8 @@ pub(crate) struct Ctx {
 }
 
 impl Ctx {
+    /// I build the shared context with no session, no status, UTC for dates and the text logo.
+    /// `main` fills in the rest with the builders below.
     pub fn new(config: AppConfig, config_path: PathBuf, creds_path: PathBuf, jobs: Jobs) -> Self {
         Self {
             config,
@@ -165,11 +171,13 @@ impl Ctx {
         }
     }
 
+    /// I set the offset dates are shown in, which `main` reads from the system once at startup.
     pub fn with_local_offset(mut self, offset: UtcOffset) -> Self {
         self.local_offset = offset;
         self
     }
 
+    /// I set how the header draws the logo, decided once at startup from the terminal.
     pub fn with_brand(mut self, brand: brand::Brand) -> Self {
         self.brand = brand;
         self
@@ -198,10 +206,12 @@ impl Ctx {
         )
     }
 
+    /// I put an informational message on the status line, replacing whatever was there.
     pub fn info(&mut self, msg: impl Into<String>) {
         self.status = Some(Status::Info(msg.into()));
     }
 
+    /// I put an error on the status line, replacing whatever was there.
     pub fn error(&mut self, msg: impl Into<String>) {
         self.status = Some(Status::Error(msg.into()));
     }
@@ -217,6 +227,8 @@ impl Ctx {
         }
     }
 
+    /// I load the AWS credentials file fresh, putting any error on the status line and
+    /// returning None so the caller can simply give up.
     pub fn credentials(&mut self) -> Option<CredentialsFile> {
         match CredentialsFile::load(&self.creds_path) {
             Ok(f) => Some(f),
@@ -255,6 +267,8 @@ pub(crate) struct App {
 }
 
 impl App {
+    /// I start the app on the screen the config calls for (the saved inbox when its profile is
+    /// still there, the accounts screen otherwise) and focus it.
     pub fn new(mut ctx: Ctx) -> Self {
         let mut first = initial_view(&mut ctx);
         first.on_focus(&mut ctx);
@@ -265,6 +279,7 @@ impl App {
         }
     }
 
+    /// I start the app on a given screen, so a test can open straight onto the one it's about.
     #[cfg(test)]
     pub fn with_view(ctx: Ctx, view: Box<dyn View>) -> Self {
         let mut app = Self {
@@ -276,12 +291,15 @@ impl App {
         app
     }
 
+    /// I tell the view on top that it's showing, which is where screens load or refresh.
     fn focus_top(&mut self) {
         if let Some(top) = self.stack.last_mut() {
             top.on_focus(&mut self.ctx);
         }
     }
 
+    /// I carry out a view's transition: push, pop (quitting once the stack is empty), or reset
+    /// the whole stack, then focus whatever ended up on top.
     pub fn apply(&mut self, t: Transition) {
         match t {
             Transition::None => return,
@@ -301,6 +319,8 @@ impl App {
         self.focus_top();
     }
 
+    /// I route a key press. Ctrl-c always quits, anything that isn't a press is dropped, and
+    /// the rest goes to the top view, whose transition I then apply.
     pub fn key(&mut self, key: KeyEvent) {
         if key.kind != KeyEventKind::Press {
             return;
@@ -351,6 +371,8 @@ impl App {
         n
     }
 
+    /// I draw one frame: the header bar with the logo and the top view's title and account, the
+    /// view itself, and a status line holding either the last message or the key hints.
     pub fn render(&mut self, frame: &mut Frame) {
         let full = frame.area();
         // The image logo when there's one and room for it; otherwise the one-row text bar.
@@ -640,6 +662,7 @@ pub(crate) mod testing {
         ctx
     }
 
+    /// I build a plain key press with no modifiers, the way a test types it.
     pub fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
             code,
@@ -649,6 +672,7 @@ pub(crate) mod testing {
         }
     }
 
+    /// I type `s` one character at a time, letting the jobs settle after each key.
     pub fn chars(app: &mut App, s: &str) {
         for c in s.chars() {
             app.key(key(KeyCode::Char(c)));
@@ -713,9 +737,11 @@ mod shell_tests {
     struct Exploding;
 
     impl Store for Exploding {
+        /// I have no buckets.
         fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
             Ok(Vec::new())
         }
+        /// I list nothing.
         fn list(
             &self,
             _: &str,
@@ -725,12 +751,15 @@ mod shell_tests {
         ) -> Result<Listing, S3Error> {
             Ok(Listing::default())
         }
+        /// I answer a peek with nothing.
         fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
             Ok(Vec::new())
         }
+        /// I panic, standing in for a decoder bug.
         fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
             panic!("worker blew up")
         }
+        /// I pretend every delete worked.
         fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
             Ok(())
         }

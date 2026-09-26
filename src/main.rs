@@ -1,3 +1,11 @@
+//! The `reses` binary: open the S3 inbox, or decode message files to text.
+//!
+//! I pick the mode from the arguments and from whether stdin and stdout are terminals, the way
+//! `less` or `cat` would: with files or piped input I decode, and with neither (and a terminal on
+//! both ends) I open the inbox. Everything past that choice lives in the library, so this file is
+//! only argument parsing, reading the inputs and writing the output. It stays this thin because
+//! tests can call the library directly, but can only reach the binary by running it.
+
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
@@ -54,11 +62,18 @@ fn saved_line(path: &std::path::Path) -> String {
 /// What a run does, from the arguments and whether stdin and stdout are terminals.
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
+    /// Open the inbox.
     Tui,
+    /// Decode the files, or stdin, to text.
     Decode,
+    /// Stop with this message, because the arguments ask for something the run can't do.
     Refuse(&'static str),
 }
 
+/// Decide what this run does. Any file or piped input means decoding, whatever else is set. With
+/// neither, I only open the inbox when no decode flag was given and stdout is a terminal, since a
+/// flag with nothing to act on, or an inbox drawn into a pipe, is almost certainly a mistake and
+/// I'd rather say so than guess.
 fn mode(cli: &Cli, stdin_tty: bool, stdout_tty: bool) -> Mode {
     if !cli.files.is_empty() || !stdin_tty {
         return Mode::Decode;
@@ -78,11 +93,14 @@ fn mode(cli: &Cli, stdin_tty: bool, stdout_tty: bool) -> Mode {
     Mode::Tui
 }
 
+/// Parse the arguments, then either hand over to the inbox or decode every input and write the
+/// result to stdout or `-o`. Several inputs get a `==> name <==` banner each, like `head`.
 fn main() -> anyhow::Result<()> {
     // Read this before anything spawns a thread: on Unix it fails once there are others.
     let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let cli = Cli::parse();
 
+    // The inbox takes over from here, and a refusal ends the run before anything is read.
     match mode(
         &cli,
         std::io::stdin().is_terminal(),
@@ -99,6 +117,8 @@ fn main() -> anyhow::Result<()> {
         Mode::Decode => {}
     }
 
+    // Read every input up front, stdin when no files were named, so a missing file fails before
+    // any output is written.
     let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
     if cli.files.is_empty() {
         let mut data = Vec::new();
@@ -110,6 +130,7 @@ fn main() -> anyhow::Result<()> {
         sources.push((f.display().to_string(), data));
     }
 
+    // Decode each input, saving its attachments on the way when asked.
     let many = sources.len() > 1;
     let mut chunks = Vec::new();
     for (name, data) in &sources {
@@ -130,6 +151,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // A file gets the text as it is, and stdout gets it escaped when it's a terminal.
     let out = chunks.join("\n");
     match &cli.output {
         Some(path) => {
@@ -147,16 +169,19 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    /// Parse `args` as if they followed `reses` on the command line.
     fn cli(args: &[&str]) -> Cli {
         Cli::parse_from(std::iter::once("reses").chain(args.iter().copied()))
     }
 
+    /// The inbox needs no input at all and a terminal on stdout.
     #[test]
     fn the_inbox_opens_only_with_no_input_and_terminals_both_ways() {
         assert_eq!(mode(&cli(&[]), true, true), Mode::Tui);
         assert!(matches!(mode(&cli(&[]), true, false), Mode::Refuse(_)));
     }
 
+    /// Any input decodes, even alongside flags that would be refused without it.
     #[test]
     fn piped_input_or_files_decode() {
         assert_eq!(mode(&cli(&[]), false, true), Mode::Decode);
@@ -169,6 +194,8 @@ mod tests {
         );
     }
 
+    /// An OSC 52 clipboard write reaches a terminal as visible text, while tabs and newlines stay
+    /// as they are.
     #[test]
     fn a_terminal_gets_control_characters_written_out() {
         let text = "Subject: \u{1b}]52;c;aGk=\u{7}hi\nbody\ttab\n".to_string();
@@ -177,6 +204,7 @@ mod tests {
         assert!(!escaped.contains('\u{1b}'));
     }
 
+    /// A pipe, `--raw` and `-o` all get the escape bytes untouched.
     #[test]
     fn pipes_files_and_raw_get_the_bytes_as_they_are() {
         let text = "a \u{1b}[2J b\n".to_string();
@@ -191,12 +219,14 @@ mod tests {
         );
     }
 
+    /// An attachment name carrying escapes is written out visibly on stderr.
     #[test]
     fn a_saved_attachment_name_is_escaped_on_stderr() {
         let line = saved_line(std::path::Path::new("dl/evil\u{1b}]0;x\u{7}.pdf"));
         assert_eq!(line, "saved dl/evil\\x1b]0;x\\x07.pdf");
     }
 
+    /// Each decode flag on its own, with nothing to decode, is refused rather than ignored.
     #[test]
     fn decode_flags_with_no_input_are_an_error() {
         for args in [

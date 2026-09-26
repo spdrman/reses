@@ -48,6 +48,8 @@ pub struct MessageScreen {
 }
 
 impl MessageScreen {
+    /// I build a message screen for `bucket/key` that saves into ~/Downloads. The fetch starts
+    /// on first focus, so building one costs nothing.
     pub fn new(bucket: String, key: String) -> Self {
         Self {
             bucket,
@@ -87,15 +89,19 @@ impl MessageScreen {
         self
     }
 
+    /// I share the inbox's set of handed-over deletes, so a delete still in flight when I close
+    /// gets reported by the inbox instead of vanishing.
     pub(super) fn with_handoff(mut self, handoff: Handoff) -> Self {
         self.handoff = Some(handoff);
         self
     }
 
+    /// I spell out the message as an s3:// URL for the title.
     fn location(&self) -> String {
         format!("s3://{}/{}", self.bucket, self.key)
     }
 
+    /// I return the text or HTML part, whichever is showing, or nothing while it loads.
     fn shown(&self) -> &str {
         match &self.message {
             Some(m) if self.html => &m.html,
@@ -126,6 +132,8 @@ impl MessageScreen {
         Transition::Pop
     }
 
+    /// I write the part that's showing to a new .txt file named after the key, never
+    /// overwriting an existing one, and say where it went.
     fn write_text(&mut self, ctx: &mut Ctx) {
         if self.message.is_none() {
             ctx.info("The message is still loading.");
@@ -147,6 +155,8 @@ impl MessageScreen {
         }
     }
 
+    /// I save every attachment into the output folder and name the files on the status line,
+    /// or say the message has none.
     fn save_attachments(&mut self, ctx: &mut Ctx) {
         let Some(message) = &self.message else {
             ctx.info("The message is still loading.");
@@ -178,6 +188,8 @@ impl MessageScreen {
         }
     }
 
+    /// I turn a fetch error into a sentence: how big the message is when it's over the size
+    /// cap, and the plain error otherwise.
     fn fetch_error(&self, e: &S3Error) -> String {
         if let S3Error::TooLarge { size, limit } = e {
             let how_big = match size {
@@ -197,11 +209,15 @@ impl MessageScreen {
 }
 
 impl View for MessageScreen {
+    /// I title the screen with the message's location, marking when the HTML part is showing.
     fn title(&self) -> String {
         let view = if self.html { " (HTML)" } else { "" };
         format!("Message {}{view}", self.location())
     }
 
+    /// I draw the message: the error in red if the fetch failed, a loading line until it
+    /// arrives, then the pager's window of wrapped lines under a short header, with the delete
+    /// confirmation on top when it's open.
     fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         if let Some(err) = &self.error {
             frame.render_widget(
@@ -238,6 +254,8 @@ impl View for MessageScreen {
         }
     }
 
+    /// I handle a key. An open delete confirmation takes it first and only a bare y deletes;
+    /// otherwise I scroll, flip to HTML, save text or attachments, ask to delete, or go back.
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.confirm {
             self.confirm = false;
@@ -291,6 +309,8 @@ impl View for MessageScreen {
         Transition::None
     }
 
+    /// I take in the decoded message or the fetch error, and the answer to my delete, which
+    /// closes the screen when it worked and says why when it didn't.
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
         if Some(done.id) == self.fetch {
             self.fetch = None;
@@ -320,6 +340,8 @@ impl View for MessageScreen {
         Transition::None
     }
 
+    /// I start the fetch the first time I'm shown, on my own session or ctx.session if I wasn't
+    /// given one. Later focuses change nothing.
     fn on_focus(&mut self, ctx: &mut Ctx) {
         if self.started {
             return;
@@ -340,10 +362,12 @@ impl View for MessageScreen {
         }
     }
 
+    /// I report my own session, so the header bar names the account this message came from.
     fn session(&self) -> Option<&Session> {
         self.session.as_ref()
     }
 
+    /// I list the keys the message screen takes.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         vec![
             ("↑↓ pgup pgdn", "scroll"),
@@ -461,6 +485,7 @@ mod tests {
 
     const KEY: &str = "mail/msg1";
 
+    /// I build a message with a hundred numbered body lines, long enough to need scrolling.
     fn long_message() -> Vec<u8> {
         let mut raw = String::from_utf8(email(
             "Alice <alice@example.com>",
@@ -474,6 +499,7 @@ mod tests {
         raw.into_bytes()
     }
 
+    /// I build a multipart message with a text part, an HTML part and one attachment.
     fn multipart() -> Vec<u8> {
         b"From: Alice <alice@example.com>\r\n\
 To: me@example.com\r\n\
@@ -504,6 +530,8 @@ attached words\r\n\
             .to_vec()
     }
 
+    /// I open a message screen on `store` for the fixture key, saving into `out`, and let its
+    /// fetch settle. The returned guard keeps the config dir alive.
     fn open(store: Arc<dyn Store>, out: &Path) -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ctx = testing::ctx(dir.path(), Some(store));
@@ -513,6 +541,7 @@ attached words\r\n\
         (app, dir)
     }
 
+    /// I build a store holding `raw` at the fixture key.
     fn store_with(raw: &[u8]) -> Arc<Timed> {
         let s = Timed::new();
         s.put(BUCKET, KEY, raw);
@@ -760,9 +789,11 @@ attached words\r\n\
     struct TooBig(Option<u64>);
 
     impl Store for TooBig {
+        /// I have no buckets.
         fn list_buckets(&self) -> Result<Vec<crate::s3::Bucket>, S3Error> {
             Ok(Vec::new())
         }
+        /// I list nothing.
         fn list(
             &self,
             _: &str,
@@ -772,15 +803,18 @@ attached words\r\n\
         ) -> Result<crate::s3::Listing, S3Error> {
             Ok(crate::s3::Listing::default())
         }
+        /// I answer a peek with nothing.
         fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
             Ok(Vec::new())
         }
+        /// I refuse every get as over the size cap, with the size S3 reported when there is one.
         fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
             Err(S3Error::TooLarge {
                 size: self.0,
                 limit: 41 * 1024 * 1024,
             })
         }
+        /// I pretend every delete worked.
         fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
             Ok(())
         }
@@ -905,6 +939,7 @@ attached words\r\n\
         }
     }
 
+    /// I find the first screen line holding `needle`, and fail with the whole screen if none does.
     fn line_with<'a>(scr: &'a str, needle: &str) -> &'a str {
         scr.lines()
             .find(|l| l.contains(needle))

@@ -30,16 +30,19 @@ struct Gate {
 }
 
 impl Gate {
+    /// I build a gate that holds every caller until it's released.
     fn shut() -> Self {
         Self::default()
     }
 
+    /// I build a gate that's already open, for a store that shouldn't hold anything.
     fn opened() -> Self {
         let g = Self::default();
         g.release();
         g
     }
 
+    /// I block the calling worker until the gate is open.
     fn pass(&self) {
         let mut open = self.open.lock().unwrap();
         while !*open {
@@ -47,6 +50,7 @@ impl Gate {
         }
     }
 
+    /// I open the gate and wake everyone waiting at it.
     fn release(&self) {
         *self.open.lock().unwrap() = true;
         self.opened.notify_all();
@@ -63,6 +67,8 @@ struct Pages {
 }
 
 impl Pages {
+    /// I build a store that lists `pages` full pages of keys, holding its reads at a gate when
+    /// `gated` is set.
     fn new(pages: usize, gated: bool) -> Arc<Self> {
         Arc::new(Self {
             pages,
@@ -72,19 +78,24 @@ impl Pages {
         })
     }
 
+    /// I return the reads in the order they reached the store.
     fn log(&self) -> Vec<String> {
         self.log.lock().unwrap().clone()
     }
 }
 
+/// I name the `i`th key, zero padded so keys sort in the order they were made.
 fn keyname(i: usize) -> String {
     format!("{PREFIX}k{i:07}")
 }
 
 impl Store for Pages {
+    /// I have no buckets.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         Ok(Vec::new())
     }
+    /// I hand back page `token` of 1000 keys, with received times that make the first key the
+    /// newest, and a token for the next page until I run out.
     fn list(
         &self,
         _: &str,
@@ -110,22 +121,27 @@ impl Store for Pages {
             next_token: (page + 1 < self.pages).then(|| (page + 1).to_string()),
         })
     }
+    /// I log the peek, wait at the gate, and answer with a tiny header block.
     fn get_range(&self, _: &str, key: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
         self.log.lock().unwrap().push(format!("peek {key}"));
         self.gate.pass();
         Ok(b"From: a@example.com\r\nSubject: s\r\n\r\n".to_vec())
     }
+    /// I log the get, wait at the gate, and answer with a tiny message.
     fn get(&self, _: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         self.log.lock().unwrap().push(format!("get {key}"));
         self.gate.pass();
         Ok(b"From: a@example.com\r\nSubject: s\r\n\r\nbody\r\n".to_vec())
     }
+    /// I log the delete and pretend it worked.
     fn delete(&self, _: &str, key: &str) -> Result<(), S3Error> {
         self.log.lock().unwrap().push(format!("delete {key}"));
         Ok(())
     }
 }
 
+/// I build an app showing an inbox on `store`, with `jobs` as its pool so a test can use a
+/// real worker pool instead of the inline one.
 fn app(store: Arc<dyn Store>, jobs: Jobs, dir: &std::path::Path) -> App {
     let mut ctx = Ctx::new(
         AppConfig::default(),
@@ -250,9 +266,12 @@ struct Race {
 }
 
 impl Store for Race {
+    /// I pass this straight through to the wrapped store.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         self.inner.list_buckets()
     }
+    /// I take the listing's snapshot first, then hold it at the gate when told to, so a delete
+    /// can land after the snapshot but before the listing comes back.
     fn list(
         &self,
         bucket: &str,
@@ -267,12 +286,15 @@ impl Store for Race {
         }
         snapshot
     }
+    /// I pass this straight through to the wrapped store.
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
         self.inner.get_range(bucket, key, start, end)
     }
+    /// I pass this straight through to the wrapped store.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         self.inner.get(bucket, key)
     }
+    /// I hold the delete at its own gate when told to, then delete through the wrapped store.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         if self.hold_deletes.load(Ordering::SeqCst) {
             self.deletes.pass();

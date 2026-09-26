@@ -9,11 +9,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// A throwaway clone to run the script in. `_dir` owns the temp dir that holds both the clone
+/// and its bare origin, so they live exactly as long as the test.
 struct Repo {
     _dir: tempfile::TempDir,
     work: PathBuf,
 }
 
+/// Run git in `dir` with a fixed identity and no global config, so the host's settings can't
+/// change what the script sees, and fail the test if git does.
 fn git(dir: &Path, args: &[&str]) -> Output {
     let out = Command::new("git")
         .args(args)
@@ -36,6 +40,7 @@ fn git(dir: &Path, args: &[&str]) -> Output {
 /// A bare origin with `main` holding Cargo.toml at `version`, and a clone of it with the real
 /// script copied in at the same relative path.
 fn repo(version: Option<&str>) -> Repo {
+    // A bare origin and a clone of it on `main`.
     let dir = tempfile::tempdir().unwrap();
     let origin = dir.path().join("origin.git");
     let work = dir.path().join("work");
@@ -60,6 +65,7 @@ fn repo(version: Option<&str>) -> Repo {
         ],
     );
     git(&work, &["checkout", "-q", "-b", "main"]);
+    // The first commit: a manifest with or without a version, plus the script, pushed to main.
     let manifest = match version {
         Some(v) => format!("[package]\nname = \"reses\"\nversion = \"{v}\"\n"),
         None => "[package]\nname = \"reses\"\n".to_string(),
@@ -74,6 +80,7 @@ fn repo(version: Option<&str>) -> Repo {
     Repo { _dir: dir, work }
 }
 
+/// The full sha of the clone's HEAD, the commit a test hands the script.
 fn head(repo: &Repo) -> String {
     String::from_utf8(git(&repo.work, &["rev-parse", "HEAD"]).stdout)
         .unwrap()
@@ -170,6 +177,8 @@ fn run_with(repo: &Repo, event: &str, sha: &str, gh: &FakeGh, wait: u32) -> (i32
     )
 }
 
+/// An untagged version on main goes ahead for a push and a dry run alike, and stdout holds only
+/// the `version=` line. stdout goes straight into $GITHUB_OUTPUT, so nothing else may land there.
 #[test]
 fn a_fresh_version_on_main_goes_ahead_and_prints_only_the_output_line() {
     let r = repo(Some("1.2.3"));
@@ -177,11 +186,11 @@ fn a_fresh_version_on_main_goes_ahead_and_prints_only_the_output_line() {
     for event in ["push", "pull_request"] {
         let (code, stdout, stderr) = run(&r, event, &sha);
         assert_eq!(code, 0, "{event}: {stderr}");
-        // stdout goes straight into $GITHUB_OUTPUT, so nothing else may be printed there.
         assert_eq!(stdout, "version=1.2.3\n", "{event}");
     }
 }
 
+/// A version that's already tagged on origin stops a push, and a PR's dry run only warns.
 #[test]
 fn an_existing_tag_stops_a_push_but_only_warns_a_dry_run() {
     let r = repo(Some("1.2.3"));
@@ -189,6 +198,7 @@ fn an_existing_tag_stops_a_push_but_only_warns_a_dry_run() {
     git(&r.work, &["tag", "v1.2.3"]);
     git(&r.work, &["push", "-q", "origin", "v1.2.3"]);
 
+    // The push, then the dry run, of the same commit.
     let (code, stdout, stderr) = run(&r, "push", &sha);
     assert_eq!(code, 1, "a push must stop: {stderr}");
     assert!(stderr.contains("already exists"), "{stderr}");
@@ -203,6 +213,7 @@ fn an_existing_tag_stops_a_push_but_only_warns_a_dry_run() {
     assert_eq!(stdout, "version=1.2.3\n");
 }
 
+/// `v1.2.30` is not `v1.2.3`, so a tag that only starts with the version doesn't block it.
 #[test]
 fn a_tag_for_another_version_does_not_count() {
     let r = repo(Some("1.2.3"));
@@ -212,6 +223,8 @@ fn a_tag_for_another_version_does_not_count() {
     assert_eq!(code, 0, "{stderr}");
 }
 
+/// An origin the script can't reach is an error on both events. Reading silence as "no such
+/// tag" would let a release reuse a version.
 #[test]
 fn not_being_able_to_ask_origin_is_an_error_not_a_missing_tag() {
     let r = repo(Some("1.2.3"));
@@ -228,6 +241,7 @@ fn not_being_able_to_ask_origin_is_an_error_not_a_missing_tag() {
     }
 }
 
+/// A push can only release a commit that's on main.
 #[test]
 fn a_push_of_a_commit_that_is_not_on_main_is_refused() {
     let r = repo(Some("1.2.3"));
@@ -246,6 +260,8 @@ fn a_push_of_a_commit_that_is_not_on_main_is_refused() {
     assert_eq!(code, 0, "{stderr}");
 }
 
+/// A commit main has since moved past still counts as on main, so a quick follow-up merge can't
+/// fail the release that's already running.
 #[test]
 fn an_older_main_commit_is_still_on_main() {
     let r = repo(Some("1.2.3"));
@@ -261,6 +277,7 @@ fn an_older_main_commit_is_still_on_main() {
     );
 }
 
+/// A Cargo.toml with no version gives the script nothing to release.
 #[test]
 fn a_manifest_without_a_version_is_an_error() {
     let r = repo(None);
@@ -270,6 +287,8 @@ fn a_manifest_without_a_version_is_an_error() {
     assert!(stdout.is_empty());
 }
 
+/// With every ci.yml run on the commit green, a push goes ahead, and it asked GitHub about that
+/// exact commit.
 #[test]
 fn a_push_goes_ahead_only_when_every_ci_run_on_the_commit_passed() {
     let r = repo(Some("1.2.3"));
@@ -292,6 +311,7 @@ fn a_push_goes_ahead_only_when_every_ci_run_on_the_commit_passed() {
     );
 }
 
+/// One failed run among passing ones stops the push, and the message names it.
 #[test]
 fn a_failed_ci_run_on_the_commit_stops_a_push() {
     let r = repo(Some("1.2.3"));
@@ -306,18 +326,19 @@ fn a_failed_ci_run_on_the_commit_stops_a_push() {
     assert!(stdout.is_empty(), "{stdout:?}");
 }
 
+/// No runs at all is the commit going out untested, not a pass.
 #[test]
 fn a_commit_ci_never_ran_on_is_refused() {
-    // No runs at all is the commit going out untested, not a pass.
     let r = repo(Some("1.2.3"));
     let (code, _, stderr) = run_with(&r, "push", &head(&r), &FakeGh::new(), 0);
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("no CI run"), "{stderr}");
 }
 
+/// A skipped, failed or cancelled job inside a "successful" run is refused. GitHub calls a run a
+/// success when some of its jobs were skipped, so the script reads each job.
 #[test]
 fn a_skipped_or_failed_job_inside_a_passing_run_is_refused() {
-    // GitHub calls a run a success when some of its jobs were skipped, so each job is read.
     let r = repo(Some("1.2.3"));
     for bad in ["skipped", "failure", "cancelled"] {
         let gh = FakeGh::green();
@@ -331,6 +352,7 @@ fn a_skipped_or_failed_job_inside_a_passing_run_is_refused() {
     }
 }
 
+/// A run that lists no jobs proves nothing, so it's refused rather than read as all-green.
 #[test]
 fn a_run_with_no_jobs_listed_is_refused() {
     let r = repo(Some("1.2.3"));
@@ -341,8 +363,10 @@ fn a_run_with_no_jobs_listed_is_refused() {
     assert!(stderr.contains("no jobs"), "{stderr}");
 }
 
+/// A cancelled run on its own is refused, but beside a passing run it doesn't block the push.
 #[test]
 fn cancelled_runs_prove_nothing_but_do_not_block_a_passing_one() {
+    // Only a cancelled run: refused.
     let r = repo(Some("1.2.3"));
     let gh = FakeGh::new();
     gh.set("runs", "101 completed cancelled\n");
@@ -350,12 +374,15 @@ fn cancelled_runs_prove_nothing_but_do_not_block_a_passing_one() {
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("cancelled"), "{stderr}");
 
+    // A cancelled run next to a passing one: fine.
     let gh = FakeGh::green();
     gh.set("runs", "100 completed cancelled\n101 completed success\n");
     let (code, _, stderr) = run_with(&r, "push", &head(&r), &gh, 0);
     assert_eq!(code, 0, "a cancelled run beside a passing one: {stderr}");
 }
 
+/// A run still in progress is polled until it finishes, and one still going when the wait runs
+/// out is a refusal.
 #[test]
 fn a_run_still_going_is_waited_for_and_then_judged() {
     let r = repo(Some("1.2.3"));
@@ -374,6 +401,8 @@ fn a_run_still_going_is_waited_for_and_then_judged() {
     assert!(stderr.contains("still running"), "{stderr}");
 }
 
+/// A `gh` call that fails stops the push. Reading a failed lookup as "nothing failed" would
+/// release untested code.
 #[test]
 fn not_being_able_to_ask_github_is_an_error_not_a_pass() {
     let r = repo(Some("1.2.3"));
@@ -385,9 +414,10 @@ fn not_being_able_to_ask_github_is_an_error_not_a_pass() {
     assert!(stdout.is_empty());
 }
 
+/// A PR's dry run never calls `gh`. Its commit isn't on main and CI may not have finished on it,
+/// so the CI check only applies to a push.
 #[test]
 fn a_dry_run_never_asks_about_ci() {
-    // A PR's commit isn't on main and CI may not have finished on it, so the dry run skips it.
     let r = repo(Some("1.2.3"));
     let gh = FakeGh::new();
     gh.set("fail", "");

@@ -91,6 +91,7 @@ EXTRA_DOCKER_ARGS=()
 # (demo/record.sh) still needs it.
 nas_check_lane "$LANE"
 RUN_NAME="reses-$LANE-$$"
+# The EXIT trap: remove this run's container, clear the lane if it's still mine, let go of the lock.
 finish() {
   dk rm -f "$RUN_NAME" >/dev/null 2>&1 || true
   # Only a run that holds the lane clears it, so one turned away by the lock never wipes the

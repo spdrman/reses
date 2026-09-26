@@ -116,10 +116,12 @@ impl Pager {
         self.top = self.retreat(text, self.top, n);
     }
 
+    /// I jump back to the first row of the first line.
     pub(super) fn home(&mut self) {
         self.top = (0, 0);
     }
 
+    /// I jump to the last screenful, so the final row sits at the bottom rather than the top.
     pub(super) fn end(&mut self, text: &str) {
         self.top = self.max_top(text);
     }

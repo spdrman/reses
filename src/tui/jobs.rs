@@ -136,14 +136,17 @@ pub struct Done {
 pub struct Generation(Arc<AtomicU64>);
 
 impl Generation {
+    /// I start a new generation at zero.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// I move the generation on, which makes every stamp taken so far stale.
     pub fn bump(&self) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// I stamp a job with the generation as it is right now.
     pub fn stamp(&self) -> Stamp {
         Stamp {
             generation: Arc::clone(&self.0),
@@ -160,6 +163,7 @@ pub struct Stamp {
 }
 
 impl Stamp {
+    /// I say whether the generation has moved on since this stamp was taken.
     pub fn is_current(&self) -> bool {
         self.generation.load(Ordering::SeqCst) == self.at
     }
@@ -178,6 +182,8 @@ pub fn execute(store: &dyn Store, job: &Job) -> Result<Outcome, S3Error> {
     })
 }
 
+/// I do the actual work for one job against the store and wrap the result in the matching
+/// `Outcome`. `execute` calls me inside `catch_unwind`.
 fn run_job(store: &dyn Store, job: &Job) -> Result<Outcome, S3Error> {
     match job {
         Job::ListBuckets => store.list_buckets().map(Outcome::Buckets),
@@ -208,6 +214,9 @@ fn run_job(store: &dyn Store, job: &Job) -> Result<Outcome, S3Error> {
     }
 }
 
+/// I peek the header block of `bucket/key`, growing the range fourfold from `FIRST_PEEK` until the
+/// blank line that ends the headers shows up, the object runs out, or I reach `MAX_PEEK`.
+/// Then I decide whether it's email and summarize it, so the UI thread never parses.
 fn peek_head(store: &dyn Store, bucket: &str, key: &str) -> Result<Head, S3Error> {
     let mut bytes = FIRST_PEEK;
     loop {
@@ -360,6 +369,7 @@ impl Jobs {
         }
     }
 
+    /// I queue a job with no generation, so nothing can skip it. Only the tests use this.
     #[cfg(test)]
     pub fn submit(&mut self, store: Arc<dyn Store>, job: Job) -> JobId {
         self.submit_stamped(store, job, None)

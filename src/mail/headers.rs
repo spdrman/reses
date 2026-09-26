@@ -63,6 +63,7 @@ fn mailbox(name: Option<&str>, address: Option<&str>) -> String {
 fn render(address: &Address<'_>) -> String {
     let mut out = Vec::new();
     match address {
+        // A plain list is its mailboxes in order.
         Address::List(list) => {
             out.extend(list.iter().map(|a| mailbox(a.name(), a.address())));
         }
@@ -85,6 +86,7 @@ fn render(address: &Address<'_>) -> String {
             }
         }
     }
+    // A mailbox with neither name nor address prints as nothing, so it goes.
     out.retain(|m| !m.is_empty());
     out.join(", ")
 }
@@ -216,6 +218,7 @@ fn zone(raw: &str) -> Zone {
         }
     }
     text.extend(comment);
+    // The zone is the last word; with no words at all it's unknown.
     let Some(token) = text.split_whitespace().last() else {
         return Zone::Unknown;
     };
@@ -238,6 +241,7 @@ fn zone(raw: &str) -> Zone {
         let sign = if token.starts_with('-') { -1 } else { 1 };
         return Zone::Known(sign * (hours * 60 + minutes));
     }
+    // Anything else is a name, looked up without regard to case.
     named_zone(&token.to_ascii_uppercase()).map_or(Zone::Unknown, Zone::Known)
 }
 
@@ -255,6 +259,7 @@ fn with_seconds(written: &str) -> Option<DateTime> {
                 .enumerate()
                 .all(|(i, c)| i == b.len() - 3 || c.is_ascii_digit())
     })?;
+    // Give that word its seconds and hand the whole value back to mail-parser.
     let mut fixed: Vec<String> = words.iter().map(|w| w.to_string()).collect();
     fixed[at].push_str(":00");
     let text = fixed.join(" ");
@@ -283,6 +288,7 @@ fn parse_date(msg: &Message<'_>, raw: &[u8]) -> (String, Option<(PrimitiveDateTi
         let time = Time::from_hms(d.hour, d.minute, d.second).ok()?;
         Some(PrimitiveDateTime::new(date, time))
     });
+    // An impossible zone sinks the whole date, however good the rest is.
     match (when, zone) {
         (Some(when), z) if z != Zone::Invalid => (written, Some((when, z))),
         _ => (written, None),
@@ -296,6 +302,7 @@ pub(super) fn date_line(msg: &Message<'_>, raw: &[u8]) -> String {
     let Some((when, zone)) = parsed else {
         return written;
     };
+    // The zone as a numeric offset, with RFC 5322's "-0000" standing for unknown.
     let stamp = match zone {
         Zone::Known(m) => {
             let sign = if m < 0 { '-' } else { '+' };
@@ -303,6 +310,7 @@ pub(super) fn date_line(msg: &Message<'_>, raw: &[u8]) -> String {
         }
         _ => "-0000".to_string(),
     };
+    // Then the date in RFC 5322's layout, spelled in English whatever the locale.
     const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

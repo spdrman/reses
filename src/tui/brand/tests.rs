@@ -1,3 +1,11 @@
+//! Tests for the header logo: when a terminal gets the image or the text wordmark, what the
+//! wordmark looks like, and how much room each leaves the screen below.
+//!
+//! I render the app with a probe view that only remembers the area it was handed, so the
+//! tests can measure the header without any real screen in the way. The plan tests build an
+//! `Env` by hand, since reading the real environment would make them depend on the terminal
+//! running the suite.
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -18,20 +26,26 @@ struct Probe {
 }
 
 impl View for Probe {
+    /// I title myself like an inbox, so the header has realistic text next to the logo.
     fn title(&self) -> String {
         "Inbox s3://mail/inbound/".into()
     }
+    /// I draw nothing and remember the area, so a test can see how much room the header left.
     fn render(&mut self, _frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         self.area.set(area);
     }
+    /// I ignore every key.
     fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx) -> Transition {
         Transition::None
     }
+    /// I show a single hint, enough for the status line to have something in it.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         vec![("q", "quit")]
     }
 }
 
+/// I build an app with `brand` in the header and the probe as its only screen, handing
+/// back the cell the probe writes its area into.
 fn app(brand: Brand) -> (App, Rc<Cell<Rect>>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = testing::ctx(dir.path(), None);
@@ -41,12 +55,14 @@ fn app(brand: Brand) -> (App, Rc<Cell<Rect>>, tempfile::TempDir) {
     (app, area, dir)
 }
 
+/// I build an image picker for `protocol` at an 8x16 font, without asking any terminal.
 fn picker(protocol: ProtocolType) -> Picker {
     let mut p = Picker::from_fontsize((8, 16));
     p.set_protocol_type(protocol);
     p
 }
 
+/// I read row `y` of the buffer back as text, one symbol per cell.
 fn row(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
 }
@@ -249,6 +265,7 @@ fn text_header_frame() {
     assert!(scr.lines().next().unwrap().starts_with(" ■ re:SES  Inbox"));
 }
 
+/// I build an `Env` from name and value pairs, leaving every other variable unset.
 fn env(vars: &[(&str, &str)]) -> Env {
     let mut e = Env::default();
     for (k, v) in vars {

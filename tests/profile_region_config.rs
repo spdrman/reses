@@ -1,4 +1,11 @@
 //! Region lookup from the AWS config file, where sections are `[default]` and `[profile NAME]`.
+//!
+//! The account picker shows each profile's region, taking it from ~/.aws/config when the
+//! credentials file doesn't say. The lookup goes through aws-config, so the region shown is
+//! the one the SDK will actually use, and the second half of these tests pins the SDK's rules
+//! (precedence, names it skips, comments) so a change in them shows up here. Each test writes
+//! its own config into a temp dir and passes the path or the environment explicitly, so
+//! nothing depends on the machine running them.
 
 use std::ffi::OsString;
 use std::fs;
@@ -27,6 +34,7 @@ output = text\n\
 [sso-session corp]\n\
 sso_region = us-west-1\n";
 
+/// A temp config file holding CONFIG. The TempDir comes back too, so it lives as long as the test.
 fn config_file() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config");
@@ -34,6 +42,7 @@ fn config_file() -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
+/// AWS_CONFIG_FILE, when set, is the path.
 #[test]
 fn path_honours_aws_config_file_env() {
     let p = config_path_from(
@@ -43,6 +52,7 @@ fn path_honours_aws_config_file_env() {
     assert_eq!(p, PathBuf::from("/x/aws-config"));
 }
 
+/// Unset or empty, it's ~/.aws/config.
 #[test]
 fn path_falls_back_to_home_aws_config() {
     assert_eq!(
@@ -55,6 +65,7 @@ fn path_falls_back_to_home_aws_config() {
     );
 }
 
+/// `default` reads the bare `[default]` section.
 #[test]
 fn default_profile_reads_the_default_section() {
     let (_d, path) = config_file();
@@ -64,6 +75,7 @@ fn default_profile_reads_the_default_section() {
     );
 }
 
+/// Any other profile reads `[profile NAME]`, with stray spaces inside the brackets allowed.
 #[test]
 fn named_profile_reads_the_profile_prefixed_section() {
     let (_d, path) = config_file();
@@ -77,12 +89,15 @@ fn named_profile_reads_the_profile_prefixed_section() {
     );
 }
 
+/// `[plain]` is how the credentials file spells a profile, not the config file, so I skip it.
 #[test]
 fn bare_section_is_not_a_named_profile_in_the_config_file() {
     let (_d, path) = config_file();
     assert_eq!(region_from_config_file(&path, "plain"), None);
 }
 
+/// No region, no section, or a section that isn't a profile at all (sso-session) gives None,
+/// and a commented-out region doesn't count.
 #[test]
 fn profile_without_region_or_missing_profile_is_none() {
     let (_d, path) = config_file();
@@ -91,6 +106,7 @@ fn profile_without_region_or_missing_profile_is_none() {
     assert_eq!(region_from_config_file(&path, "corp"), None);
 }
 
+/// `[profile default]` is another way to spell the default section.
 #[test]
 fn profile_default_spelling_also_works() {
     let dir = tempfile::tempdir().unwrap();
@@ -102,6 +118,7 @@ fn profile_default_spelling_also_works() {
     );
 }
 
+/// No config file is normal and just means no region from it.
 #[test]
 fn missing_config_file_is_none() {
     let dir = tempfile::tempdir().unwrap();
@@ -111,6 +128,7 @@ fn missing_config_file_is_none() {
     );
 }
 
+/// `[profilework]` is not `[profile work]`.
 #[test]
 fn profile_prefix_needs_a_space_before_the_name() {
     let dir = tempfile::tempdir().unwrap();

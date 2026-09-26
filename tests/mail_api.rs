@@ -1,4 +1,11 @@
 //! Behaviour of the mail helpers the inbox uses: summarize, looks_like_email, save_attachments.
+//!
+//! These are the calls the inbox makes on every object it lists or opens, so they get tested
+//! here as public API rather than only through the TUI. I feed them the committed fixtures in
+//! tests/fixtures/mail, prefixes of those (the inbox only fetches the head of each object for
+//! its list), and hand-built messages where a case needs a specific shape. Saving runs in a
+//! temp dir per test, since the promises there (never overwrite, never escape the directory)
+//! are about what ends up on disk.
 
 use std::fs;
 use std::path::Path;
@@ -449,6 +456,7 @@ fn save_reports_what_the_cap_skipped() {
     assert_eq!(report.saved[4].file_name().unwrap(), "f1-1.txt");
 }
 
+/// The Bcc line only names envelope recipients missing from To and Cc, compared without case.
 #[test]
 fn bcc_leaves_out_visible_recipients_whatever_their_case() {
     // Addresses are case-insensitive in practice, so the envelope's alice@example.com is the

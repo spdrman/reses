@@ -1,6 +1,6 @@
 //! Writing attachments to disk without ever overwriting anything.
 //!
-//! Each file is opened with `create_new`, so an existing file, a dangling symlink included, is
+//! I open each file with `create_new`, so an existing file, a dangling symlink included, is
 //! never replaced even if it turns up between two checks. A name that's taken moves on to
 //! "stem-1.ext", "stem-2.ext" and so on. The panel found that a message with 32k parts of one name
 //! took twenty minutes (N18), because every part retried every suffix from 1; now each name
@@ -96,6 +96,7 @@ fn write_one(dir: &Path, name: &str, data: &[u8], next: &mut usize) -> io::Resul
     loop {
         #[cfg(test)]
         OPEN_ATTEMPTS.with(|n| n.set(n.get() + 1));
+        // Suffix 0 is the name as it came; after that it's "stem-N.ext".
         let candidate = if *next == 0 {
             name.to_string()
         } else {
@@ -103,6 +104,7 @@ fn write_one(dir: &Path, name: &str, data: &[u8], next: &mut usize) -> io::Resul
         };
         *next += 1;
         let target = dir.join(candidate);
+        // A taken name means try the next suffix; any other error ends this file.
         match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -127,12 +129,14 @@ fn write_one(dir: &Path, name: &str, data: &[u8], next: &mut usize) -> io::Resul
 /// them. One that can't be written is skipped so the rest still land; the error only comes back
 /// if nothing could be written.
 pub(super) fn save_all(dir: &Path, items: Vec<(String, Vec<u8>)>) -> io::Result<SaveReport> {
+    // Anything past the cap is counted up front and never written.
     let mut report = SaveReport {
         skipped: items.len().saturating_sub(SaveReport::MAX),
         ..SaveReport::default()
     };
     let mut next: HashMap<String, usize> = HashMap::new();
     let mut first_error = None;
+    // Each safe name keeps its own suffix counter, so repeats carry on where the last one stopped.
     for (name, data) in items.into_iter().take(SaveReport::MAX) {
         let name = safe_file_name(&name);
         let counter = next.entry(name.clone()).or_insert(0);
@@ -144,6 +148,7 @@ pub(super) fn save_all(dir: &Path, items: Vec<(String, Vec<u8>)>) -> io::Result<
             }
         }
     }
+    // A failure only becomes the answer when nothing at all got written.
     match first_error {
         Some(e) if report.saved.is_empty() => Err(e),
         _ => Ok(report),

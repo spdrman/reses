@@ -203,6 +203,7 @@ fn minio(fake: &Arc<Fake>) -> S3Client {
 
 // Addressing
 
+/// On AWS the bucket goes in the host name, and the request is signed for the client's region.
 #[test]
 fn virtual_hosted_style_by_default() {
     let fake = Fake::new(vec![ok(200, b"hello")]);
@@ -216,6 +217,7 @@ fn virtual_hosted_style_by_default() {
     assert_eq!(req.scope_region(), "eu-west-1");
 }
 
+/// With a custom endpoint and path style, the bucket goes in the path instead.
 #[test]
 fn path_style_with_a_custom_endpoint() {
     let fake = Fake::new(vec![ok(200, b"hello")]);
@@ -231,6 +233,7 @@ fn path_style_with_a_custom_endpoint() {
 
 // Ranged reads
 
+/// A ranged read asks for exactly those bytes, inclusive at both ends.
 #[test]
 fn get_range_sends_a_range_header() {
     let fake = Fake::new(vec![with_headers(
@@ -242,6 +245,7 @@ fn get_range_sends_a_range_header() {
     assert_eq!(fake.sent()[0].header("range"), Some("bytes=5-9"));
 }
 
+/// A 416 means the range starts past the end, which for me is just an empty read.
 #[test]
 fn get_range_past_the_end_is_empty_not_an_error() {
     let fake = Fake::new(vec![with_headers(
@@ -252,6 +256,7 @@ fn get_range_past_the_end_is_empty_not_an_error() {
     assert_eq!(minio(&fake).get_range("mail", "k", 100, 200).unwrap(), b"");
 }
 
+/// An empty range doesn't cost a request.
 #[test]
 fn get_range_with_end_before_start_is_empty_without_a_request() {
     let fake = Fake::new(vec![]);
@@ -259,6 +264,7 @@ fn get_range_with_end_before_start_is_empty_without_a_request() {
     assert!(fake.sent().is_empty());
 }
 
+/// A server that sends the whole object still gives the caller only the range asked for.
 #[test]
 fn get_range_clamps_when_the_server_ignores_the_range() {
     // A 200 with no Content-Range is the whole object; I cut the range out of it.
@@ -273,6 +279,7 @@ fn get_range_clamps_when_the_server_ignores_the_range() {
     assert_eq!(c.get_range("mail", "k", 10, 20).unwrap(), b"");
 }
 
+/// A 206 carrying more than was asked for gets cut down to the range.
 #[test]
 fn get_range_trims_an_oversized_partial_answer() {
     let fake = Fake::new(vec![with_headers(
@@ -283,6 +290,7 @@ fn get_range_trims_an_oversized_partial_answer() {
     assert_eq!(minio(&fake).get_range("mail", "k", 0, 3).unwrap(), b"0123");
 }
 
+/// A 206 that keeps going gets read only to the range plus slack.
 #[test]
 fn get_range_stops_reading_a_partial_answer_past_its_slack() {
     // A server that answers a 4-byte range with far more than that: I stop reading once past
@@ -296,6 +304,7 @@ fn get_range_stops_reading_a_partial_answer_past_its_slack() {
     assert_eq!(minio(&fake).get_range("mail", "k", 0, 3).unwrap(), b"xxxx");
 }
 
+/// A 200 that streams the whole object gets read only up to the end of the range.
 #[test]
 fn get_range_on_a_200_stops_reading_once_it_has_the_range() {
     // A server that ignores Range and streams the whole object: I only need bytes up to `end`.
@@ -310,6 +319,7 @@ fn get_range_on_a_200_stops_reading_once_it_has_the_range() {
     );
 }
 
+/// A body that breaks before I have what I need is a transport error.
 #[test]
 fn a_body_that_breaks_before_the_limit_is_a_transport_error() {
     // The positive control for the two tests above: when the break comes before I have
@@ -323,6 +333,7 @@ fn a_body_that_breaks_before_the_limit_is_a_transport_error() {
 
 // The size cap on a whole get
 
+/// A whole get returns the body and sends no Range header.
 #[test]
 fn get_returns_the_body() {
     let fake = Fake::new(vec![ok(200, b"From: a@example.com\r\n\r\nhi")]);
@@ -333,6 +344,7 @@ fn get_returns_the_body() {
     assert_eq!(fake.sent()[0].header("range"), None);
 }
 
+/// A Content-Length over MAX_GET_BYTES is refused as TooLarge before any body is read.
 #[test]
 fn get_of_an_object_over_the_cap_is_too_large() {
     let fake = Fake::new(vec![with_headers(
@@ -349,6 +361,7 @@ fn get_of_an_object_over_the_cap_is_too_large() {
     );
 }
 
+/// A body with no length that runs past the cap is cut off at the cap and refused.
 #[test]
 fn get_stops_reading_a_body_that_runs_past_the_cap() {
     // No trustworthy length up front: the body itself runs over, and I stop at the cap.
@@ -360,6 +373,7 @@ fn get_stops_reading_a_body_that_runs_past_the_cap() {
     }
 }
 
+/// The TooLarge message gives the object's size and the limit, so the user sees by how much.
 #[test]
 fn the_too_large_message_names_both_sizes() {
     let text = S3Error::TooLarge {
@@ -373,6 +387,7 @@ fn the_too_large_message_names_both_sizes() {
 
 // Empty keys
 
+/// An empty key would address the bucket itself, so every call refuses it up front.
 #[test]
 fn empty_keys_are_refused_without_a_request() {
     let fake = Fake::new(vec![]);
@@ -392,6 +407,7 @@ fn empty_keys_are_refused_without_a_request() {
 
 // Listings
 
+/// ListBuckets parses every bucket and its creation date, signed for the client's region.
 #[test]
 fn list_buckets_reads_every_bucket() {
     let fake = Fake::new(vec![ok(200, &fixture("list_buckets.xml"))]);
@@ -404,6 +420,7 @@ fn list_buckets_reads_every_bucket() {
     assert_eq!(fake.sent()[0].scope_region(), "ap-southeast-2");
 }
 
+/// A listing is a ListObjectsV2 call with every parameter encoded, and asks for url-encoded keys.
 #[test]
 fn list_sends_a_list_objects_v2_query() {
     let fake = Fake::new(vec![ok(200, &fixture("list_objects_v2_folders.xml"))]);
@@ -424,6 +441,7 @@ fn list_sends_a_list_objects_v2_query() {
     }
 }
 
+/// Folders, sizes, dates and the next token all come through, and url-encoded keys get decoded.
 #[test]
 fn list_decodes_keys_when_the_response_is_url_encoded() {
     let fake = Fake::new(vec![ok(200, &fixture("list_objects_v2_folders.xml"))]);
@@ -443,6 +461,7 @@ fn list_decodes_keys_when_the_response_is_url_encoded() {
     );
 }
 
+/// A server that ignored encoding-type sends raw keys, and I don't decode those a second time.
 #[test]
 fn list_leaves_keys_alone_when_the_server_ignored_encoding_type() {
     let body = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>a+b%41</Key><Size>1</Size></Contents></ListBucketResult>"#;
@@ -451,6 +470,7 @@ fn list_leaves_keys_alone_when_the_server_ignored_encoding_type() {
     assert_eq!(l.objects[0].key, "a+b%41");
 }
 
+/// Control characters in a key come through as they are, since escaping them is display work.
 #[test]
 fn keys_with_control_characters_come_up_raw() {
     // An escape sequence in a key is data. It reaches the screens as is, and they escape it.
@@ -460,6 +480,7 @@ fn keys_with_control_characters_come_up_raw() {
     assert_eq!(l.objects[0].key, "inbox/\u{1b}[31mred");
 }
 
+/// The last page ends the listing even if the server sent a token with it.
 #[test]
 fn a_page_that_says_it_is_not_truncated_has_no_next_token() {
     // Panel item N23: a stray NextContinuationToken on the last page must not keep paging.
@@ -469,6 +490,7 @@ fn a_page_that_says_it_is_not_truncated_has_no_next_token() {
     assert_eq!(l.next_token, None);
 }
 
+/// A truncated page passes its token on, so paging carries on.
 #[test]
 fn a_truncated_page_keeps_its_token() {
     let body = br#"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>more</NextContinuationToken><Contents><Key>a</Key><Size>1</Size></Contents></ListBucketResult>"#;
@@ -479,6 +501,7 @@ fn a_truncated_page_keeps_its_token() {
 
 // Errors
 
+/// An S3 error document becomes a Service error with its status, code and message.
 #[test]
 fn error_documents_become_service_errors() {
     let fake = Fake::new(vec![ok(
@@ -497,6 +520,7 @@ fn error_documents_become_service_errors() {
     assert!(err.is_not_found());
 }
 
+/// Delete is a DELETE on the object's own path.
 #[test]
 fn delete_sends_delete() {
     let fake = Fake::new(vec![ok(204, b"")]);
@@ -510,6 +534,7 @@ fn delete_sends_delete() {
     );
 }
 
+/// Nothing listening is a transport error, not a service error.
 #[test]
 fn an_unreachable_endpoint_is_a_transport_error() {
     let c = S3Client::new(creds(None), "us-east-1").with_endpoint("http://127.0.0.1:9", true);
@@ -518,6 +543,7 @@ fn an_unreachable_endpoint_is_a_transport_error() {
 
 // Secrets
 
+/// A client's Debug shows its region but never the secret or the token.
 #[test]
 fn secrets_never_reach_debug_output() {
     let c = S3Client::new(creds(Some(TOKEN)), "us-east-1");
@@ -527,6 +553,8 @@ fn secrets_never_reach_debug_output() {
     assert!(dbg.contains("us-east-1"), "{dbg}");
 }
 
+/// A server that echoes the secret or token back (raw, or url-encoded in either case of hex)
+/// doesn't get it into the error's message or Debug.
 #[test]
 fn secrets_are_scrubbed_from_errors() {
     // A server that echoes a secret back, raw or url-encoded, must not get it shown.
@@ -575,6 +603,7 @@ fn secrets_are_scrubbed_from_errors() {
     }
 }
 
+/// A session token is sent as x-amz-security-token and covered by the signature.
 #[test]
 fn a_session_token_goes_out_as_a_signed_header() {
     let fake = Fake::new(vec![ok(200, b"x")]);
@@ -593,6 +622,8 @@ fn a_session_token_goes_out_as_a_signed_header() {
 
 // Cross-region buckets
 
+/// A redirect naming the bucket's region gets the call retried there, and the client remembers
+/// that region for the bucket from then on.
 #[test]
 fn a_301_with_a_region_header_moves_the_bucket_to_that_region() {
     let fake = Fake::new(vec![
@@ -622,6 +653,7 @@ fn a_301_with_a_region_header_moves_the_bucket_to_that_region() {
     assert_eq!(sent[3].scope_region(), "us-east-1");
 }
 
+/// A wrong-region error that doesn't name the region sends me to HeadBucket to find it.
 #[test]
 fn a_redirect_without_a_region_header_asks_head_bucket() {
     let fake = Fake::new(vec![
@@ -640,6 +672,7 @@ fn a_redirect_without_a_region_header_asks_head_bucket() {
     assert_eq!(sent[2].scope_region(), "ap-northeast-1");
 }
 
+/// The region I learn is visible through the Store trait object the TUI holds.
 #[test]
 fn a_learned_region_is_visible_through_dyn_store() {
     let fake = Fake::new(vec![
@@ -656,6 +689,8 @@ fn a_learned_region_is_visible_through_dyn_store() {
     assert_eq!(store.bucket_region("other"), None);
 }
 
+/// A region header that isn't a region name is never put into a host, so the redirect is
+/// just an error.
 #[test]
 fn a_bad_region_hint_is_ignored() {
     let fake = Fake::new(vec![
@@ -671,6 +706,7 @@ fn a_bad_region_hint_is_ignored() {
     assert!(fake.sent().iter().all(|r| !r.uri.contains("attacker")));
 }
 
+/// Only a wrong-region 400 counts as a redirect. Any other 400 is returned without a retry.
 #[test]
 fn other_400s_are_not_redirects() {
     let fake = Fake::new(vec![with_headers(
@@ -696,6 +732,7 @@ fn write(dir: &Path, name: &str, text: &str) -> std::path::PathBuf {
     path
 }
 
+/// A profile's keys, token and region from the files are what the request is signed with.
 #[test]
 fn a_profile_with_static_keys_and_a_token_signs_with_them() {
     let dir = tempfile::tempdir().unwrap();
@@ -727,6 +764,8 @@ fn a_profile_with_static_keys_and_a_token_signs_with_them() {
     assert_eq!(req.scope_region(), "eu-central-1");
 }
 
+/// A valid hint wins over the profile's region, a bad one is ignored, and with neither I end
+/// up in us-east-1.
 #[test]
 fn a_region_hint_beats_the_profile_and_a_bad_one_falls_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -751,6 +790,7 @@ fn a_region_hint_beats_the_profile_and_a_bad_one_falls_back() {
     );
 }
 
+/// A profile whose keys come from credential_process runs the process and signs with its output.
 #[test]
 fn credential_process_supplies_the_keys() {
     let dir = tempfile::tempdir().unwrap();
@@ -786,6 +826,7 @@ fn credential_process_supplies_the_keys() {
     assert_eq!(req.header("x-amz-security-token"), Some("process-token"));
 }
 
+/// A missing profile fails without a request, names itself, and leaks nothing from the others.
 #[test]
 fn a_missing_profile_is_an_error_that_names_it_and_hides_other_secrets() {
     let dir = tempfile::tempdir().unwrap();
@@ -806,6 +847,7 @@ fn a_missing_profile_is_an_error_that_names_it_and_hides_other_secrets() {
     assert!(fake.sent().is_empty());
 }
 
+/// A client built from profile files names its profile in Debug but shows no secret.
 #[test]
 fn a_profile_client_hides_its_secrets_from_debug() {
     let dir = tempfile::tempdir().unwrap();
@@ -823,6 +865,7 @@ fn a_profile_client_hides_its_secrets_from_debug() {
     assert!(!dbg.contains(SECRET) && !dbg.contains(TOKEN), "{dbg}");
 }
 
+/// A range that starts beyond the cap, on a server that sends everything, is TooLarge.
 #[test]
 fn a_range_past_the_cap_on_a_server_that_ignores_range_is_too_large() {
     // The server streams the whole object and the range starts beyond what I'll read of it,

@@ -635,6 +635,7 @@ impl Store for S3Client {
         if end < start {
             return Ok(Vec::new());
         }
+        // How much each kind of answer may send before I stop reading it.
         let wanted = end - start + 1;
         let partial_limit = wanted.saturating_add(RANGE_SLACK);
         let whole_limit = end.saturating_add(1).min(MAX_GET_BYTES);
@@ -690,6 +691,7 @@ impl Store for S3Client {
             let out = self
                 .call(bucket, |c| c.get_object().bucket(bucket).key(key).send())
                 .await?;
+            // Refuse before reading when the server already says it's too big.
             let size = out.content_length().and_then(|n| u64::try_from(n).ok());
             if size.is_some_and(|n| n > MAX_GET_BYTES) {
                 return Err(S3Error::TooLarge {
@@ -697,6 +699,7 @@ impl Store for S3Client {
                     limit: MAX_GET_BYTES,
                 });
             }
+            // Otherwise read up to the cap, in case the length was missing or wrong.
             let (data, cut_short) = read_body(out.body, MAX_GET_BYTES).await?;
             if cut_short {
                 return Err(S3Error::TooLarge {

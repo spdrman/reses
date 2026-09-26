@@ -27,10 +27,12 @@ use crate::s3::{MemoryStore, Store};
 struct Capture(Arc<Mutex<Vec<u8>>>);
 
 impl Write for Capture {
+    /// I keep every byte the backend writes.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
+    /// I have nothing buffered, so flushing is a no-op.
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
@@ -51,6 +53,7 @@ fn bytes(app: &mut App, width: u16, height: u16) -> Vec<u8> {
     out.0.lock().unwrap().clone()
 }
 
+/// I say whether `needle` appears anywhere in `haystack`.
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
@@ -59,6 +62,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// screen the test draws (CSI 99;1H): what a hostile object name can carry.
 const HOSTILE: &str = "mail/\u{1b}]52;c;UEFXTkVE\u{7}\u{1b}[99;1Hx.eml";
 
+/// I build a store holding one message whose key is the hostile escape sequence.
 fn hostile_store() -> Arc<Timed> {
     let s = Timed::new();
     s.put(
@@ -73,6 +77,7 @@ fn hostile_store() -> Arc<Timed> {
     s
 }
 
+/// I open an inbox on `store` with a fixed clock, settled and ready to drive.
 fn inbox_app(store: Arc<dyn Store>) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let ctx = testing::ctx(dir.path(), Some(store));
@@ -84,6 +89,7 @@ fn inbox_app(store: Arc<dyn Store>) -> (App, tempfile::TempDir) {
     (app, dir)
 }
 
+/// I build a key press carrying `modifiers`, for the chord tests.
 fn with_mods(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     KeyEvent {
         code,
@@ -387,6 +393,8 @@ fn is_fragile(c: Color) -> bool {
     )
 }
 
+/// I draw `app` and fail, naming `what`, if any cell uses a colour that disappears on
+/// some common theme.
 fn assert_no_fragile_colours(app: &mut App, what: &str) {
     let buf = buffer(app, 100, 20);
     for (x, y, fg, bg) in colours(&buf) {

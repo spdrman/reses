@@ -8,14 +8,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// The repo root, which every path in these tests hangs off.
 fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The known-good snapshots, which each breakage test edits one thing in.
 fn good() -> String {
     fs::read_to_string(root().join("tests/fixtures/demo/good.txt")).unwrap()
 }
 
+/// The demo's real message list, the same one seed.sh uploads.
 fn messages() -> String {
     fs::read_to_string(root().join("demo/messages.tsv")).unwrap()
 }
@@ -50,6 +53,7 @@ fn check(frames: &Path, messages: &Path) -> (i32, String) {
     (out.status.code().unwrap_or(-1), text)
 }
 
+/// Run the check on snapshots and a message list held in memory, by writing both to scratch files.
 fn check_text(frames: &str, messages: &str) -> (i32, String) {
     check(
         &scratch("frames.txt", frames),
@@ -57,6 +61,8 @@ fn check_text(frames: &str, messages: &str) -> (i32, String) {
     )
 }
 
+/// The check exits 1 and its output names `reason`. A failure for some other reason would let a
+/// broken check pass these tests, so the reason matters as much as the exit code.
 fn assert_fails(frames: &str, messages: &str, reason: &str) {
     let (code, out) = check_text(frames, messages);
     assert_eq!(code, 1, "expected a failure naming {reason:?}:\n{out}");
@@ -66,6 +72,7 @@ fn assert_fails(frames: &str, messages: &str, reason: &str) {
     );
 }
 
+/// The positive control: the good fixture passes, with every snapshot and inbox row counted.
 #[test]
 fn the_known_good_snapshots_pass() {
     let (code, out) = check(
@@ -79,6 +86,7 @@ fn the_known_good_snapshots_pass() {
     );
 }
 
+/// The bad fixture, a real broken recording, fails on both of the things wrong with it.
 #[test]
 fn the_known_bad_snapshots_fail() {
     let (code, out) = check(
@@ -95,6 +103,7 @@ fn the_known_bad_snapshots_fail() {
     assert!(out.contains("Could not fetch"), "{out}");
 }
 
+/// An inbox row whose subject never loaded fails the inbox check.
 #[test]
 fn a_missing_subject_fails() {
     let frames = good().replace("Photos from the workshop", "                        ");
@@ -105,6 +114,7 @@ fn a_missing_subject_fails() {
     );
 }
 
+/// An inbox row with a blank size cell fails the inbox check too.
 #[test]
 fn a_missing_size_fails() {
     let frames = good().replace("Sep 23      979 B", "Sep 23           ");
@@ -115,9 +125,10 @@ fn a_missing_size_fails() {
     );
 }
 
+/// A message in the list that never reached the screen fails. seed.sh and the check read the
+/// same list, so a message added there must show up here.
 #[test]
 fn a_seeded_message_missing_from_the_screen_fails() {
-    // seed.sh and the check read the same list, so a message added there must show up here.
     let messages = format!(
         "{}{}\n",
         messages(),
@@ -130,6 +141,7 @@ fn a_seeded_message_missing_from_the_screen_fails() {
     );
 }
 
+/// Each kind of error the app can print is caught, in any case, wherever it lands on screen.
 #[test]
 fn error_text_is_caught_whatever_its_case() {
     for phrase in [
@@ -144,6 +156,7 @@ fn error_text_is_caught_whatever_its_case() {
     }
 }
 
+/// A recording cut short, so its last snapshot is an open message, fails.
 #[test]
 fn ending_anywhere_but_the_inbox_fails() {
     let good = good();
@@ -172,6 +185,7 @@ fn ending_anywhere_but_the_inbox_fails() {
     );
 }
 
+/// A missing snapshot file fails, and so does a message list with nothing but comments in it.
 #[test]
 fn missing_inputs_fail() {
     let messages = scratch("messages.tsv", &messages());
@@ -182,6 +196,7 @@ fn missing_inputs_fail() {
     assert!(out.contains("no messages"), "{out}");
 }
 
+/// A header without the re:SES logo fails, on whichever screen it went missing.
 #[test]
 fn a_header_without_the_logo_fails() {
     // The header as it was before the logo: " reses  Accounts".

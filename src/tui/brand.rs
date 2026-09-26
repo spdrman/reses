@@ -54,6 +54,7 @@ pub enum Variant {
 }
 
 impl Variant {
+    /// I pick the PNG whose text contrasts with the background: light text on dark, dark on light.
     fn for_background(bg: Background) -> Self {
         match bg {
             Background::Dark => Variant::LightText,
@@ -61,6 +62,7 @@ impl Variant {
         }
     }
 
+    /// I hand back the embedded PNG bytes for this variant.
     fn png(self) -> &'static [u8] {
         match self {
             Variant::DarkText => HEADER_PNG,
@@ -94,6 +96,7 @@ pub struct Env {
 }
 
 impl Env {
+    /// I read the variables the plan looks at from this process's environment.
     pub fn from_process() -> Self {
         let var = |name: &str| std::env::var(name).ok();
         Self {
@@ -243,6 +246,9 @@ impl Brand {
     }
 }
 
+/// I work out how many cells wide the logo is once it's scaled to `IMAGE_ROWS` rows of this
+/// font size, keeping its aspect ratio. A zero font size counts as one pixel so I never divide
+/// by zero.
 fn columns_for(logo: &DynamicImage, (font_w, font_h): (u16, u16)) -> u16 {
     let font_w = u32::from(font_w.max(1));
     let px_high = u32::from(IMAGE_ROWS) * u32::from(font_h.max(1));

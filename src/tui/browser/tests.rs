@@ -1,3 +1,11 @@
+//! Tests for the bucket browser: walking buckets and folders, marking which objects are email,
+//! the filter, search, saving the inbox, and the guards against runaway paging.
+//!
+//! I drive a real `BrowserScreen` through `App` against a spy store that wraps a
+//! `MemoryStore`, logs every call, and can be told to fail listings, loop them forever, or hold
+//! peeks. The call log is what lets a test say how much work a key press caused, not only what
+//! ended up on screen.
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -45,6 +53,7 @@ struct Spy {
 }
 
 impl Spy {
+    /// I wrap `inner` with empty call logs, listings that behave, and peeks that don't wait.
     fn new(inner: MemoryStore) -> Arc<Self> {
         Arc::new(Self {
             inner,
@@ -58,10 +67,12 @@ impl Spy {
         })
     }
 
+    /// I count the peeks that have reached the store so far.
     fn peek_count(&self) -> usize {
         self.peeks.lock().unwrap().len()
     }
 
+    /// I count the peeks per key, to catch an object being peeked twice.
     fn peeks_per_key(&self) -> HashMap<String, usize> {
         let mut m = HashMap::new();
         for (k, _, _) in self.peeks.lock().unwrap().iter() {
@@ -72,9 +83,12 @@ impl Spy {
 }
 
 impl Store for Spy {
+    /// I pass this straight through to the wrapped store.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         self.inner.list_buckets()
     }
+    /// I log the listing, then fail it, loop it forever (for the "loop" bucket), or pass it
+    /// through, depending on how the test set me up.
     fn list(
         &self,
         bucket: &str,
@@ -112,6 +126,7 @@ impl Store for Spy {
         }
         self.inner.list(bucket, prefix, delimiter, token)
     }
+    /// I log the peek and hold it while `hold` is set, then read through the wrapped store.
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
         self.peeks
             .lock()
@@ -124,12 +139,15 @@ impl Store for Spy {
         drop(held);
         self.inner.get_range(bucket, key, start, end)
     }
+    /// I pass this straight through to the wrapped store.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         self.inner.get(bucket, key)
     }
+    /// I pass this straight through to the wrapped store.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         self.inner.delete(bucket, key)
     }
+    /// I answer with whatever region the test says the client has learned.
     fn bucket_region(&self, bucket: &str) -> Option<String> {
         let _ = bucket;
         self.learned_region.lock().unwrap().clone()
@@ -154,6 +172,7 @@ fn mail_store() -> MemoryStore {
     s
 }
 
+/// I open a browser on `spy`, settled at the bucket list.
 fn app_on(dir: &Path, spy: &Arc<Spy>) -> App {
     let ctx = testing::ctx(dir, Some(Arc::clone(spy) as Arc<dyn Store>));
     let mut app = App::with_view(ctx, Box::new(BrowserScreen::new()));
@@ -161,6 +180,7 @@ fn app_on(dir: &Path, spy: &Arc<Spy>) -> App {
     app
 }
 
+/// I press a key and let the jobs it started settle.
 fn press(app: &mut App, code: KeyCode) {
     app.key(key(code));
     settle(app);
@@ -188,12 +208,14 @@ fn selected_row(s: &str) -> String {
         .to_string()
 }
 
+/// I find the first screen line holding `needle`, and fail with the whole screen if none does.
 fn line_with<'a>(text: &'a str, needle: &str) -> &'a str {
     text.lines()
         .find(|l| l.contains(needle))
         .unwrap_or_else(|| panic!("no line with {needle:?} in:\n{text}"))
 }
 
+/// I return the error on the status line, and fail if there isn't one.
 fn status_error(app: &App) -> String {
     match &app.ctx.status {
         Some(Status::Error(m)) => m.clone(),
@@ -662,6 +684,8 @@ fn i_on_the_bucket_list_is_refused() {
 
 // ---- runaway paging ----
 
+/// I open a browser with a lowered page cap and switch the "loop" bucket into `mode`, so a
+/// test can watch the paging guard stop a listing.
 fn loop_app(dir: &Path, spy: &Arc<Spy>, mode: usize, max_pages: usize) -> App {
     spy.inner.create_bucket("loop");
     let ctx = testing::ctx(dir, Some(Arc::clone(spy) as Arc<dyn Store>));
@@ -672,6 +696,7 @@ fn loop_app(dir: &Path, spy: &Arc<Spy>, mode: usize, max_pages: usize) -> App {
     app
 }
 
+/// I count the listings made with `delimiter`, which tells folder listings from search ones.
 fn loop_lists(spy: &Spy, delimiter: Option<&str>) -> usize {
     spy.lists
         .lock()
@@ -808,6 +833,7 @@ fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
 
 // ---- the browser's own session and generations ----
 
+/// I build a session for a fake profile called `name` that talks to `store`.
 fn session_on(name: &str, store: Arc<dyn Store>) -> Session {
     Session {
         profile: Profile {
@@ -892,6 +918,7 @@ fn pump_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> bool)
     }
 }
 
+/// I let every held peek go.
 fn release(spy: &Spy) {
     *spy.hold.lock().unwrap() = false;
     spy.released.notify_all();
@@ -954,6 +981,7 @@ fn stopping_a_search_drops_its_queued_peeks() {
     assert!(screen(&mut app, 100, 20).contains("stopped"));
 }
 
+/// I press a key on an app with a real pool and pump once, without waiting for it to settle.
 fn press_pooled(app: &mut App, code: KeyCode) {
     app.key(key(code));
     app.pump();

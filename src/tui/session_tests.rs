@@ -1,7 +1,7 @@
-//! Unit tests for `Session::connect` by profile name, kept inside the crate because `Session` is
-//! crate-private. It must build a session without touching the network, and
-//! pick the region from the hint first. These run with no AWS files around (the container has
-//! no ~/.aws), so the fallback region is us-east-1.
+//! Unit tests for `Session::connect` by profile name. I keep them inside the crate because
+//! `Session` is crate-private. Connecting has to build a session without touching the network
+//! and has to take the region from the hint first. These run with no AWS files around (the
+//! container has no ~/.aws), so the fallback region is us-east-1.
 
 use super::*;
 

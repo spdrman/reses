@@ -14,6 +14,8 @@
 # through runs nothing at all.
 set -eu
 
+# Every step of the install, in order. Each check stops the script with a message, and nothing
+# reaches apt until every check before it has passed.
 main() {
   repo=spdrman/reses
   releases="https://github.com/$repo/releases"
@@ -78,6 +80,7 @@ main() {
   say "installed $(reses --version 2>/dev/null || echo "reses $version"). Run reses to open the inbox."
 }
 
+# Progress and errors both go to stderr, prefixed so they stand out from apt's own output.
 say() { printf 'reses installer: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
