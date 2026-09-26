@@ -47,3 +47,6 @@ CLAUDE.md
 
 # PR-body drafts written inside a worktree, so `git add` can't sweep them into a commit.
 .pr-*.md
+
+# Scratch space demo/record.sh builds each run and removes afterwards.
+/demo/.work/
