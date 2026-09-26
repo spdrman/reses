@@ -1,0 +1,17 @@
+From: only-html@example.com
+To: you@example.org
+Subject: HTML alternative only, with --html off
+Date: Tue, 13 Oct 2026 16:45:00 -0930
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/html; charset=utf-8
+
+<div>Only <i>HTML</i> here<br>second line</div><p>&quot;quoted&quot;&#8212;dash</p>
+--b1
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: attachment; filename=readme.txt
+
+Attached text, not the body.
+--b1--

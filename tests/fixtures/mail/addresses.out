@@ -1,0 +1,11 @@
+From: "Doe, John (Sales)" <john.doe@example.com>
+Reply-To: undisclosed-recipients:;
+To: Team: a@example.org, B Person <b@example.org>;, c@example.org
+Cc: "weird\"quote" <weird@example.org>, bare@example.org, "not an address", <>, "x y"@example.org
+Bcc: 
+Date: Mon, 12 Oct 2026 00:00:00 +0000
+Subject: Subject with   internal   spacing
+Message-ID: <spaced-id@example.com>
+Message:
+
+Odd addresses.
