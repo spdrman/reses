@@ -1,5 +1,5 @@
 # Every target runs through Docker. See CONTRIBUTING.md.
-.PHONY: ci gate integration darwin install
+.PHONY: ci gate integration darwin install demo
 
 ci: gate integration darwin
 	@echo ""
@@ -32,3 +32,8 @@ install: darwin
 	else \
 		mkdir -p "$$HOME/.local/bin" && ln -s "$$want" "$$link" && echo "linked $$link -> $$want"; \
 	fi
+
+# Regenerate docs/demo.gif from demo/demo.tape against a throwaway, seeded MinIO. The recording's
+# text frames are checked before the GIF is replaced. See demo/record.sh.
+demo:
+	demo/record.sh

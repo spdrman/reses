@@ -1,0 +1,140 @@
+ reses  Accounts
+ AWS profiles in /home/demo/.aws/credentials
+
+> default       us-east-1  resesadmin
+  mail-archive  eu-west-1  resesadmin
+
+ enter  connect   a  add   d  make default   r  reload   q  quit
+────────────────────────────────────────────────────────────────────────────────
+ reses  Browse S3  default (us-east-1)
+ All buckets
+ 3 buckets
+  backups-2026
+> mail-inbound
+  site-assets
+
+ enter  open   /  filter   r  reload   esc  back
+────────────────────────────────────────────────────────────────────────────────
+ reses  Browse S3  default (us-east-1)
+ mail-inbound/inbound/
+ 0 folders · 12 objects · 10 emails
+> 0e2g4i6k8m0o2q4s6u8w0y2a4c6e8g0i2k4m6o8q      990 B  email
+  1a3c5e7g9i2k4m6o8q0s2u4w6y8b1d3f5h7j9l0n      979 B  email
+  2p4r6t8v0x2z4b6d8f0h2j4l6n8p0r2t4v6x8z0b      933 B  email
+  3k8vq2m1n7c0b5x9w4z6h2j8l1p0r3t5u7y9a2d4    1.0 KiB  email
+  4b6d8f0h2j4l6n8p0r2t4v6x8z1a3c5e7g9i2k4m    1.0 KiB  email
+  5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o    1.7 KiB  email
+  6m4k2i0g8e6c4a2y0w8u6s4q2o0m8k6i4g2e0c8a    1.0 KiB  email
+  7d2f9h4k6m8p1r3t5v7x9z0b2c4e6g8i1j3l5n7q      984 B  email
+  8q6o4m2k0i8g6e4c2a0y8w6u4s2q0o8m6k4i2g0e      987 B  email
+  9z7x5v3t1r8p6n4l2j0h9f7d5b3a1c2e4g6i8k0m      993 B  email
+  export-2026-09.csv                             32 B
+  receipt-rule.json                              38 B
+
+ enter  open   bksp  up   /  filter   s  search   i  inbox   esc  up
+────────────────────────────────────────────────────────────────────────────────
+ reses  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
+ From                  Subject                                                             Date       Size
+ Sam Ortiz             Welcome aboard! Notes for your first week                          04:45      990 B
+ Mei Chen              Draft agenda for Thursday's planning call                          02:10    1.7 KiB
+ Priya Raman           Invoice 4471 for September is ready                                           987 B
+ Build Bot             Build 812 passed on main                                          Sep 25      933 B
+ Tomasz Nowak          Re: Saturday hike, trail options                                  Sep 24    1.0 KiB
+ Security Alerts       New sign-in from Firefox on Linux                                 Sep 24    1.0 KiB
+ Harbour Coffee        Your receipt from Harbour Coffee                                  Sep 24      993 B
+ Olu Adeyemi           Photos from the workshop                                          Sep 23      979 B
+ Dana Whitfield        Lease renewal for unit 4B                                         Sep 22      984 B
+ The Weekly Tinkerer   Issue 118: a soldering station roundup                            Sep 21    1.0 KiB
+
+ saved mail-inbound/inbound/ as the inbox
+────────────────────────────────────────────────────────────────────────────────
+ reses  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
+From: Mei Chen <mei.chen@example.com>
+Reply-To:
+To: mail@example.org
+Cc:
+Bcc:
+Date: Sat, 26 Sep 2026 02:10:46 +0000
+Subject: Draft agenda for Thursday's planning call
+Message-ID: <5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o@example.com>
+Message:
+
+Hi all,
+
+Here's a draft agenda for Thursday's planning call. Shout if I missed anything
+and I'll fold it in before the invite goes out.
+
+1. Where we landed last quarter
+   - Shipped the new onboarding flow two weeks early
+   - Support tickets about sign-up are down by a third
+   - Still behind on the reporting export
+
+2. Priorities for next quarter
+   - Finish the reporting export (Sam owns this)
+   - Start the offline mode spike
+   - Tidy up the settings screen before it grows any further
+
+3. Hiring
+   - One backend role is open, interviews start next week
+ ↑↓ pgup pgdn  scroll   h  html   w  save text   a  save attachments   d  delete   q  back
+────────────────────────────────────────────────────────────────────────────────
+ reses  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
+Here's a draft agenda for Thursday's planning call. Shout if I missed anything
+and I'll fold it in before the invite goes out.
+
+1. Where we landed last quarter
+   - Shipped the new onboarding flow two weeks early
+   - Support tickets about sign-up are down by a third
+   - Still behind on the reporting export
+
+2. Priorities for next quarter
+   - Finish the reporting export (Sam owns this)
+   - Start the offline mode spike
+   - Tidy up the settings screen before it grows any further
+
+3. Hiring
+   - One backend role is open, interviews start next week
+   - We'd like two people from the team on each panel
+
+4. The office move
+   - Keys for the new space arrive on the 3rd
+   - Desks go in over the weekend, so pack up by Friday
+
+5. Anything else
+
+I've booked the big room from 10 to 11, and there'll be coffee.
+
+Cheers,
+Mei
+ Could not fetch inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o: connection reset
+────────────────────────────────────────────────────────────────────────────────
+ reses  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
+ From                  Subject                                                             Date       Size
+ Sam Ortiz             Welcome aboard! Notes for your first week                          04:45      990 B
+ Mei Chen              Draft agenda for Thursday's planning call                          02:10    1.7 KiB
+ Priya Raman           Invoice 4471 for September is ready                               Sep 25      987 B
+ Build Bot             Build 812 passed on main                                          Sep 25      933 B
+ Tomasz Nowak          Re: Saturday hike, trail options                                  Sep 24    1.0 KiB
+ Security Alerts       New sign-in from Firefox on Linux                                 Sep 24    1.0 KiB
+ Harbour Coffee        Your receipt from Harbour Coffee                                  Sep 24      993 B
+ Olu Adeyemi           Photos from the workshop                                          Sep 23      979 B
+ Dana Whitfield        Lease renewal for unit 4B                                         Sep 22      984 B
+ The Weekly Tinkerer   Issue 118: a soldering station roundup                            Sep 21    1.0 KiB
+
+ ↑↓  move   enter  open   d  delete   /  filter   r  refresh   u  accounts   q  quit
+────────────────────────────────────────────────────────────────────────────────
+ reses  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
+ From                  Subject                                                             Date       Size
+ Sam Ortiz             Welcome aboard! Notes for your first week                          04:45      990 B
+ Mei Chen              Draft agenda for Thursday's planning call                          02:10    1.7 KiB
+ Priya Raman           Invoice 4471 for September is ready                               Sep 25      987 B
+ Build Bot             Build 812 passed on main                                          Sep 25      933 B
+ Tomasz Nowak          Re: Saturday hike, trail options                                  Sep 24    1.0 KiB
+ Security Alerts       New sign-in from Firefox on Linux                                 Sep 24    1.0 KiB
+ Harbour Coffee        Your receipt from Harbour Coffee                                  Sep 24      993 B
+ Olu Adeyemi           Photos from the workshop                                          Sep 23      979 B
+ Dana Whitfield        Lease renewal for unit 4B                                         Sep 22      984 B
+ The Weekly Tinkerer   Issue 118: a soldering station roundup                            Sep 21    1.0 KiB
+
+ ↑↓  move   enter  open   d  delete   /  filter   r  refresh   u  accounts   q  quit
+────────────────────────────────────────────────────────────────────────────────

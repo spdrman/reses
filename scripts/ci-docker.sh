@@ -6,6 +6,7 @@
 #   scripts/ci-docker.sh --shell      interactive shell
 #   scripts/ci-docker.sh --darwin     build the macOS release binary into dist/
 #   scripts/ci-docker.sh --integration  run the MinIO-backed S3 tests
+#   scripts/ci-docker.sh --image-tag  print the CI image tag (demo/record.sh uses it)
 #
 # RESES_LANE names the cargo target volume, so parallel worktrees never share build output.
 set -euo pipefail
@@ -15,6 +16,12 @@ LANE="${RESES_LANE:-main}"
 # Tagged by a hash of the Dockerfile, so editing the Dockerfile builds a fresh image
 # instead of silently reusing the old one.
 IMAGE="reses-ci:$(shasum -a 256 "$REPO_ROOT/docker/ci.Dockerfile" | cut -c1-12)"
+
+if [ "${1:-}" = "--image-tag" ]; then
+  echo "$IMAGE"
+  exit 0
+fi
+
 PLATFORM="linux/arm64"
 TARGET_VOL="reses-target-${LANE}"
 REGISTRY_VOL="reses-cargo-registry"
