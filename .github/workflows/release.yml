@@ -1,0 +1,219 @@
+name: Release
+
+# Pushing main to `release` publishes a GitHub release: three binaries, each built natively on
+# its own platform and checked against the mail goldens there before anything goes out. The tag
+# is `v<version>` from Cargo.toml. scripts/release-version.sh refuses a version whose tag already
+# exists and a commit that isn't on main. tests/release_workflow.rs pins this contract and
+# tests/release_version.rs tests the script.
+#
+# Every action is pinned to a full commit SHA, because these jobs build what gets shipped, and a
+# moved tag could swap the binary before it's uploaded.
+
+on:
+  push:
+    branches: [release]
+  # A PR that changes anything a release run executes gets a dry run: every build and check,
+  # no publish.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - tests/release_workflow.rs
+      - tests/release_version.rs
+      - scripts/release-version.sh
+      - scripts/check-goldens.sh
+      - scripts/place-binary.sh
+      - tests/macos-replace-binary.sh
+      - Cargo.toml
+
+permissions:
+  contents: read
+
+# Never cancel a release halfway through.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The "is this commit on main" check needs history. The repo is public, so reading
+          # tags and main needs no token.
+          fetch-depth: 0
+          persist-credentials: false
+      - id: v
+        name: Read the version, refuse an existing tag or a commit not on main
+        run: scripts/release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --locked --no-fail-fast
+      - run: (cd python && python3 -m unittest -q)
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ${{ matrix.target }}
+      # The Linux binaries are static musl builds, so they run on any distro. ring compiles some
+      # C for the target, which needs musl's compiler wrapper.
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Build (Linux, static musl)
+        if: contains(matrix.target, 'musl')
+        env:
+          TARGET_CC: musl-gcc
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build --release --locked --target "$TARGET"
+      # Static means no program interpreter and no NEEDED libraries. x86_64 musl comes out
+      # static-pie, which file(1) words differently from aarch64's "statically linked", so the
+      # ELF header is the real check, and the file(1) wording is a positive control on top.
+      - name: Check the Linux binary is static
+        if: contains(matrix.target, 'musl')
+        run: |
+          bin="target/$TARGET/release/reses"
+          command -v readelf >/dev/null || { echo "::error::readelf is missing, so staticness can't be checked"; exit 1; }
+          file "$bin"
+          file "$bin" | grep -Eq 'statically linked|static-pie linked' || { echo "::error::file(1) doesn't call $bin static"; exit 1; }
+          if readelf -lW "$bin" | grep -q 'program interpreter'; then
+            echo "::error::$bin has a program interpreter, so it is dynamically linked"
+            exit 1
+          fi
+          if readelf -dW "$bin" | grep -q NEEDED; then
+            echo "::error::$bin needs shared libraries"
+            exit 1
+          fi
+      - run: scripts/check-goldens.sh "target/$TARGET/release/reses"
+      - name: The #15 replace test
+        if: runner.os == 'macOS'
+        run: tests/macos-replace-binary.sh "target/$TARGET/release/reses"
+      - name: Package
+        run: |
+          name="reses-v$VERSION-$TARGET"
+          mkdir -p "stage/$name"
+          cp "target/$TARGET/release/reses" README.md LICENSE "stage/$name/"
+          tar -C stage -czf "$name.tar.gz" "$name"
+          tar -tzvf "$name.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reses-${{ matrix.target }}
+          path: reses-v${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [version, test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: reses-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          ls -l
+          [ "$(ls *.tar.gz | wc -l)" -eq 3 ] || { echo "::error::expected 3 archives"; exit 1; }
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Release notes
+        run: |
+          cat > notes.md <<EOF
+          Binaries for reses v$VERSION. Each archive holds the \`reses\` binary, the README and the license.
+
+          | File | Platform |
+          |---|---|
+          | \`reses-v$VERSION-x86_64-unknown-linux-musl.tar.gz\` | Linux x86_64 (amd64), static |
+          | \`reses-v$VERSION-aarch64-unknown-linux-musl.tar.gz\` | Linux arm64, static |
+          | \`reses-v$VERSION-aarch64-apple-darwin.tar.gz\` | macOS, Apple Silicon |
+
+          **Linux**
+
+          \`\`\`
+          tar -xzf reses-v$VERSION-x86_64-unknown-linux-musl.tar.gz
+          mv reses-v$VERSION-x86_64-unknown-linux-musl/reses ~/.local/bin/
+          \`\`\`
+
+          Use the \`aarch64\` archive on arm64.
+
+          **macOS**
+
+          \`\`\`
+          tar -xzf reses-v$VERSION-aarch64-apple-darwin.tar.gz
+          xattr -d com.apple.quarantine reses-v$VERSION-aarch64-apple-darwin/reses
+          mv reses-v$VERSION-aarch64-apple-darwin/reses ~/.local/bin/
+          \`\`\`
+
+          The binary is ad-hoc signed, not notarized, so macOS blocks it when it came from a browser download until the quarantine flag is cleared. If you downloaded with \`curl\` there's no flag, and \`xattr\` saying so is harmless. \`~/.local/bin\` isn't on a Mac's PATH by default, so add it or pick another directory. To replace an older copy, \`mv\` the new one over it, never \`cp\` (#15).
+
+          Check a download with \`shasum -a 256 -c SHA256SUMS --ignore-missing\`.
+          EOF
+      # The tag is created first, at exactly this commit. Creating a ref that already exists
+      # fails, so a tag made since the version check can't end up with these binaries on it.
+      - name: Tag
+        id: tag
+        run: |
+          gh api -X POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" >/dev/null
+          echo "created=true" >> "$GITHUB_OUTPUT"
+      # Draft first, check every asset arrived, then publish, so a failed upload never shows up
+      # as a release with pieces missing.
+      - name: Create the release as a draft
+        run: |
+          gh release create "v$VERSION" dist/*.tar.gz dist/SHA256SUMS \
+            --verify-tag --draft --title "reses v$VERSION" --notes-file notes.md
+      - name: Check the assets and publish
+        run: |
+          n=$(gh release view "v$VERSION" --json assets --jq '.assets | length')
+          [ "$n" -eq 4 ] || { echo "::error::expected 4 assets on the draft, found $n"; exit 1; }
+          gh release edit "v$VERSION" --draft=false
+      # Only what this run created is removed, so a rerun after fixing the cause starts clean.
+      - name: Clean up after a failed publish
+        if: failure() && steps.tag.outputs.created == 'true'
+        run: |
+          gh release delete "v$VERSION" --yes || true
+          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/v$VERSION" || true
