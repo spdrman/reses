@@ -341,11 +341,17 @@ impl BrowserScreen {
             ctx.error("no account is connected");
             return Transition::None;
         };
+        // The bucket's own region when a redirect taught the client one, so the next start
+        // goes straight there; otherwise the region we have been talking to it in.
+        let region = session
+            .store
+            .bucket_region(&bucket)
+            .unwrap_or_else(|| session.region.clone());
         let inbox = Inbox {
             profile: session.profile.name.clone(),
             bucket,
             prefix,
-            region: Some(session.region.clone()),
+            region: Some(region),
         };
         let previous = ctx.config.inbox.replace(inbox.clone());
         if !ctx.save_config() {
