@@ -1,5 +1,5 @@
 //! One decoded message, fetched from S3: scroll it, flip to the HTML part, save its text or
-//! its attachments, or delete it.
+//! its attachments, or delete it. Decoding happens on the worker (`Job::Open`).
 
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -9,29 +9,34 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::text::Span;
+use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
-use super::inbox::{display_from, render_confirm};
-use super::jobs::{Done, Job, JobId, Outcome};
-use super::{Ctx, Transition, View};
+use super::inbox::{Handoff, display_from, render_confirm};
+use super::jobs::{Decoded, Done, Job, JobId, Outcome};
+use super::text::{char_width, clean, human_size};
+use super::{Ctx, Session, Transition, View};
 use crate::mail;
+use crate::s3::S3Error;
 
 pub struct MessageScreen {
     pub bucket: String,
     pub key: String,
+    /// The account the message was opened with, whatever happens to `ctx.session` later.
+    session: Option<Session>,
     subject: Option<String>,
     from: String,
     out_dir: PathBuf,
+    /// Where a delete still in flight goes when this screen closes, so the inbox reports it.
+    handoff: Option<Handoff>,
     started: bool,
     fetch: Option<JobId>,
     delete: Option<JobId>,
-    raw: Option<Vec<u8>>,
-    text: String,
+    message: Option<Box<Decoded>>,
     html: bool,
     error: Option<String>,
     confirm: bool,
-    /// `text` wrapped to `wrapped_for` columns; rebuilt when either changes.
+    /// The shown text wrapped to `wrapped_for` columns; rebuilt when either changes.
     wrapped: Vec<String>,
     wrapped_for: Option<u16>,
     offset: usize,
@@ -44,14 +49,15 @@ impl MessageScreen {
         Self {
             bucket,
             key,
+            session: None,
             subject: None,
             from: String::new(),
             out_dir: PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Downloads"),
+            handoff: None,
             started: false,
             fetch: None,
             delete: None,
-            raw: None,
-            text: String::new(),
+            message: None,
             html: false,
             error: None,
             confirm: false,
@@ -65,7 +71,7 @@ impl MessageScreen {
 
     /// The subject the inbox already knows, for the delete prompt before the body arrives.
     pub fn with_subject(mut self, subject: String) -> Self {
-        self.subject = Some(subject);
+        self.subject = Some(clean(subject.trim()));
         self
     }
 
@@ -75,9 +81,14 @@ impl MessageScreen {
         self
     }
 
-    /// Stubbed for the red tests.
-    pub fn with_session(self, session: super::Session) -> Self {
-        let _ = session;
+    /// Talk to S3 through this account rather than whichever one is current.
+    pub fn with_session(mut self, session: Session) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    pub(super) fn with_handoff(mut self, handoff: Handoff) -> Self {
+        self.handoff = Some(handoff);
         self
     }
 
@@ -85,10 +96,11 @@ impl MessageScreen {
         format!("s3://{}/{}", self.bucket, self.key)
     }
 
-    fn set_text(&mut self) {
-        if let Some(raw) = &self.raw {
-            self.text = mail::format_message(raw, self.html);
-            self.wrapped_for = None;
+    fn shown(&self) -> &str {
+        match &self.message {
+            Some(m) if self.html => &m.html,
+            Some(m) => &m.text,
+            None => "",
         }
     }
 
@@ -96,13 +108,21 @@ impl MessageScreen {
         self.offset = offset.min(self.max_offset);
     }
 
+    /// Leave, handing a delete that hasn't answered yet to the inbox.
+    fn close(&mut self) -> Transition {
+        if let (Some(id), Some(handoff)) = (self.delete.take(), &self.handoff) {
+            handoff.borrow_mut().insert(id);
+        }
+        Transition::Pop
+    }
+
     fn write_text(&mut self, ctx: &mut Ctx) {
-        if self.raw.is_none() {
+        if self.message.is_none() {
             ctx.info("The message is still loading.");
             return;
         }
         let stem = file_stem(&self.key);
-        match write_new(&self.out_dir, &stem, "txt", self.text.as_bytes()) {
+        match write_new(&self.out_dir, &stem, "txt", self.shown().as_bytes()) {
             Ok(path) => ctx.info(format!("Wrote {}", path.display())),
             Err(e) => ctx.error(format!(
                 "Could not write into {}: {e}",
@@ -112,11 +132,11 @@ impl MessageScreen {
     }
 
     fn save_attachments(&mut self, ctx: &mut Ctx) {
-        let Some(raw) = &self.raw else {
+        let Some(message) = &self.message else {
             ctx.info("The message is still loading.");
             return;
         };
-        match mail::save_attachments(raw, &self.out_dir) {
+        match mail::save_attachments(&message.raw, &self.out_dir) {
             Ok(paths) if paths.is_empty() => ctx.info("This message has no attachments."),
             Ok(paths) => {
                 let noun = if paths.len() == 1 {
@@ -136,6 +156,23 @@ impl MessageScreen {
             )),
         }
     }
+
+    fn fetch_error(&self, e: &S3Error) -> String {
+        if let S3Error::TooLarge { size, limit } = e {
+            let how_big = match size {
+                Some(size) => human_size(*size),
+                None => format!("over {}", human_size(*limit)),
+            };
+            return format!(
+                "This message is too large to open ({how_big}): {}",
+                self.location()
+            );
+        }
+        if e.is_not_found() {
+            return format!("This message no longer exists: {}", self.location());
+        }
+        format!("Could not fetch {}: {e}", self.location())
+    }
 }
 
 impl View for MessageScreen {
@@ -152,14 +189,14 @@ impl View for MessageScreen {
                     .wrap(Wrap { trim: false }),
                 area,
             );
-        } else if self.raw.is_none() {
+        } else if self.message.is_none() {
             frame.render_widget(
                 Paragraph::new(format!(" Fetching {} …", self.location())),
                 area,
             );
         } else {
             if self.wrapped_for != Some(area.width) {
-                self.wrapped = wrap(&self.text, area.width as usize);
+                self.wrapped = wrap(self.shown(), area.width as usize);
                 self.wrapped_for = Some(area.width);
             }
             self.page = (area.height as usize).max(1);
@@ -170,7 +207,7 @@ impl View for MessageScreen {
                 .iter()
                 .skip(self.offset)
                 .take(self.page)
-                .map(|l| ratatui::text::Line::raw(l.as_str()))
+                .map(|l| Line::raw(l.as_str()))
                 .collect();
             frame.render_widget(Paragraph::new(shown), area);
         }
@@ -192,8 +229,8 @@ impl View for MessageScreen {
                     bucket: self.bucket.clone(),
                     key: self.key.clone(),
                 };
-                match ctx.submit(job) {
-                    Some(id) => self.delete = Some(id),
+                match &self.session {
+                    Some(session) => self.delete = Some(ctx.submit_to(session, job, None)),
                     None => ctx.error("Not connected to an account."),
                 }
             } else {
@@ -208,9 +245,9 @@ impl View for MessageScreen {
             KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_to(self.offset + self.page),
             KeyCode::Home | KeyCode::Char('g') => self.scroll_to(0),
             KeyCode::End | KeyCode::Char('G') => self.scroll_to(usize::MAX),
-            KeyCode::Char('h') if self.raw.is_some() => {
+            KeyCode::Char('h') if self.message.is_some() => {
                 self.html = !self.html;
-                self.set_text();
+                self.wrapped_for = None;
                 self.offset = 0;
                 ctx.info(if self.html {
                     "Showing the HTML part."
@@ -221,7 +258,7 @@ impl View for MessageScreen {
             KeyCode::Char('w') => self.write_text(ctx),
             KeyCode::Char('a') => self.save_attachments(ctx),
             KeyCode::Char('d') => self.confirm = true,
-            KeyCode::Esc | KeyCode::Char('q') => return Transition::Pop,
+            KeyCode::Esc | KeyCode::Char('q') => return self.close(),
             _ => {}
         }
         Transition::None
@@ -231,23 +268,17 @@ impl View for MessageScreen {
         if Some(done.id) == self.fetch {
             self.fetch = None;
             match &done.result {
-                Ok(Outcome::Data(raw)) => {
-                    let summary = mail::summarize(raw);
-                    if !summary.subject.trim().is_empty() {
-                        self.subject = Some(summary.subject.trim().to_string());
+                Ok(Outcome::Message(message)) => {
+                    let subject = message.summary.subject.trim();
+                    if !subject.is_empty() {
+                        self.subject = Some(clean(subject));
                     }
-                    self.from = display_from(&summary.from);
-                    self.raw = Some(raw.clone());
-                    self.set_text();
+                    self.from = display_from(&message.summary.from);
+                    self.message = Some(message.clone());
+                    self.wrapped_for = None;
                 }
                 Ok(_) => self.error = Some(format!("Unexpected reply for {}", self.location())),
-                Err(e) if e.is_not_found() => {
-                    self.error = Some(format!(
-                        "This message no longer exists: {}",
-                        self.location()
-                    ))
-                }
-                Err(e) => self.error = Some(format!("Could not fetch {}: {e}", self.location())),
+                Err(e) => self.error = Some(self.fetch_error(e)),
             }
         } else if Some(done.id) == self.delete {
             self.delete = None;
@@ -267,14 +298,21 @@ impl View for MessageScreen {
             return;
         }
         self.started = true;
-        let job = Job::Get {
+        if self.session.is_none() {
+            self.session = ctx.session.clone();
+        }
+        let job = Job::Open {
             bucket: self.bucket.clone(),
             key: self.key.clone(),
         };
-        match ctx.submit(job) {
-            Some(id) => self.fetch = Some(id),
+        match &self.session {
+            Some(session) => self.fetch = Some(ctx.submit_to(session, job, None)),
             None => self.error = Some("Not connected to an account.".into()),
         }
+    }
+
+    fn session(&self) -> Option<&Session> {
+        self.session.as_ref()
     }
 
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
@@ -332,21 +370,12 @@ fn write_new(dir: &Path, stem: &str, ext: &str, data: &[u8]) -> std::io::Result<
     unreachable!("ran out of file names")
 }
 
-fn char_width(c: char) -> usize {
-    let mut buf = [0u8; 4];
-    Span::raw(&*c.encode_utf8(&mut buf)).width()
-}
-
 /// Wrap each line to `width` columns, breaking after a space where there is one.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for line in text.lines() {
-        let line = line.replace('\t', "    ");
-        let line: String = line
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
+        let line = clean(&line.replace('\t', "    "));
         let mut cur = String::new();
         let mut used = 0;
         for c in line.chars() {
@@ -808,7 +837,7 @@ attached words\r\n\
         app.key(key(KeyCode::Char('d')));
         for w in [100u16, 50] {
             let scr = screen(&mut app, w, 20);
-            let subject = line_with(&scr, "Subject: Line one");
+            let subject = line_with(&scr, "│ Subject: Line one");
             assert!(subject.contains('…') && !subject.contains('\t'), "{scr}");
             assert!(scr.contains("s3://inbox-bucket/mail/msg1"), "{scr}");
             assert!(scr.contains("y to delete"), "{scr}");
