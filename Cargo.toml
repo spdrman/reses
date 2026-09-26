@@ -13,11 +13,12 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 hmac = "0.12"
+html2text = "0.17.1"
 # reses asks for PNG only: the header logo is the one image it decodes. ratatui-image turns on
 # image's jpeg feature regardless, so zune-jpeg and moxcms (colour management) get built too.
 # Both are pure Rust and only add build time; I accept that rather than patch the dependency.
 image = { version = "0.25", default-features = false, features = ["png"] }
-mail-parser = "0.11"
+mail-parser = { version = "0.11", features = ["full_encoding"] }
 percent-encoding = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 ratatui = "0.29"

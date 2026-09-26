@@ -6,7 +6,6 @@
 # Bodies converted from HTML: Python has no HTML-to-text converter, so the body is html2text's own
 # rendering of the HTML part as Python decoded it (mail_oracle.py html-source), read over by hand.
 html-alternative-attach.out body the body comes from the HTML part
-html-edges.out body the body comes from the HTML part
 html-less-than-and-title.out body the body comes from the HTML part; "<" survives and the title and Outlook-only comment don't, as in a browser
 html-only.out body the body comes from the HTML part
 html-then-named-text.out body the body comes from the HTML part, since the named text part is an attachment
@@ -38,3 +37,17 @@ space-before-colon.html.out all same as the plain render
 unquoted-boundary-with-equals.out all Outlook's unquoted boundary=----=_NextPart_... is taken whole, as every mail client does; Python cuts it at the "=" and finds no parts
 unquoted-boundary-with-equals.html.out all same as the plain render
 unquoted-boundary-with-equals.saved all same, for the saved files (none)
+cr-only.out body the file ends every line with a bare CR, so those are its line breaks and show as line breaks; Python leaves the CRs inside one line
+cr-only.html.out body same as the plain render
+eightbit-crlf.out all RFC 2045: "base64 " with a trailing blank is still base64, so the first attachment decodes to 5 bytes; and RFC 2045 6.7's robust rules keep "==" as it is where Python turns it into "=" (53 bytes, not 52)
+eightbit-crlf.html.out all same as the plain render
+eightbit-crlf.saved all same, for the saved files
+#
+# Where mail-parser reads a header differently and I keep its reading. Doing otherwise means an
+# address parser and an encoded-word decoder of my own, which is the custom code this change removes.
+addresses.out all mail-parser folds the comment after an address into its name ("Doe, John (Sales) (work)"), where RFC 5322 treats comments as invisible; and it reads the broken list in Cc its own way, including the quoted local part "x y"@example.org as a name
+addresses.html.out all same as the plain render
+encoded-words.out all an encoded word glued to the text after it ("=?utf-8?q?bad?=tail") decodes with a space before the text; RFC 2047 5 says such a word isn't an encoded word at all, and Python joins the two
+encoded-words.html.out all same as the plain render
+html-edges.out all the subject's glued encoded words read as for encoded-words.eml ("x y z a ?="), and the body comes from the HTML part
+html-edges.html.out all same subject as the plain render

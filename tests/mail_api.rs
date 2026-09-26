@@ -39,7 +39,8 @@ fn summarize_decodes_headers_like_format_message() {
     assert_eq!(s.cc, "\"Ann \\\"A\\\"\" <ann@example.org>");
     assert_eq!(
         s.subject,
-        "Café menu for Friday and ✓ done plus raw end badtail"
+        // mail-parser's reading of a glued encoded word; see HAND-PINNED for encoded-words.out.
+        "Café menu for Friday and ✓ done plus raw end bad tail"
     );
     assert_eq!(s.date, Some(datetime!(2026-10-07 10:00:00 +01:00)));
     assert!(!s.has_attachments);
