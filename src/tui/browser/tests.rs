@@ -40,6 +40,8 @@ struct Spy {
     /// While true, every peek waits inside the store, so a one-thread pool backs up behind it.
     hold: Mutex<bool>,
     released: Condvar,
+    /// What `bucket_region` answers, as if the client had followed a region redirect.
+    learned_region: Mutex<Option<String>>,
 }
 
 impl Spy {
@@ -52,6 +54,7 @@ impl Spy {
             endless: AtomicUsize::new(0),
             hold: Mutex::new(false),
             released: Condvar::new(),
+            learned_region: Mutex::new(None),
         })
     }
 
@@ -126,6 +129,10 @@ impl Store for Spy {
     }
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         self.inner.delete(bucket, key)
+    }
+    fn bucket_region(&self, bucket: &str) -> Option<String> {
+        let _ = bucket;
+        self.learned_region.lock().unwrap().clone()
     }
 }
 
@@ -989,4 +996,23 @@ fn a_wide_name_that_fits_is_shown_whole() {
     press(&mut app, KeyCode::Char('s'));
     let s = screen(&mut app, 100, 12);
     assert!(s.contains(spaced), "cut in the search results:\n{s}");
+}
+
+#[test]
+fn the_inbox_gets_the_buckets_own_region_once_the_client_has_learned_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    *spy.learned_region.lock().unwrap() = Some("ap-south-1".into());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    press(&mut app, KeyCode::Char('i'));
+    let saved = AppConfig::load(&dir.path().join("config.toml")).unwrap();
+    let inbox = saved.inbox.expect("saved");
+    assert_eq!(
+        inbox.region.as_deref(),
+        Some("ap-south-1"),
+        "not the session's us-east-1"
+    );
+    assert_eq!(inbox.profile, "test");
 }
