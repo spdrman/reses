@@ -12,7 +12,9 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LANE="${RESES_LANE:-main}"
-IMAGE="reses-ci:1"
+# Tagged by a hash of the Dockerfile, so editing the Dockerfile builds a fresh image
+# instead of silently reusing the old one.
+IMAGE="reses-ci:$(shasum -a 256 "$REPO_ROOT/docker/ci.Dockerfile" | cut -c1-12)"
 PLATFORM="linux/arm64"
 TARGET_VOL="reses-target-${LANE}"
 REGISTRY_VOL="reses-cargo-registry"
