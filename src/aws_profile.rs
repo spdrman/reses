@@ -96,3 +96,28 @@ pub fn region_from_config(profile: &str) -> Option<String> {
     let _ = profile;
     None
 }
+
+/// Where the credentials file lives, given the values of `$AWS_SHARED_CREDENTIALS_FILE` and
+/// `$HOME`. Split out so tests can check it without touching the process environment.
+pub fn credentials_path_from(
+    shared_credentials_file: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let _ = shared_credentials_file;
+    PathBuf::from(home.unwrap_or_default()).join(".aws/credentials")
+}
+
+/// Where the AWS config file lives, given `$AWS_CONFIG_FILE` and `$HOME`.
+pub fn config_path_from(
+    config_file: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let _ = config_file;
+    PathBuf::from(home.unwrap_or_default()).join(".aws/config")
+}
+
+/// Region for a profile from an AWS config file at an explicit path.
+pub fn region_from_config_file(path: &Path, profile: &str) -> Option<String> {
+    let _ = (path, profile);
+    None
+}

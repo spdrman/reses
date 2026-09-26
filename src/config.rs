@@ -44,6 +44,17 @@ impl AppConfig {
             .join(".config/reses/config.toml")
     }
 
+    /// Where the settings file lives, given `$RESES_CONFIG`, `$XDG_CONFIG_HOME` and `$HOME`.
+    /// Split out so tests can check it without touching the process environment.
+    pub fn path_from(
+        reses_config: Option<std::ffi::OsString>,
+        xdg_config_home: Option<std::ffi::OsString>,
+        home: Option<std::ffi::OsString>,
+    ) -> PathBuf {
+        let _ = (reses_config, xdg_config_home);
+        PathBuf::from(home.unwrap_or_default()).join(".config/reses/config.toml")
+    }
+
     /// A missing file loads as the default config.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let _ = path;
