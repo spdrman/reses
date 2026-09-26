@@ -41,8 +41,16 @@ pub struct Summary {
     pub has_attachments: bool,
 }
 
-const HEADER_ORDER: [&str; 8] =
-    ["From", "Reply-To", "To", "Cc", "Bcc", "Date", "Subject", "Message-ID"];
+const HEADER_ORDER: [&str; 8] = [
+    "From",
+    "Reply-To",
+    "To",
+    "Cc",
+    "Bcc",
+    "Date",
+    "Subject",
+    "Message-ID",
+];
 
 /// Addresses from every `name` header, as reses.py's `addresses()` collects them.
 fn addresses(msg: &Message, name: &str) -> Vec<String> {
@@ -73,7 +81,10 @@ fn received_for(value: &str) -> Vec<String> {
             continue;
         }
         let mut j = i + 3;
-        let ws = text[j..].iter().take_while(|&&c| pystr::is_space(c)).count();
+        let ws = text[j..]
+            .iter()
+            .take_while(|&&c| pystr::is_space(c))
+            .count();
         if ws == 0 {
             i += 1;
             continue;
@@ -140,12 +151,21 @@ fn bcc(msg: &Message) -> String {
 fn attachments(msg: &Message) -> Vec<(PartId, String)> {
     msg.iter_attachments()
         .into_iter()
-        .filter_map(|p| msg.part(p).get_filename().filter(|f| !f.is_empty()).map(|f| (p, f)))
+        .filter_map(|p| {
+            msg.part(p)
+                .get_filename()
+                .filter(|f| !f.is_empty())
+                .map(|f| (p, f))
+        })
         .collect()
 }
 
 fn body(msg: &Message, prefer_html: bool) -> String {
-    let prefs: &[&str] = if prefer_html { &["html", "plain"] } else { &["plain", "html"] };
+    let prefs: &[&str] = if prefer_html {
+        &["html", "plain"]
+    } else {
+        &["plain", "html"]
+    };
     let Some(id) = msg.get_body(prefs) else {
         return String::new();
     };
@@ -216,7 +236,10 @@ pub fn summarize(raw: &[u8]) -> Summary {
     if !header_block_complete(raw) && !matches!(raw.last(), Some(b'\n' | b'\r') | None) {
         // The prefix stops partway through a header line, so that line is cut short. Leave
         // it out rather than show half a value.
-        let cut = raw.iter().rposition(|&b| b == b'\n' || b == b'\r').map_or(0, |i| i + 1);
+        let cut = raw
+            .iter()
+            .rposition(|&b| b == b'\n' || b == b'\r')
+            .map_or(0, |i| i + 1);
         data = &raw[..cut];
     }
     let msg = Message::parse(data);
@@ -324,7 +347,9 @@ pub fn looks_like_email(prefix: &[u8]) -> bool {
     }
     // SES writes this object into the bucket when a receipt rule is set up. It is shaped like a
     // message but it isn't mail anyone sent.
-    let is_setup_notice = subject.trim().eq_ignore_ascii_case("Amazon SES Setup Notification")
+    let is_setup_notice = subject
+        .trim()
+        .eq_ignore_ascii_case("Amazon SES Setup Notification")
         && !names.iter().any(|n| n == "received");
     !is_setup_notice
 }
@@ -333,8 +358,7 @@ pub fn looks_like_email(prefix: &[u8]) -> bool {
 fn safe_file_name(name: &str) -> String {
     let base = name
         .split(['/', '\\'])
-        .filter(|c| !c.is_empty() && *c != ".")
-        .next_back()
+        .rfind(|c| !c.is_empty() && *c != ".")
         .unwrap_or("");
     if base.is_empty() || base == ".." {
         return "attachment".into();
@@ -361,12 +385,19 @@ pub fn save_attachments(raw: &[u8], dir: &Path) -> io::Result<Vec<PathBuf>> {
         let payload = msg.part(part).decoded_payload().unwrap_or_default();
         let mut n = 0;
         loop {
-            let candidate =
-                if n == 0 { name.clone() } else { format!("{stem}-{n}{suffix}") };
+            let candidate = if n == 0 {
+                name.clone()
+            } else {
+                format!("{stem}-{n}{suffix}")
+            };
             let target = dir.join(candidate);
             // create_new refuses anything already there, dangling symlinks included, so an
             // existing file is never replaced even if it appears between two checks.
-            match OpenOptions::new().write(true).create_new(true).open(&target) {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
                 Ok(mut f) => {
                     f.write_all(&payload)?;
                     saved.push(target);
@@ -386,8 +417,14 @@ mod tests {
 
     #[test]
     fn received_for_matches_the_python_regex() {
-        assert_eq!(received_for("by x with SMTP id y\tfor <a@example.com>; Fri"), ["a@example.com"]);
-        assert_eq!(received_for("for a@example.com; x FOR  B@example.org"), ["a@example.com", "B@example.org"]);
+        assert_eq!(
+            received_for("by x with SMTP id y\tfor <a@example.com>; Fri"),
+            ["a@example.com"]
+        );
+        assert_eq!(
+            received_for("for a@example.com; x FOR  B@example.org"),
+            ["a@example.com", "B@example.org"]
+        );
         assert_eq!(received_for("before a@example.com"), Vec::<String>::new());
         assert_eq!(received_for("for @x for x@ for a@b"), ["a@b"]);
     }

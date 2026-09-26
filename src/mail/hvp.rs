@@ -111,11 +111,19 @@ impl From<List> for Tok {
 }
 
 fn vt(s: impl Into<String>, tt: TT) -> Tok {
-    Tok::T { s: s.into(), tt, kind: TermKind::Value }
+    Tok::T {
+        s: s.into(),
+        tt,
+        kind: TermKind::Value,
+    }
 }
 
 fn wt(s: impl Into<String>, tt: TT) -> Tok {
-    Tok::T { s: s.into(), tt, kind: TermKind::Ws }
+    Tok::T {
+        s: s.into(),
+        tt,
+        kind: TermKind::Ws,
+    }
 }
 
 fn dot() -> Tok {
@@ -158,7 +166,10 @@ impl Tok {
     /// `str(token)`.
     fn to_str(&self) -> String {
         match self {
-            Tok::T { kind: TermKind::EwWs, .. } => String::new(),
+            Tok::T {
+                kind: TermKind::EwWs,
+                ..
+            } => String::new(),
             Tok::T { s, .. } => s.clone(),
             Tok::L(l) => match l.cls {
                 Cls::Comment => {
@@ -366,7 +377,10 @@ fn ew_decode(ew_body: &str) -> Result<String, PErr> {
     let (charset, _lang) = parts[0].split_once('*').unwrap_or((parts[0], ""));
     let cte = parts[1].to_lowercase();
     let raw = pystr::to_bytes(parts[2]);
-    if parts[2].chars().any(|c| !c.is_ascii() && pystr::unescape_char(c).is_none()) {
+    if parts[2]
+        .chars()
+        .any(|c| !c.is_ascii() && pystr::unescape_char(c).is_none())
+    {
         return Err(PErr::InvalidEw);
     }
     let bytes = match cte.as_str() {
@@ -449,7 +463,11 @@ fn get_unstructured(mut value: &str) -> List {
                     }
                     if have_ws && n > 1 && u.items[n - 2].tt() == "encoded-word" {
                         let s = u.items[n - 1].to_str();
-                        u.items[n - 1] = Tok::T { s, tt: "fws", kind: TermKind::EwWs };
+                        u.items[n - 1] = Tok::T {
+                            s,
+                            tt: "fws",
+                            kind: TermKind::EwWs,
+                        };
                     }
                     u.push(tok);
                     value = r;
@@ -485,7 +503,9 @@ fn get_qcontent(value: &str) -> (Tok, &str) {
 }
 
 fn run_not_in<'a>(value: &'a str, ends: &str) -> (&'a str, &'a str) {
-    let end = value.find(|c: char| ends.contains(c)).unwrap_or(value.len());
+    let end = value
+        .find(|c: char| ends.contains(c))
+        .unwrap_or(value.len());
     (&value[..end], &value[end..])
 }
 
@@ -529,7 +549,11 @@ fn get_bare_quoted_string(value: &str) -> R<'_> {
                 && bare.items[n - 2].tt() == "encoded-word"
             {
                 let s = bare.items[n - 1].to_str();
-                bare.items[n - 1] = Tok::T { s, tt: "fws", kind: TermKind::EwWs };
+                bare.items[n - 1] = Tok::T {
+                    s,
+                    tt: "fws",
+                    kind: TermKind::EwWs,
+                };
             }
         } else {
             (tok, value) = get_qcontent(value);
@@ -776,7 +800,11 @@ fn get_local_part(mut value: &str) -> R<'_> {
         // `value`. Map it back so the caller keeps borrowing the original header.
         let consumed = joined.len() - rest.len();
         let prefix = joined.len() - value.len();
-        value = if consumed >= prefix { &value[consumed - prefix..] } else { value };
+        value = if consumed >= prefix {
+            &value[consumed - prefix..]
+        } else {
+            value
+        };
         lp.items[0] = obs.into();
     }
     Ok((lp.into(), value))
@@ -1421,11 +1449,7 @@ fn get_extended_attrtext(value: &str) -> R<'_> {
     Ok((vt(text, "extended-attrtext"), r))
 }
 
-fn get_attribute_with<'a>(
-    mut value: &'a str,
-    ends: &str,
-    text: fn(&str) -> R<'_>,
-) -> R<'a> {
+fn get_attribute_with<'a>(mut value: &'a str, ends: &str, text: fn(&str) -> R<'_>) -> R<'a> {
     let mut a = List::new(Cls::Plain, "attribute");
     let mut tok;
     if starts_in(value, CFWS_LEADER) {
@@ -1459,7 +1483,11 @@ fn get_section(value: &str) -> R<'_, List> {
     }
     section.push(vt("*", "section-marker"));
     let value = &value[1..];
-    let (digits, rest) = value.split_at(value.find(|c: char| !c.is_ascii_digit()).unwrap_or(value.len()));
+    let (digits, rest) = value.split_at(
+        value
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(value.len()),
+    );
     if digits.is_empty() {
         return Err(PErr::Parse);
     }
@@ -2029,25 +2057,43 @@ struct Mailbox {
 }
 
 fn mailbox_parts(mb: &List) -> Mailbox {
-    let none = Mailbox { display_name: None, local_part: None, domain: None };
+    let none = Mailbox {
+        display_name: None,
+        local_part: None,
+        domain: None,
+    };
     if mb.cls == Cls::InvalidMailbox {
         return none;
     }
-    let Some(inner) = mb.items.first() else { return none };
+    let Some(inner) = mb.items.first() else {
+        return none;
+    };
     match inner.tt() {
         "name-addr" => {
             let na = inner.items();
-            let display_name = if na.len() == 1 { None } else { Some(display_name(&na[0])) };
+            let display_name = if na.len() == 1 {
+                None
+            } else {
+                Some(display_name(&na[0]))
+            };
             let (local_part, domain) = na
                 .last()
                 .and_then(|aa| aa.items().iter().find(|x| x.tt() == "addr-spec"))
                 .map(addr_spec_parts)
                 .unwrap_or((None, None));
-            Mailbox { display_name, local_part, domain }
+            Mailbox {
+                display_name,
+                local_part,
+                domain,
+            }
         }
         "addr-spec" => {
             let (local_part, domain) = addr_spec_parts(inner);
-            Mailbox { display_name: None, local_part, domain }
+            Mailbox {
+                display_name: None,
+                local_part,
+                domain,
+            }
         }
         _ => none,
     }
@@ -2091,7 +2137,9 @@ fn address_header(value: &str) -> String {
     let al = get_address_list(value);
     let mut groups = Vec::new();
     for addr in al.items.iter().filter(|t| t.tt() == "address") {
-        let Some(Tok::L(inner)) = addr.items().first() else { continue };
+        let Some(Tok::L(inner)) = addr.items().first() else {
+            continue;
+        };
         let (group_name, mailboxes): (Option<String>, Vec<&List>) = if inner.tt == "group" {
             let name = inner.items.first().map(display_name);
             let mbs = match inner.items.get(2) {
@@ -2167,7 +2215,9 @@ pub(super) fn decode_header(name_lower: &str, value: &str) -> String {
 
 /// ContentDispositionHeader.content_disposition.
 pub(super) fn content_disposition(value: &str) -> Option<String> {
-    parse_content_disposition_header(value).1.map(pystr::sanitize)
+    parse_content_disposition_header(value)
+        .1
+        .map(pystr::sanitize)
 }
 
 #[cfg(test)]
@@ -2181,18 +2231,30 @@ mod tests {
     #[test]
     fn addresses_render_like_headerregistry() {
         assert_eq!(addr("\"Alice\" <a@example.com>"), "Alice <a@example.com>");
-        assert_eq!(addr("\"Doe, J\" <j@example.com> (c)"), "\"Doe, J\" <j@example.com>");
-        assert_eq!(addr("a@example.com, b@example.org"), "a@example.com, b@example.org");
+        assert_eq!(
+            addr("\"Doe, J\" <j@example.com> (c)"),
+            "\"Doe, J\" <j@example.com>"
+        );
+        assert_eq!(
+            addr("a@example.com, b@example.org"),
+            "a@example.com, b@example.org"
+        );
         assert_eq!(addr("undisclosed-recipients:;"), "undisclosed-recipients:;");
         assert_eq!(addr("G: a@example.com;"), "G: a@example.com;");
         assert_eq!(addr("<>"), "<>");
         assert_eq!(addr("x (comment) <x@example.com>"), "x <x@example.com>");
-        assert_eq!(addr("=?utf-8?q?J=C3=B6rg?= <j@example.com>"), "Jörg <j@example.com>");
+        assert_eq!(
+            addr("=?utf-8?q?J=C3=B6rg?= <j@example.com>"),
+            "Jörg <j@example.com>"
+        );
     }
 
     #[test]
     fn unstructured_joins_adjacent_encoded_words() {
-        assert_eq!(decode_header("subject", "=?utf-8?q?a?= =?utf-8?q?b?= c"), "ab c");
+        assert_eq!(
+            decode_header("subject", "=?utf-8?q?a?= =?utf-8?q?b?= c"),
+            "ab c"
+        );
         assert_eq!(decode_header("subject", "x=?utf-8?q?a?="), "xa");
         assert_eq!(decode_header("subject", "=?bogus?="), "=?bogus?=");
     }
@@ -2204,11 +2266,17 @@ mod tests {
             "text/plain; charset=\"UTF-8\"; format=\"flowed\""
         );
         assert_eq!(
-            decode_header("content-disposition", "attachment; filename*=UTF-8''a%C3%A9.txt"),
+            decode_header(
+                "content-disposition",
+                "attachment; filename*=UTF-8''a%C3%A9.txt"
+            ),
             "attachment; filename=\"aé.txt\""
         );
         assert_eq!(
-            decode_header("content-type", "application/x; name*0=\"ab\"; name*1=\"cd\""),
+            decode_header(
+                "content-type",
+                "application/x; name*0=\"ab\"; name*1=\"cd\""
+            ),
             "application/x; name=\"abcd\""
         );
     }

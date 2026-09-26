@@ -7,8 +7,12 @@ use reses::mail::{looks_like_email, save_attachments, summarize};
 use time::macros::datetime;
 
 fn fixture(name: &str) -> Vec<u8> {
-    fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail").join(name))
-        .unwrap()
+    fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mail")
+            .join(name),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -28,7 +32,10 @@ fn summarize_fills_every_field() {
 fn summarize_decodes_headers_like_format_message() {
     let s = summarize(&fixture("encoded-words.eml"));
     assert_eq!(s.from, "Éloïse Example <eloise@example.com>");
-    assert_eq!(s.to, "Jörg <joerg@example.org>, Quoted EW <qew@example.org>");
+    assert_eq!(
+        s.to,
+        "Jörg <joerg@example.org>, Quoted EW <qew@example.org>"
+    );
     assert_eq!(s.cc, "\"Ann \\\"A\\\"\" <ann@example.org>");
     assert_eq!(
         s.subject,
@@ -81,8 +88,8 @@ fn summarize_works_on_a_prefix_that_stops_inside_the_headers() {
     assert_eq!(s.to, "");
     assert!(!s.has_attachments);
 
-    let subject_end = text.find("\r\nSubject:").unwrap()
-        + "\r\nSubject: A message the way SES stores it\r".len();
+    let subject_end =
+        text.find("\r\nSubject:").unwrap() + "\r\nSubject: A message the way SES stores it\r".len();
     // Every other cut point must not panic, and anything already complete stays right.
     for n in 0..raw.len() {
         let s = summarize(&raw[..n]);
@@ -103,25 +110,37 @@ fn summarize_on_a_prefix_that_stops_in_a_folded_header() {
 
 #[test]
 fn every_fixture_looks_like_email() {
-    for entry in fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail"))
-        .unwrap()
+    for entry in
+        fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail")).unwrap()
     {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "eml") {
             let raw = fs::read(&path).unwrap();
             assert!(looks_like_email(&raw), "{}", path.display());
             // The inbox only fetches a prefix, so a short one has to work too.
-            assert!(looks_like_email(&raw[..raw.len().min(40)]), "{} prefix", path.display());
+            assert!(
+                looks_like_email(&raw[..raw.len().min(40)]),
+                "{} prefix",
+                path.display()
+            );
         }
     }
 }
 
 #[test]
 fn ses_objects_starting_with_transport_headers_look_like_email() {
-    assert!(looks_like_email(b"Return-Path: <a@example.com>\r\nReceived: from x"));
-    assert!(looks_like_email(b"Received: from mx.example.com (mx.example.com [192.0.2.1])\r\n by in"));
-    assert!(looks_like_email(b"From MAILER-DAEMON Fri Sep 25 17:01:31 2026\nFrom: a@example.com\n"));
-    assert!(looks_like_email(b"Delivered-To: a@example.org\nX-Custom: 1\nSubject: hi\n\nbody"));
+    assert!(looks_like_email(
+        b"Return-Path: <a@example.com>\r\nReceived: from x"
+    ));
+    assert!(looks_like_email(
+        b"Received: from mx.example.com (mx.example.com [192.0.2.1])\r\n by in"
+    ));
+    assert!(looks_like_email(
+        b"From MAILER-DAEMON Fri Sep 25 17:01:31 2026\nFrom: a@example.com\n"
+    ));
+    assert!(looks_like_email(
+        b"Delivered-To: a@example.org\nX-Custom: 1\nSubject: hi\n\nbody"
+    ));
 }
 
 #[test]
@@ -133,14 +152,20 @@ fn other_objects_do_not_look_like_email() {
         ("json array", b"[1, 2, 3]"),
         ("html", b"<!DOCTYPE html>\n<html><head><title>x</title>"),
         ("html lower", b"<html>\n<body>From: a@example.com</body>"),
-        ("xml", b"<?xml version=\"1.0\"?><Error><Code>AccessDenied</Code>"),
+        (
+            "xml",
+            b"<?xml version=\"1.0\"?><Error><Code>AccessDenied</Code>",
+        ),
         ("pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj"),
         ("png", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"),
         ("jpeg", b"\xff\xd8\xff\xe0\0\x10JFIF\0"),
         ("gif", b"GIF89a\x01\0\x01\0"),
         ("zip", b"PK\x03\x04\x14\0\0\0"),
         ("gzip", b"\x1f\x8b\x08\0\0\0\0\0"),
-        ("plain text", b"Hello there, this is just a note.\nNothing else.\n"),
+        (
+            "plain text",
+            b"Hello there, this is just a note.\nNothing else.\n",
+        ),
         ("csv", b"name,email\nalice,alice@example.com\n"),
         ("url-ish first line", b"https://example.com: not a header\n"),
         ("binary", b"\0\x01\x02\x03From: a@example.com\n"),
@@ -168,7 +193,10 @@ fn save_attachments_never_overwrites() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names[0], "report-1.pdf");
-    assert_eq!(fs::read(dir.path().join("report.pdf")).unwrap(), b"already here");
+    assert_eq!(
+        fs::read(dir.path().join("report.pdf")).unwrap(),
+        b"already here"
+    );
 
     // A second run finds everything taken and moves each name along.
     let second = save_attachments(&raw, dir.path()).unwrap();

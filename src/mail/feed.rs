@@ -47,7 +47,11 @@ fn split_lines(data: &[u8]) -> VecDeque<Vec<u8>> {
                 start = i + 1;
             }
             b'\r' => {
-                let end = if data.get(i + 1) == Some(&b'\n') { i + 1 } else { i };
+                let end = if data.get(i + 1) == Some(&b'\n') {
+                    i + 1
+                } else {
+                    i
+                };
                 lines.push_back(data[start..=end].to_vec());
                 i = end;
                 start = end + 1;
@@ -177,7 +181,11 @@ impl Parser {
             _ => "text/plain",
         };
         let id = self.parts.len();
-        self.parts.push(Part { headers: Vec::new(), payload: Payload::None, default_type });
+        self.parts.push(Part {
+            headers: Vec::new(),
+            payload: Payload::None,
+            default_type,
+        });
         if let Some(&parent) = self.stack.last() {
             match &mut self.parts[parent].payload {
                 Payload::Parts(v) => v.push(id),
@@ -330,7 +338,9 @@ impl Parser {
                         }
                     }
                 }
-                self.input.eofstack.push(EofMatcher::Boundary(boundary.clone()));
+                self.input
+                    .eofstack
+                    .push(EofMatcher::Boundary(boundary.clone()));
                 self.parsegen();
                 // The newline before a boundary belongs to the boundary.
                 let last = self.last;
@@ -368,7 +378,10 @@ fn source_parse(lines: &[Vec<u8>]) -> (String, String) {
     let i = first.iter().position(|&b| b == b':').unwrap_or(first.len());
     let name = pystr::from_bytes(&first[..i]);
     let mut value: Vec<u8> = first[(i + 1).min(first.len())..].to_vec();
-    let lead = value.iter().take_while(|&&b| b == b' ' || b == b'\t').count();
+    let lead = value
+        .iter()
+        .take_while(|&&b| b == b' ' || b == b'\t')
+        .count();
     value.drain(..lead);
     for l in &lines[1..] {
         value.extend_from_slice(l);
@@ -413,7 +426,8 @@ impl Part {
 
     /// The first `name` header as written, line breaks removed but nothing decoded.
     pub(super) fn raw_value(&self, name: &str) -> Option<String> {
-        self.raw(name).map(|(_, v)| v.chars().filter(|&c| c != '\r' && c != '\n').collect())
+        self.raw(name)
+            .map(|(_, v)| v.chars().filter(|&c| c != '\r' && c != '\n').collect())
     }
 
     fn contains(&self, name: &str) -> bool {
@@ -469,7 +483,9 @@ impl Part {
     /// The text of a text/* part: raw_data_manager.get_text_content.
     pub(super) fn text_content(&self) -> String {
         let bytes = self.decoded_payload().unwrap_or_default();
-        let charset = self.get_param("charset", "content-type").unwrap_or_else(|| "ASCII".into());
+        let charset = self
+            .get_param("charset", "content-type")
+            .unwrap_or_else(|| "ASCII".into());
         match codec::lookup(&charset) {
             Some(c) => codec::decode(&bytes, c, Errors::Replace).unwrap(),
             // Python raises LookupError here; decoding as UTF-8 is the useful fallback.
@@ -484,7 +500,11 @@ pub(super) fn content_type(p: &Part) -> String {
         None => p.default_type.to_string(),
         Some(v) => {
             let ctype = pystr::lower(split_param(&v));
-            if ctype.matches('/').count() != 1 { "text/plain".into() } else { ctype }
+            if ctype.matches('/').count() != 1 {
+                "text/plain".into()
+            } else {
+                ctype
+            }
         }
     }
 }
@@ -498,7 +518,9 @@ fn split_param(v: &str) -> &str {
 fn unquote(s: &str) -> String {
     if s.chars().count() > 1 {
         if s.starts_with('"') && s.ends_with('"') {
-            return s[1..s.len() - 1].replace("\\\\", "\\").replace("\\\"", "\"");
+            return s[1..s.len() - 1]
+                .replace("\\\\", "\\")
+                .replace("\\\"", "\"");
         }
         if s.starts_with('<') && s.ends_with('>') {
             return s[1..s.len() - 1].to_string();
@@ -513,7 +535,8 @@ fn parse_param(s: &str) -> Vec<String> {
     let mut plist = Vec::new();
     while s.starts_with(';') {
         s.remove(0);
-        let count_quotes = |t: &str| t.matches('"').count() as i64 - t.matches("\\\"").count() as i64;
+        let count_quotes =
+            |t: &str| t.matches('"').count() as i64 - t.matches("\\\"").count() as i64;
         let mut end = s.find(';');
         while let Some(e) = end {
             if e > 0 && count_quotes(&s[..e]) % 2 != 0 {
@@ -525,7 +548,11 @@ fn parse_param(s: &str) -> Vec<String> {
         let end = end.unwrap_or(s.len());
         let mut f = s[..end].to_string();
         if let Some(i) = f.find('=') {
-            f = format!("{}={}", pystr::lower(pystr::strip(&f[..i])), pystr::strip(&f[i + 1..]));
+            f = format!(
+                "{}={}",
+                pystr::lower(pystr::strip(&f[..i])),
+                pystr::strip(&f[i + 1..])
+            );
         }
         plist.push(pystr::strip(&f).to_string());
         s = s[end..].to_string();
@@ -559,7 +586,10 @@ fn get_boundary(p: &Part) -> Option<String> {
 impl Message {
     pub(super) fn parse(data: &[u8]) -> Message {
         let mut p = Parser {
-            input: Input { lines: split_lines(data), eofstack: Vec::new() },
+            input: Input {
+                lines: split_lines(data),
+                eofstack: Vec::new(),
+            },
             parts: Vec::new(),
             stack: Vec::new(),
             cur: None,
@@ -611,7 +641,10 @@ impl Message {
             out.push((i, part));
         }
         let mut candidate = None;
-        if let Some(start) = p.get_param("start", "content-type").filter(|s| !s.is_empty()) {
+        if let Some(start) = p
+            .get_param("start", "content-type")
+            .filter(|s| !s.is_empty())
+        {
             candidate = self
                 .children(part)
                 .iter()
@@ -656,7 +689,10 @@ impl Message {
             return Vec::new();
         };
         if subtype == "related" {
-            if let Some(start) = root.get_param("start", "content-type").filter(|s| !s.is_empty()) {
+            if let Some(start) = root
+                .get_param("start", "content-type")
+                .filter(|s| !s.is_empty())
+            {
                 let mut found = false;
                 let mut atts = Vec::new();
                 for &p in parts {
@@ -680,7 +716,10 @@ impl Message {
             let (mt, st) = ct.split_once('/').unwrap_or((&ct, ""));
             let body_type = matches!(
                 (mt, st),
-                ("text", "plain") | ("text", "html") | ("multipart", "related") | ("multipart", "alternative")
+                ("text", "plain")
+                    | ("text", "html")
+                    | ("multipart", "related")
+                    | ("multipart", "alternative")
             );
             if body_type && !part.is_attachment() && !seen.iter().any(|s| s == st) {
                 seen.push(st.to_string());
@@ -699,7 +738,15 @@ mod tests {
     #[test]
     fn lines_split_universally() {
         let l = split_lines(b"a\r\nb\rc\nd");
-        assert_eq!(l, [b"a\r\n".to_vec(), b"b\r".to_vec(), b"c\n".to_vec(), b"d".to_vec()]);
+        assert_eq!(
+            l,
+            [
+                b"a\r\n".to_vec(),
+                b"b\r".to_vec(),
+                b"c\n".to_vec(),
+                b"d".to_vec()
+            ]
+        );
     }
 
     #[test]

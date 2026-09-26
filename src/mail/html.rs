@@ -8,12 +8,19 @@ use super::pystr;
 /// the extra equivalences Python's `re.IGNORECASE` applies to str patterns.
 fn ci_eq(pattern: char, c: char) -> bool {
     c.to_ascii_lowercase() == pattern
-        || matches!((pattern, c), ('s', '\u{17f}') | ('i', '\u{131}') | ('i', '\u{130}') | ('k', '\u{212a}'))
+        || matches!(
+            (pattern, c),
+            ('s', '\u{17f}') | ('i', '\u{131}') | ('i', '\u{130}') | ('k', '\u{212a}')
+        )
 }
 
 fn ci_word_at(text: &[char], at: usize, word: &str) -> bool {
     let n = word.chars().count();
-    at + n <= text.len() && word.chars().zip(&text[at..at + n]).all(|(p, &c)| ci_eq(p, c))
+    at + n <= text.len()
+        && word
+            .chars()
+            .zip(&text[at..at + n])
+            .all(|(p, &c)| ci_eq(p, c))
 }
 
 /// `re.sub(r"(?is)<(script|style).*?</\1>", "", s)`.
@@ -177,7 +184,9 @@ fn entity(name: &str) -> Option<&'static str> {
 fn numeric(digits: &[char], radix: u32) -> String {
     let mut n: u64 = 0;
     for c in digits {
-        n = n.saturating_mul(u64::from(radix)).saturating_add(u64::from(c.to_digit(radix).unwrap()));
+        n = n
+            .saturating_mul(u64::from(radix))
+            .saturating_add(u64::from(c.to_digit(radix).unwrap()));
     }
     if let Some(s) = invalid_charref(n) {
         return s.to_string();
@@ -188,7 +197,9 @@ fn numeric(digits: &[char], radix: u32) -> String {
     if invalid_codepoint(n) {
         return String::new();
     }
-    char::from_u32(n as u32).map(String::from).unwrap_or_default()
+    char::from_u32(n as u32)
+        .map(String::from)
+        .unwrap_or_default()
 }
 
 /// `html.unescape`.
@@ -207,7 +218,10 @@ pub(super) fn unescape(s: &str) -> String {
         }
         let at = i + 1;
         if text.get(at) == Some(&'#') {
-            let dec = text[at + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+            let dec = text[at + 1..]
+                .iter()
+                .take_while(|c| c.is_ascii_digit())
+                .count();
             if dec > 0 {
                 out.push_str(&numeric(&text[at + 1..at + 1 + dec], 10));
                 i = at + 1 + dec;
@@ -217,7 +231,10 @@ pub(super) fn unescape(s: &str) -> String {
                 continue;
             }
             if matches!(text.get(at + 1), Some('x' | 'X')) {
-                let hex = text[at + 2..].iter().take_while(|c| c.is_ascii_hexdigit()).count();
+                let hex = text[at + 2..]
+                    .iter()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .count();
                 if hex > 0 {
                     out.push_str(&numeric(&text[at + 2..at + 2 + hex], 16));
                     i = at + 2 + hex;
@@ -305,15 +322,27 @@ mod tests {
     #[test]
     fn unescape_like_python() {
         assert_eq!(unescape("&amp;&lt;&gt;&quot;&#39;"), "&<>\"'");
-        assert_eq!(unescape("&notit; &amp &ampx &bogus; & &#; &#x;"), "¬it; & &x &bogus; & &#; &#x;");
-        assert_eq!(unescape("&#128; &#0; &#xD800; &#1; &#99999999999;"), "€ \u{fffd} \u{fffd}  \u{fffd}");
+        assert_eq!(
+            unescape("&notit; &amp &ampx &bogus; & &#; &#x;"),
+            "¬it; & &x &bogus; & &#; &#x;"
+        );
+        assert_eq!(
+            unescape("&#128; &#0; &#xD800; &#1; &#99999999999;"),
+            "€ \u{fffd} \u{fffd}  \u{fffd}"
+        );
         assert_eq!(unescape("&#x263A;&#9786"), "☺☺");
     }
 
     #[test]
     fn converts_markup() {
-        assert_eq!(html_to_text("<p>one</p><p>two &amp; three</p>\r\n"), "one\ntwo & three");
-        assert_eq!(html_to_text("a<SCRIPT>x</script>b<style a>y</STYLE>c"), "abc");
+        assert_eq!(
+            html_to_text("<p>one</p><p>two &amp; three</p>\r\n"),
+            "one\ntwo & three"
+        );
+        assert_eq!(
+            html_to_text("a<SCRIPT>x</script>b<style a>y</STYLE>c"),
+            "abc"
+        );
         assert_eq!(html_to_text("a<br>b<BR />c<br\n/>d<bra>e"), "a\nb\nc\nde");
         assert_eq!(html_to_text("a<script>never closed"), "anever closed");
         assert_eq!(html_to_text("x\n\n\n\ny<>z"), "x\n\ny<>z");

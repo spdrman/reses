@@ -359,14 +359,34 @@ fn check_parenthesis(addr: &str) -> bool {
 pub(super) fn getaddresses(fieldvalues: &[String]) -> Vec<(String, String)> {
     let values: Vec<String> = fieldvalues
         .iter()
-        .map(|v| if check_parenthesis(v) { v.clone() } else { "('', '')".to_string() })
+        .map(|v| {
+            if check_parenthesis(v) {
+                v.clone()
+            } else {
+                "('', '')".to_string()
+            }
+        })
         .collect();
     let joined = values.join(", ");
-    let mut parser = AddrList { field: joined.chars().collect(), pos: 0, commentlist: Vec::new() };
-    let parsed = if joined.is_empty() { Vec::new() } else { parser.getaddrlist() };
+    let mut parser = AddrList {
+        field: joined.chars().collect(),
+        pos: 0,
+        commentlist: Vec::new(),
+    };
+    let parsed = if joined.is_empty() {
+        Vec::new()
+    } else {
+        parser.getaddrlist()
+    };
     let result: Vec<(String, String)> = parsed
         .into_iter()
-        .map(|v| if v.1.contains('[') { (String::new(), String::new()) } else { v })
+        .map(|v| {
+            if v.1.contains('[') {
+                (String::new(), String::new())
+            } else {
+                v
+            }
+        })
         .collect();
     let expected: usize = values
         .iter()
@@ -390,10 +410,19 @@ mod tests {
     // Expected values come from running getaddresses in the CI image's Python.
     #[test]
     fn like_python() {
-        assert_eq!(addrs(&["A <a@example.com>, b@example.org"]), ["a@example.com", "b@example.org"]);
+        assert_eq!(
+            addrs(&["A <a@example.com>, b@example.org"]),
+            ["a@example.com", "b@example.org"]
+        );
         assert_eq!(addrs(&["\"Doe, J\" <j@example.com>"]), ["j@example.com"]);
-        assert_eq!(addrs(&["a@example.com", "b@example.com"]), ["a@example.com", "b@example.com"]);
-        assert_eq!(addrs(&["Team: a@example.org, b@example.org;"]), ["a@example.org", "b@example.org"]);
+        assert_eq!(
+            addrs(&["a@example.com", "b@example.com"]),
+            ["a@example.com", "b@example.com"]
+        );
+        assert_eq!(
+            addrs(&["Team: a@example.org, b@example.org;"]),
+            ["a@example.org", "b@example.org"]
+        );
         assert_eq!(addrs(&["alice@example.com <bob@example.com>"]), [""]);
         assert_eq!(addrs(&["x (unbalanced <x@example.com>"]), [""]);
     }

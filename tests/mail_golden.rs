@@ -44,7 +44,11 @@ fn first_difference(want: &str, got: &str) -> String {
 fn check_all(prefer_html: bool, suffix: &str) {
     let all = fixtures();
     // A glob that silently matches nothing would make this test pass vacuously.
-    assert!(all.len() >= 19, "expected the full fixture set, found {}", all.len());
+    assert!(
+        all.len() >= 19,
+        "expected the full fixture set, found {}",
+        all.len()
+    );
     let mut failures = Vec::new();
     for eml in &all {
         let raw = fs::read(eml).unwrap();
@@ -88,7 +92,12 @@ fn saved_attachments_match_python_goldens() {
         let paths = reses::mail::save_attachments(&raw, dir.path()).unwrap();
         let mut got = String::new();
         for p in &paths {
-            assert_eq!(p.parent(), Some(dir.path()), "{} escaped the target dir", p.display());
+            assert_eq!(
+                p.parent(),
+                Some(dir.path()),
+                "{} escaped the target dir",
+                p.display()
+            );
             let data = fs::read(p).unwrap();
             got.push_str(&format!(
                 "{}\t{}\t{}\n",
@@ -100,5 +109,8 @@ fn saved_attachments_match_python_goldens() {
         assert_eq!(got, want, "{}", eml.display());
         checked += paths.len();
     }
-    assert!(checked >= 12, "expected at least 12 saved attachments, saw {checked}");
+    assert!(
+        checked >= 12,
+        "expected at least 12 saved attachments, saw {checked}"
+    );
 }

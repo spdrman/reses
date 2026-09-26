@@ -6,13 +6,17 @@
 
 use super::pystr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub(super) enum Codec {
     Utf8,
     Ascii,
     Latin1,
     Cp1252,
     Iso8859_15,
+    /// Any other charset mail-parser has a table for (the CJK and Cyrillic sets, the rest of
+    /// the ISO 8859 and Windows families). Its decoders replace bad bytes rather than report
+    /// them, so these never fail a strict decode.
+    Other(mail_parser::decoders::charsets::DecoderFnc),
 }
 
 /// `encodings.normalize_encoding` followed by the alias lookup.
@@ -48,7 +52,12 @@ pub(super) fn lookup(name: &str) -> Option<Codec> {
             _ => return None,
         })
     };
-    find(&norm).or_else(|| find(&norm.replace('.', "_")))
+    find(&norm)
+        .or_else(|| find(&norm.replace('.', "_")))
+        .or_else(|| {
+            mail_parser::decoders::charsets::map::charset_decoder(name.trim().as_bytes())
+                .map(Codec::Other)
+        })
 }
 
 const CP1252_HIGH: [Option<char>; 32] = [
@@ -105,7 +114,7 @@ fn single_byte(codec: Codec, b: u8) -> Option<char> {
             0xbe => '\u{0178}',
             _ => b as char,
         }),
-        Codec::Utf8 => unreachable!("utf-8 is not a single-byte codec"),
+        Codec::Utf8 | Codec::Other(_) => unreachable!("not a single-byte codec"),
     }
 }
 
@@ -133,7 +142,10 @@ pub(super) fn decode(data: &[u8], codec: Codec, errors: Errors) -> Option<String
         }
     };
     let mut out = String::with_capacity(data.len());
-    if codec == Codec::Utf8 {
+    if let Codec::Other(f) = codec {
+        return Some(f(data));
+    }
+    if matches!(codec, Codec::Utf8) {
         let mut rest = data;
         loop {
             match std::str::from_utf8(rest) {
@@ -177,20 +189,29 @@ mod tests {
 
     #[test]
     fn names_normalise_like_python() {
-        assert_eq!(lookup("UTF-8"), Some(Codec::Utf8));
-        assert_eq!(lookup(" utf8 "), Some(Codec::Utf8));
-        assert_eq!(lookup("US-ASCII"), Some(Codec::Ascii));
-        assert_eq!(lookup("ISO-8859-1"), Some(Codec::Latin1));
-        assert_eq!(lookup("iso8859-15"), Some(Codec::Iso8859_15));
-        assert_eq!(lookup("Windows-1252"), Some(Codec::Cp1252));
-        assert_eq!(lookup("x-unknown"), None);
+        assert!(matches!(lookup("UTF-8"), Some(Codec::Utf8)));
+        assert!(matches!(lookup(" utf8 "), Some(Codec::Utf8)));
+        assert!(matches!(lookup("US-ASCII"), Some(Codec::Ascii)));
+        assert!(matches!(lookup("ISO-8859-1"), Some(Codec::Latin1)));
+        assert!(matches!(lookup("iso8859-15"), Some(Codec::Iso8859_15)));
+        assert!(matches!(lookup("Windows-1252"), Some(Codec::Cp1252)));
+        assert!(matches!(lookup("KOI8-R"), Some(Codec::Other(_))));
+        assert!(lookup("x-unknown").is_none());
+        let koi = lookup("koi8-r").unwrap();
+        assert_eq!(decode(b"\xf0\xd2\xc9", koi, Errors::Strict).unwrap(), "При");
     }
 
     #[test]
     fn replace_and_escape() {
-        assert_eq!(decode(b"a\x81b", Codec::Cp1252, Errors::Replace).unwrap(), "a\u{fffd}b");
+        assert_eq!(
+            decode(b"a\x81b", Codec::Cp1252, Errors::Replace).unwrap(),
+            "a\u{fffd}b"
+        );
         assert_eq!(decode(b"a\x81b", Codec::Cp1252, Errors::Strict), None);
-        assert_eq!(decode(b"\xe2\x82", Codec::Utf8, Errors::Replace).unwrap(), "\u{fffd}");
+        assert_eq!(
+            decode(b"\xe2\x82", Codec::Utf8, Errors::Replace).unwrap(),
+            "\u{fffd}"
+        );
         let esc = decode(b"x\xff", Codec::Utf8, Errors::SurrogateEscape).unwrap();
         assert_eq!(pystr::to_bytes(&esc), b"x\xff");
     }

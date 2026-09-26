@@ -89,8 +89,7 @@ pub(super) fn py_int(s: &str) -> Option<i64> {
         _ => (false, s),
     };
     let bytes = digits.as_bytes();
-    if bytes.is_empty() || !bytes[0].is_ascii_digit() || !bytes[bytes.len() - 1].is_ascii_digit()
-    {
+    if bytes.is_empty() || !bytes[0].is_ascii_digit() || !bytes[bytes.len() - 1].is_ascii_digit() {
         return None;
     }
     let mut n: i64 = 0;

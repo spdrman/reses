@@ -6,9 +6,30 @@ use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset, Week
 use super::pystr;
 
 const MONTHS: [&str; 24] = [
-    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-    "january", "february", "march", "april", "may", "june", "july", "august", "september",
-    "october", "november", "december",
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
 ];
 const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
@@ -115,7 +136,11 @@ fn parsedate_tz(data: &str) -> Option<Parsed> {
     let parts: Vec<&str> = tm.split(':').collect();
     let (thh, tmm, tss) = match parts.len() {
         2 => (parts[0].to_string(), parts[1].to_string(), "0".to_string()),
-        3 => (parts[0].to_string(), parts[1].to_string(), parts[2].to_string()),
+        3 => (
+            parts[0].to_string(),
+            parts[1].to_string(),
+            parts[2].to_string(),
+        ),
         1 if tm.contains('.') => {
             let p: Vec<&str> = tm.split('.').collect();
             match p.len() {
@@ -152,7 +177,15 @@ fn parsedate_tz(data: &str) -> Option<Parsed> {
         let (sign, off) = if off < 0 { (-1, -off) } else { (1, off) };
         tzoffset = Some(sign * ((off / 100) * 3600 + (off % 100) * 60));
     }
-    Some(Parsed { yy, mm: month, dd, thh, tmm, tss, tz: tzoffset })
+    Some(Parsed {
+        yy,
+        mm: month,
+        dd,
+        thh,
+        tmm,
+        tss,
+        tz: tzoffset,
+    })
 }
 
 /// A Python datetime as parsedate_to_datetime builds it: aware, or naive for -0000.
@@ -183,7 +216,10 @@ pub(super) fn parsedate_to_datetime(data: &str) -> Option<PyDateTime> {
         Some(s) if s.abs() >= 86_400 => return None,
         Some(s) => Some(UtcOffset::from_whole_seconds(s as i32).ok()?),
     };
-    Some(PyDateTime { dt: PrimitiveDateTime::new(date, time), offset })
+    Some(PyDateTime {
+        dt: PrimitiveDateTime::new(date, time),
+        offset,
+    })
 }
 
 fn weekday(w: Weekday) -> &'static str {
@@ -264,13 +300,34 @@ mod tests {
 
     #[test]
     fn parses_like_python() {
-        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 -0700").unwrap(), "Fri, 25 Sep 2026 17:01:31 -0700");
-        assert_eq!(fmt("9 Oct 26 07:07 EST").unwrap(), "Fri, 09 Oct 2026 07:07:00 -0500");
-        assert_eq!(fmt("Fri, 9 Oct 2026 07:07:07 -0000").unwrap(), "Fri, 09 Oct 2026 07:07:07 -0000");
-        assert_eq!(fmt("Fri, 9 Oct 2026 07:07:07 XYZ").unwrap(), "Fri, 09 Oct 2026 07:07:07 -0000");
-        assert_eq!(fmt("Fri,9 Oct 2026 07:07:07+0100").unwrap(), "Fri, 09 Oct 2026 07:07:07 +0100");
-        assert_eq!(fmt("Oct 9 2026 07.07.07 GMT").unwrap(), "Fri, 09 Oct 2026 07:07:07 +0000");
-        assert_eq!(fmt("09-Oct-2026 07:07:07 +0000").unwrap(), "Fri, 09 Oct 2026 07:07:07 +0000");
+        assert_eq!(
+            fmt("Fri, 25 Sep 2026 17:01:31 -0700").unwrap(),
+            "Fri, 25 Sep 2026 17:01:31 -0700"
+        );
+        assert_eq!(
+            fmt("9 Oct 26 07:07 EST").unwrap(),
+            "Fri, 09 Oct 2026 07:07:00 -0500"
+        );
+        assert_eq!(
+            fmt("Fri, 9 Oct 2026 07:07:07 -0000").unwrap(),
+            "Fri, 09 Oct 2026 07:07:07 -0000"
+        );
+        assert_eq!(
+            fmt("Fri, 9 Oct 2026 07:07:07 XYZ").unwrap(),
+            "Fri, 09 Oct 2026 07:07:07 -0000"
+        );
+        assert_eq!(
+            fmt("Fri,9 Oct 2026 07:07:07+0100").unwrap(),
+            "Fri, 09 Oct 2026 07:07:07 +0100"
+        );
+        assert_eq!(
+            fmt("Oct 9 2026 07.07.07 GMT").unwrap(),
+            "Fri, 09 Oct 2026 07:07:07 +0000"
+        );
+        assert_eq!(
+            fmt("09-Oct-2026 07:07:07 +0000").unwrap(),
+            "Fri, 09 Oct 2026 07:07:07 +0000"
+        );
         assert_eq!(fmt("Mon, 31 Feb 2026 10:00:00 +0000"), None);
         assert_eq!(fmt("Mon, 1 Feb 2026 23:59:60 +0000"), None);
         assert_eq!(fmt("Mon, 1 Feb 2026 10:00:00 +2400"), None);
