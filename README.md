@@ -13,7 +13,7 @@ Rust 1.98+ is needed to build it, but you never need Rust installed, since every
 ## Usage
 
 ```
-reses                            open the inbox (this is all you need)
+reses                            open the inbox (in a terminal, this is all you need)
 reses FILE [FILE ...]            optional: decode stored messages instead
 ```
 
@@ -25,7 +25,7 @@ reses
 
 No file or path is needed.
 
-1. **Pick an account.** It lists the profiles in `~/.aws/credentials`. `a` adds one: the keys you type are written back to that file in the standard AWS format (mode 0600), and nothing else in the file changes. `d` makes a profile the default.
+1. **Pick an account.** It lists the profiles in `~/.aws/credentials`. `a` adds one: the keys you type are written back to that file in the standard AWS format. Other profiles, comments and layout stay as they were, and the file is kept at mode 0600. `d` makes a profile the default.
 2. **Find the mail.** Browse buckets and folders. Objects that are stored email get marked as you scroll, and `s` searches down from the current folder for the folders that hold email.
 3. **Save the inbox.** `i` saves the current bucket and folder. From then on, `reses` opens straight into it.
 
