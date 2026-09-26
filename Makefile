@@ -12,10 +12,12 @@ integration:
 	scripts/ci-docker.sh --integration
 
 # The binary is cross-built in the container; checking it against the goldens runs the real
-# macOS binary, which is the product under test rather than a toolchain.
+# macOS binary, which is the product under test rather than a toolchain. The replace test is
+# #15: a rebuilt binary must still run after it has replaced one that already ran.
 darwin:
 	scripts/ci-docker.sh --darwin
-	cp dist/reses-aarch64-apple-darwin dist/reses
+	tests/macos-replace-binary.sh dist/reses-aarch64-apple-darwin
+	scripts/place-binary.sh dist/reses-aarch64-apple-darwin dist/reses
 	scripts/check-goldens.sh dist/reses
 
 # ~/.local/bin/reses is a link into this checkout, so reinstalling only replaces dist/reses.
