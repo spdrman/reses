@@ -218,3 +218,59 @@ fn make_darwin_checks_the_build_before_it_becomes_dist_reses() {
         "the #15 test runs after dist/reses is replaced: {recipe:#?}"
     );
 }
+
+/// Every file in the repo, relative to its root, skipping build output and git's own files.
+fn repo_files() -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if [".git", "target", "dist", "demo/.work"].contains(&rel.as_str()) {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                out.push(rel);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out
+}
+
+#[test]
+fn the_only_python_left_is_the_configparser_oracle() {
+    // The Python version of reses used to be the reference the goldens came from. It's gone
+    // (#24); the one Python file that stays reads credentials the way the AWS CLI does.
+    let files = repo_files();
+    assert!(
+        files.iter().any(|f| f == "Cargo.toml"),
+        "the walk found nothing: {files:?}"
+    );
+    let python: Vec<_> = files.iter().filter(|f| f.ends_with(".py")).collect();
+    assert_eq!(
+        python,
+        vec!["tests/profile_oracle.py"],
+        "unexpected Python files"
+    );
+    for f in ["python/reses.py", "tests/fixtures/mail/regen.sh"] {
+        assert!(!files.iter().any(|x| x == f), "{f} should be gone");
+    }
+    for rel in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "scripts/ci-docker.sh",
+    ] {
+        assert!(
+            !read(rel).contains("unittest"),
+            "{rel} still runs the Python unit tests"
+        );
+    }
+}
