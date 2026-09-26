@@ -102,7 +102,9 @@ const WEIRD_PATH: &str = "inbox/a%20b%2Bc/%C3%A9%25.eml";
 #[test]
 fn virtual_hosted_style_by_default() {
     let fake = Fake::new(vec![ok(200, b"hello")]);
-    aws("eu-west-1", &fake).get("mail-inbound", WEIRD_KEY).unwrap();
+    aws("eu-west-1", &fake)
+        .get("mail-inbound", WEIRD_KEY)
+        .unwrap();
     let req = &fake.sent()[0];
     assert_eq!(req.method, "GET");
     assert_eq!(
@@ -137,9 +139,7 @@ fn virtual_hosted_style_with_a_custom_endpoint() {
 fn dotted_bucket_names_fall_back_to_path_style_on_aws() {
     // A dot in the bucket breaks the *.s3 wildcard certificate, so AWS clients use the path.
     let fake = Fake::new(vec![ok(200, b"x")]);
-    aws("us-east-1", &fake)
-        .get("quotes.example", "k")
-        .unwrap();
+    aws("us-east-1", &fake).get("quotes.example", "k").unwrap();
     assert_eq!(
         fake.sent()[0].url,
         "https://s3.us-east-1.amazonaws.com/quotes.example/k"
@@ -274,9 +274,11 @@ fn every_request_carries_date_and_payload_hash() {
     let date = req.header("x-amz-date").unwrap();
     assert_eq!(date.len(), 16, "{date}");
     assert!(date.ends_with('Z'));
-    assert!(req.header("authorization").unwrap().starts_with(
-        "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"
-    ));
+    assert!(
+        req.header("authorization")
+            .unwrap()
+            .starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/")
+    );
 }
 
 #[test]
@@ -409,7 +411,10 @@ fn secrets_are_scrubbed_from_errors() {
     let fake = Fake::new(vec![
         Err(format!("tls failure near {SECRET} and {TOKEN}")),
         ok(403, echo.as_bytes()),
-        ok(200, format!("<ListAllMyBucketsResult><oops {TOKEN}").as_bytes()),
+        ok(
+            200,
+            format!("<ListAllMyBucketsResult><oops {TOKEN}").as_bytes(),
+        ),
     ]);
     let c = S3Client::new(creds(Some(TOKEN)), "us-east-1").with_transport(fake.clone());
     for err in [
@@ -441,9 +446,15 @@ fn a_301_with_a_region_header_retries_there_and_remembers_it() {
     let sent = fake.sent();
     assert_eq!(sent.len(), 2);
     assert_eq!(scope_region(&sent[0]), "us-east-1");
-    assert_eq!(sent[1].url, "https://mail-inbound.s3.eu-west-2.amazonaws.com/k");
+    assert_eq!(
+        sent[1].url,
+        "https://mail-inbound.s3.eu-west-2.amazonaws.com/k"
+    );
     assert_eq!(scope_region(&sent[1]), "eu-west-2");
-    assert_eq!(c.bucket_region("mail-inbound").as_deref(), Some("eu-west-2"));
+    assert_eq!(
+        c.bucket_region("mail-inbound").as_deref(),
+        Some("eu-west-2")
+    );
 
     // The next call goes straight to the right region.
     fake.push(ok(204, b""));
@@ -451,7 +462,10 @@ fn a_301_with_a_region_header_retries_there_and_remembers_it() {
     let sent = fake.sent();
     assert_eq!(sent.len(), 3);
     assert_eq!(scope_region(&sent[2]), "eu-west-2");
-    assert_eq!(sent[2].url, "https://mail-inbound.s3.eu-west-2.amazonaws.com/k");
+    assert_eq!(
+        sent[2].url,
+        "https://mail-inbound.s3.eu-west-2.amazonaws.com/k"
+    );
 
     // Other buckets are not affected.
     fake.push(ok(200, b"x"));
@@ -469,7 +483,10 @@ fn a_400_authorization_header_malformed_with_a_region_in_the_body_retries() {
     let l = c.list("mail-inbound", "inbox/", Some("/"), None).unwrap();
     assert_eq!(l.objects[0].key, "inbox/zz-last");
     assert_eq!(scope_region(&fake.sent()[1]), "eu-west-2");
-    assert_eq!(c.bucket_region("mail-inbound").as_deref(), Some("eu-west-2"));
+    assert_eq!(
+        c.bucket_region("mail-inbound").as_deref(),
+        Some("eu-west-2")
+    );
 }
 
 #[test]
@@ -507,15 +524,22 @@ fn only_one_retry() {
         with_headers(301, &[("x-amz-bucket-region", "eu-west-2")], b""),
         with_headers(301, &[("x-amz-bucket-region", "eu-west-3")], b""),
     ]);
-    let err = aws("us-east-1", &fake).get("mail-inbound", "k").unwrap_err();
-    assert!(matches!(err, S3Error::Service { status: 301, .. }), "{err:?}");
+    let err = aws("us-east-1", &fake)
+        .get("mail-inbound", "k")
+        .unwrap_err();
+    assert!(
+        matches!(err, S3Error::Service { status: 301, .. }),
+        "{err:?}"
+    );
     assert_eq!(fake.sent().len(), 2);
 }
 
 #[test]
 fn a_redirect_without_a_region_hint_is_an_error() {
     let fake = Fake::new(vec![ok(301, &fixture("error_permanent_redirect.xml"))]);
-    let err = aws("us-east-1", &fake).get("mail-inbound", "k").unwrap_err();
+    let err = aws("us-east-1", &fake)
+        .get("mail-inbound", "k")
+        .unwrap_err();
     match err {
         S3Error::Service { status, code, .. } => {
             assert_eq!((status, code.as_str()), (301, "PermanentRedirect"));
@@ -532,8 +556,12 @@ fn other_400s_do_not_retry_even_with_a_region_header() {
         &[("x-amz-bucket-region", "eu-west-2")],
         b"<Error><Code>InvalidArgument</Code><Message>nope</Message></Error>",
     )]);
-    let err = aws("us-east-1", &fake).get("mail-inbound", "k").unwrap_err();
-    assert!(matches!(err, S3Error::Service { status: 400, ref code, .. } if code == "InvalidArgument"));
+    let err = aws("us-east-1", &fake)
+        .get("mail-inbound", "k")
+        .unwrap_err();
+    assert!(
+        matches!(err, S3Error::Service { status: 400, ref code, .. } if code == "InvalidArgument")
+    );
     assert_eq!(fake.sent().len(), 1);
 }
 

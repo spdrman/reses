@@ -58,7 +58,12 @@ fn seeded(tag: &str) -> (S3Client, String) {
 #[ignore]
 fn list_buckets_sees_a_new_bucket() {
     let (c, b) = seeded("buckets");
-    let names: Vec<String> = c.list_buckets().unwrap().into_iter().map(|x| x.name).collect();
+    let names: Vec<String> = c
+        .list_buckets()
+        .unwrap()
+        .into_iter()
+        .map(|x| x.name)
+        .collect();
     assert!(names.contains(&b), "{names:?}");
 }
 
@@ -101,9 +106,14 @@ fn page_through_a_folder_listing() {
     );
 
     // Without a delimiter everything under the prefix comes back flat.
-    let flat = client("us-east-1").list(&b, "inbox/sub/", None, None).unwrap();
+    let flat = client("us-east-1")
+        .list(&b, "inbox/sub/", None, None)
+        .unwrap();
     assert_eq!(
-        flat.objects.iter().map(|o| o.key.as_str()).collect::<Vec<_>>(),
+        flat.objects
+            .iter()
+            .map(|o| o.key.as_str())
+            .collect::<Vec<_>>(),
         ["inbox/sub/nested-1", "inbox/sub/nested-2"]
     );
     assert!(flat.prefixes.is_empty());
@@ -158,13 +168,17 @@ fn ranged_get_and_get() {
 fn missing_things_are_service_errors() {
     let c = client("us-east-1");
     match c.get("reses-it-no-such-bucket", "k").unwrap_err() {
-        S3Error::Service { status: 404, code, .. } => assert_eq!(code, "NoSuchBucket"),
+        S3Error::Service {
+            status: 404, code, ..
+        } => assert_eq!(code, "NoSuchBucket"),
         other => panic!("{other:?}"),
     }
     let b = bucket("missing");
     c.create_bucket(&b).unwrap();
     match c.get(&b, "nope").unwrap_err() {
-        S3Error::Service { status: 404, code, .. } => assert_eq!(code, "NoSuchKey"),
+        S3Error::Service {
+            status: 404, code, ..
+        } => assert_eq!(code, "NoSuchKey"),
         other => panic!("{other:?}"),
     }
     // DeleteObject on a missing key succeeds, as S3 does.
@@ -185,7 +199,10 @@ fn a_wrong_secret_is_a_service_error_that_does_not_leak_it() {
     )
     .with_endpoint(&env("RESES_TEST_S3_ENDPOINT"), true);
     let err = c.list_buckets().unwrap_err();
-    assert!(matches!(err, S3Error::Service { status: 403, .. }), "{err:?}");
+    assert!(
+        matches!(err, S3Error::Service { status: 403, .. }),
+        "{err:?}"
+    );
     assert!(!format!("{err} {err:?}").contains(secret));
 }
 

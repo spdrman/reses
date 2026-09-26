@@ -152,7 +152,11 @@ impl S3Client {
                     && !(scheme == "https" && bucket.contains('.'));
                 if virtual_host {
                     let path = key_path.unwrap_or_else(|| "/".to_string());
-                    (scheme, format!("{bucket}.{authority}"), format!("{base}{path}"))
+                    (
+                        scheme,
+                        format!("{bucket}.{authority}"),
+                        format!("{base}{path}"),
+                    )
                 } else {
                     let path = format!(
                         "{base}/{}{}",

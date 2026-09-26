@@ -84,7 +84,10 @@ fn get_object_example_matches_aws_docs() {
 fn signed_headers_to_send_include_date_hash_and_authorization() {
     let s = get_object(None);
     let names: Vec<&str> = s.headers.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(names, ["x-amz-date", "x-amz-content-sha256", "authorization"]);
+    assert_eq!(
+        names,
+        ["x-amz-date", "x-amz-content-sha256", "authorization"]
+    );
     assert_eq!(s.headers[0].1, "20130524T000000Z");
     assert_eq!(s.headers[1].1, EMPTY_SHA256);
     assert_eq!(s.headers[2].1, s.authorization);

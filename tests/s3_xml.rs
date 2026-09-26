@@ -134,7 +134,10 @@ fn malformed_xml_is_a_parse_error() {
         parse_buckets(b"<ListAllMyBucketsResult><Buckets><Bucket>"),
         Err(S3Error::Parse(_))
     ));
-    assert!(matches!(parse_error(b"not xml at all <"), Err(S3Error::Parse(_))));
+    assert!(matches!(
+        parse_error(b"not xml at all <"),
+        Err(S3Error::Parse(_))
+    ));
     // The wrong document entirely is not a listing.
     assert!(matches!(
         parse_listing(&fixture("error_no_such_key.xml"), false),
