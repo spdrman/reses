@@ -1,9 +1,9 @@
-//! `Session::connect` by profile name. It must build a session without touching the network, and
+//! Unit tests for `Session::connect` by profile name, kept inside the crate because `Session` is
+//! crate-private. It must build a session without touching the network, and
 //! pick the region from the hint first. These run with no AWS files around (the container has
 //! no ~/.aws), so the fallback region is us-east-1.
 
-use reses::aws_profile::Profile;
-use reses::tui::Session;
+use super::*;
 
 #[test]
 fn connect_takes_a_profile_name() {
