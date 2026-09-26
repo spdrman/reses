@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       # The flags are inline rather than in `env:` so tests/ci_parity.rs can see them.
       - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --no-deps --locked
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --no-fail-fast
       # python/reses.py is the reference the Rust decoder is pinned to, so its own tests run too.
@@ -86,7 +86,7 @@ jobs:
       RESES_TEST_S3_SECRET_KEY: resesadmin-secret
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       # Same pinned image as scripts/ci-docker.sh --integration. A service container can't be
       # given a command, and this one needs `server <dir>`, so it's started by hand.
@@ -110,7 +110,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       # The local mirror cross-builds this with zigbuild; here it's a native build, which is
       # the check that the zigbuild binary isn't hiding a real macOS problem.
