@@ -408,7 +408,12 @@ fn a_delete_queued_when_the_pool_is_dropped_still_runs() {
         "the queued delete never reached S3: {:?}",
         store.log()
     );
-    assert!(!store.inner.contains(B, "c"));
+    // The log is written as the call arrives; the object goes a moment later.
+    let deadline = Instant::now() + LIMIT;
+    while store.inner.contains(B, "c") {
+        assert!(Instant::now() < deadline, "the delete never finished");
+        std::thread::yield_now();
+    }
 }
 
 #[test]
