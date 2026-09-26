@@ -1,4 +1,4 @@
-# reses
+# re:SES
 
 ![reses in a terminal: picking an AWS profile, browsing into the mail-inbound bucket where stored emails are marked, saving the folder as the inbox, then opening and scrolling a message from the From, Subject, Date and Size list](docs/demo.gif)
 
