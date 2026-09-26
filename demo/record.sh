@@ -54,17 +54,19 @@ LOCAL="$(mktemp -d "$REPO_ROOT/tmp/demo.XXXXXX")"
 # ci-docker.sh would scrub the lane when each call ends, and the later steps still need it, so
 # I keep it and scrub the whole lane myself at the end.
 export RESES_KEEP_TREE=1
-# I hold the lane for the whole recording, and the ci-docker.sh calls below reuse the hold.
-nas_lock "$RESES_LANE"
-
 cleanup() {
   dk rm -f "$SEED" "$VHS" "$CHECK" "$MINIO" >/dev/null 2>&1 || true
   dk network rm "$NET" >/dev/null 2>&1 || true
-  nas_scrub "$RESES_LANE"
+  if nas_lock_still_mine; then nas_scrub "$RESES_LANE" || true; fi
   nas_unlock
   rm -rf "$LOCAL"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# I hold the lane for the whole recording, and the ci-docker.sh calls below reuse the hold.
+nas_lock "$RESES_LANE"
 
 # The build pushes the tree and leaves the binary in this run's directory on the NAS.
 echo "==> building reses on the NAS"

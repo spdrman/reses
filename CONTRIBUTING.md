@@ -4,9 +4,16 @@
 
 Never build or test with the toolchain on your machine. `scripts/ci-docker.sh` (or `make gate`) runs the same checks as `.github/workflows/ci.yml` inside a pinned image, and `tests/ci_parity.rs` fails if the two drift. A red run should mean the code is wrong, not that a laptop updated its compiler overnight.
 
-The containers don't run on your machine either. Every script sources `scripts/nas-lib.sh`, which sends the tree over ssh to an x86_64 Docker host and runs everything there. It defaults to my build box, so point `RESES_NAS=user@host` at your own: any x86_64 Linux machine you can ssh into without a password prompt, with Docker, `tar` and your user in the `docker` group. It needs nothing else, not even git. It can be the machine you're on, if that's x86_64 Linux and runs sshd.
+The containers don't run on your machine either. Every script sources `scripts/nas-lib.sh`, which sends the tree over ssh to an x86_64 Docker host and runs everything there. It defaults to my build box, so point `RESES_NAS=user@host` at your own. It needs:
 
-On the host, everything lives in `~/workspace/reses-ci/<lane>`, and each run clears its lane when it ends, Ctrl-C included. A lane is locked while a run uses it, so a second run in the same lane is turned away rather than pushing over the first one's tree; if a killed run leaves the lock behind, `scripts/ci-docker.sh --nas-unlock <lane>` clears it. Only the files git would see go over (tracked, plus untracked ones that aren't ignored), and an untracked file that looks like a key, a credentials file or real mail stops the push. `scripts/ci-docker.sh --nas-clean` removes every container, network, volume, image and directory reses left there.
+- x86_64 Linux with Docker, `tar`, and your user in the `docker` group. It doesn't need git or anything else, and it can be the machine you're on if that's x86_64 Linux running sshd.
+- ssh without a password prompt, and the host key already in `known_hosts`, since the scripts never answer ssh's first-connection question. Run `ssh user@host true` once by hand.
+- bash or zsh as the login shell there, because commands go over quoted by bash's `printf %q`.
+- Outbound access to Docker Hub, ghcr.io, cgr.dev and raw.githubusercontent.com, and a few GB of disk for the images and the cargo caches.
+
+Each run's tree lives in `~/workspace/reses-ci/<lane>` and is cleared when the run ends, Ctrl-C included. A lane is locked while a run uses it, so a second run in the same lane is turned away rather than pushing over the first one's tree. If a killed run leaves the lock behind, `scripts/ci-docker.sh --nas-unlock <lane>` clears it and stops any container that run left going. The per-lane cargo target volumes, the shared cargo home and the images stay between runs on purpose, so builds are fast. `scripts/ci-docker.sh --nas-clean` removes all of it: every reses container, network, volume, image and directory. It refuses while any lane is locked, unless you add `--force`. It leaves Docker's build cache alone, since other builds on the host share it, so run `docker builder prune` there yourself if you want that space back.
+
+Only the files git would see go over (tracked, plus untracked ones that aren't ignored). An untracked file that looks like a key or a credentials file, or whose first lines look like a stored mail message (raw SES mail has no extension), stops the push. Fake mail belongs in `tests/fixtures/`.
 
 If you work in more than one worktree at once, give each its own `RESES_LANE=<name>` so they don't share a scratch directory or a cargo target volume.
 

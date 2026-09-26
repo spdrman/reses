@@ -43,7 +43,9 @@ if [ "${1:-}" != "--inside" ]; then
   RUN_NAME="reses-$RESES_LANE-$$"
   mkdir -p "$REPO_ROOT/tmp"
   BACK="$(mktemp -d "$REPO_ROOT/tmp/brand.XXXXXX")"
-  trap 'dk rm -f "$RUN_NAME" >/dev/null 2>&1 || true; [ -z "${NAS_LOCK_MINE:-}" ] || nas_scrub "$RESES_LANE"; nas_unlock; rm -rf "$BACK"' EXIT INT TERM
+  trap 'dk rm -f "$RUN_NAME" >/dev/null 2>&1 || true; if nas_lock_still_mine; then nas_scrub "$RESES_LANE" || true; fi; nas_unlock; rm -rf "$BACK"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   nas_push "$RESES_LANE"
   if ! dk image inspect "$IMAGE" >/dev/null 2>&1; then

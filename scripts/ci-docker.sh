@@ -43,17 +43,21 @@ CARGO_HOME_VOL="reses-cargo-home"
 
 W="$NAS_SCRATCH/$LANE"
 
-if ! dk image inspect "$IMAGE" >/dev/null 2>&1; then
-  "${NAS_SSH[@]}" "docker build --platform $PLATFORM -t $IMAGE -" < "$REPO_ROOT/docker/ci.Dockerfile"
-fi
+# Built on first use, so --nas-unlock and --nas-clean never wait for (or fail on) an image build.
+ensure_image() {
+  if ! dk image inspect "$IMAGE" >/dev/null 2>&1; then
+    "${NAS_SSH[@]}" "docker build --platform $PLATFORM -t $IMAGE -" < "$REPO_ROOT/docker/ci.Dockerfile"
+  fi
+}
 
 # Run a command in the CI image with the pushed tree mounted at its own path.
 run() {
   local tty=()
+  ensure_image
   [ "${INTERACTIVE:-}" = 1 ] && tty=(-it)
   # The NAS has no git, so I rebuild an index of exactly the files git tracks here.
   local cmd='set -e
-[ -d .git ] || { git init -q && git add --pathspec-from-file=.reses-tracked --pathspec-file-nul; }
+[ -d .git ] || { git init -q && GIT_LITERAL_PATHSPECS=1 git add -f --pathspec-from-file=.reses-tracked --pathspec-file-nul; }
 set +e
 '"$1"
   local args=(docker run --rm --name "$RUN_NAME" ${tty[@]+"${tty[@]}"} --platform "$PLATFORM"
@@ -69,7 +73,10 @@ set +e
   if [ ${#tty[@]} -gt 0 ]; then
     ssh -t -o BatchMode=yes -o LogLevel=ERROR "$NAS" "$(printf '%q ' "${args[@]}")"
   else
-    nas "${args[@]}"
+    # In the background and waited on, so a TERM reaches the trap at once instead of after the
+    # whole remote job.
+    nas "${args[@]}" &
+    wait $!
   fi
 }
 EXTRA_DOCKER_ARGS=()
@@ -83,10 +90,12 @@ finish() {
   dk rm -f "$RUN_NAME" >/dev/null 2>&1 || true
   # Only a run that holds the lane clears it, so one turned away by the lock never wipes the
   # tree of the run that has it.
-  if [ -n "${NAS_LOCK_MINE:-}" ] && [ -z "${RESES_KEEP_TREE:-}" ]; then nas_scrub "$LANE"; fi
+  if [ -z "${RESES_KEEP_TREE:-}" ] && nas_lock_still_mine; then nas_scrub "$LANE" || true; fi
   nas_unlock
 }
-trap finish EXIT INT TERM
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 GATE='set -e
 cargo fmt --all -- --check
@@ -115,14 +124,17 @@ ls -l dist/'
     rm -rf "$back"
     ls -l "$REPO_ROOT/dist/" ;;
   --integration)
-    NET="reses-it-${LANE}"
-    MINIO="reses-minio-${LANE}"
+    # The lane is taken before MinIO or the network exist, and both are named for this run, so a
+    # second run turned away by the lock never touches the first one's.
+    nas_lock "$LANE"
+    NET="reses-it-$LANE-$$"
+    MINIO="reses-minio-$LANE-$$"
     # minio/minio is no longer pullable from Docker Hub, so I use Chainguard's build, pinned
     # by digest (MinIO RELEASE.2026-09-22T19-25-18Z). It runs as a non-root user, so the
     # data directory lives under /tmp.
     MINIO_IMAGE="$NAS_MINIO_IMAGE"
     # Clean up first thing, so a failed start never leaves the network or container behind.
-    trap 'dk rm -f "$MINIO" >/dev/null 2>&1 || true; dk network rm "$NET" >/dev/null 2>&1 || true; finish' EXIT INT TERM
+    trap 'dk rm -f "$MINIO" >/dev/null 2>&1 || true; dk network rm "$NET" >/dev/null 2>&1 || true; finish' EXIT
     dk network create "$NET" >/dev/null 2>&1 || true
     dk rm -f "$MINIO" >/dev/null 2>&1 || true
     dk run -d --rm --platform "$PLATFORM" --name "$MINIO" --network "$NET" \
@@ -141,25 +153,49 @@ for i in $(seq 1 60); do
 done
 cargo test --locked --no-fail-fast -- --ignored --test-threads=1' ;;
   --nas-unlock)
-    # For a lock a killed run left behind. Only a lock goes, never a lane's tree.
+    # For a lock a killed run left behind. The lock goes, and so does any container that run
+    # left going, so it can't keep writing into the next run's tree. The tree itself stays.
     trap - EXIT INT TERM
     nas_check_lane "${2:-}"
+    names="$(dk ps -a --format '{{.Names}}' | grep -E "^reses-$2-[0-9]+\$" || true)"
+    [ -z "$names" ] || dk rm -f $names >/dev/null
     nas_scrub ".lock-$2"
     echo "unlocked lane '$2' on $NAS" ;;
   --nas-clean)
     # Everything reses put on the NAS, and nothing that belongs to anyone else.
     # Names are matched on their start here rather than by docker's substring filter, and images
     # by their exact repository or pinned digest, so nothing that merely mentions "reses" goes.
-    # alpine:3 was on the NAS before reses, so it stays.
+    # BuildKit's cache is shared with anything else building there, so I leave it alone.
     trap - EXIT INT TERM
-    dk ps -a --format '{{.Names}}' | grep -E '^reses-' | while read -r c; do dk rm -f "$c" >/dev/null; done
-    dk network ls --format '{{.Name}}' | grep -E '^reses-' | while read -r n; do dk network rm "$n" >/dev/null; done
-    dk volume ls --format '{{.Name}}' | grep -E '^reses-' | while read -r v; do dk volume rm "$v" >/dev/null; done
-    dk image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^reses-(ci|brand):' | while read -r i; do dk rmi "$i" >/dev/null; done
-    for i in "$NAS_VHS_IMAGE" "$NAS_MINIO_IMAGE"; do dk rmi "$i" >/dev/null 2>&1 || true; done
+    held="$(nas sh -c "cd '$NAS_SCRATCH' 2>/dev/null && ls -d .lock-* 2>/dev/null" || true)"
+    if [ -n "$held" ] && [ "${2:-}" != --force ]; then
+      echo "these lanes are in use on $NAS, so I'm not cleaning (add --force if those runs are gone):" >&2
+      printf '%s\n' "$held" | sed 's/^\.lock-/  /' >&2
+      exit 1
+    fi
+    # One docker call per kind, so no loop's stdin ends up read by ssh.
+    names="$(dk ps -a --format '{{.Names}}' | grep -E '^reses-' || true)"
+    [ -z "$names" ] || dk rm -f $names >/dev/null
+    names="$(dk network ls --format '{{.Name}}' | grep -E '^reses-' || true)"
+    [ -z "$names" ] || dk network rm $names >/dev/null
+    names="$(dk volume ls --format '{{.Name}}' | grep -E '^reses-' || true)"
+    [ -z "$names" ] || dk volume rm $names >/dev/null
+    names="$(dk image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^reses-(ci|brand):' || true)"
+    [ -z "$names" ] || dk rmi $names >/dev/null
+    # The pinned images reses pulled or built from. A digest reference only goes if nothing else
+    # tags that image, so an alpine:3 that was already there stays.
+    for i in "$NAS_VHS_IMAGE" "$NAS_MINIO_IMAGE" \
+      "$(sed -n 's/^FROM \([^ ]*\).*/\1/p' "$REPO_ROOT/docker/ci.Dockerfile" | head -1)" \
+      "$(sed -n "s/^DOCKERFILE='FROM \([^ ]*\).*/\1/p" "$REPO_ROOT/scripts/render-brand.sh")"; do
+      dk rmi "$i" >/dev/null 2>&1 || true
+    done
     nas mkdir -p "$NAS_SCRATCH"
-    dk run --rm --platform "$PLATFORM" -v "$NAS_SCRATCH:/ws" alpine:3 sh -c 'rm -rf -- /ws/* /ws/.[!.]*' >/dev/null
-    nas rmdir "$NAS_SCRATCH"
+    dk run --rm --platform "$PLATFORM" -v "$NAS_SCRATCH:/ws" "$NAS_ALPINE_IMAGE" \
+      find /ws -mindepth 1 -delete >/dev/null
+    # rmdir only ever removes an empty directory, so this can't reach anything else in workspace/.
+    dk run --rm --platform "$PLATFORM" -v "$NAS_HOME/workspace:/w" "$NAS_ALPINE_IMAGE" \
+      rmdir /w/reses-ci >/dev/null
+    dk rmi "$NAS_ALPINE_IMAGE" >/dev/null 2>&1 || true
     echo "removed every reses container, network, volume, image and scratch directory from $NAS" ;;
   *) echo "unknown option: $1" >&2; exit 2 ;;
 esac
