@@ -5,7 +5,6 @@
 //! peeked (and decoded on the worker) only for the rows on screen plus a page ahead.
 
 use std::cell::RefCell;
-use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -42,8 +41,8 @@ const NARROW: usize = 50;
 pub(super) type Handoff = Rc<RefCell<HashSet<JobId>>>;
 
 enum Head {
-    /// Not peeked yet; `true` once the peek is queued.
-    Pending(bool),
+    /// Not peeked yet, with the id of the peek asked for, if one is.
+    Pending(Option<JobId>),
     Mail(Summary),
     NotEmail,
     Unreadable(String),
@@ -70,29 +69,54 @@ impl Row {
     }
 }
 
+/// Newest first, then by key, so equal times still have one fixed order.
+fn newer(a: &Row, b: &Row) -> std::cmp::Ordering {
+    b.info
+        .last_modified
+        .cmp(&a.info.last_modified)
+        .then_with(|| b.info.key.cmp(&a.info.key))
+}
+
 pub struct InboxScreen {
     pub inbox: Inbox,
     /// The account this inbox was opened with. Switching accounts on the accounts screen
     /// doesn't change what this screen lists or deletes.
     session: Option<Session>,
+    /// Bumped by a refresh: the listing still queued for the last load gets skipped.
     generation: Generation,
-    rows: HashMap<String, Row>,
-    not_email: usize,
-    /// Visible keys, filtered and sorted. Rebuilt only when `dirty`.
-    view: Vec<String>,
+    /// Bumped when the rows on screen change: peeks queued for rows scrolled past get skipped,
+    /// so the ones on screen don't wait behind them.
+    window_gen: Generation,
+    /// The first row of the window peeks were last asked for.
+    window_top: Option<usize>,
+    /// One slot per listed object, in listing order. A slot never moves, so everything else
+    /// refers to rows by slot; a deleted row's slot becomes None.
+    rows: Vec<Option<Row>>,
+    index: HashMap<String, usize>,
+    /// Every live slot, newest first. Pages merge into it; nothing re-sorts it.
+    order: Vec<usize>,
+    /// The slots shown: `order` less what isn't email or doesn't match the filter. Rebuilt
+    /// from `order` (no sorting) only when `dirty`.
+    view: Vec<usize>,
     dirty: bool,
+    not_email: usize,
     /// Listing and peek jobs of the current load.
     jobs: HashSet<JobId>,
     /// Deletes this screen asked for, so it knows whose result to report.
     deletes: HashSet<JobId>,
     handoff: Handoff,
+    /// Keys deleted while the current load's listing may already have been taken: a page of
+    /// that listing can still carry them, so it mustn't bring them back.
+    deleted: HashSet<String>,
     started: bool,
     listing_done: bool,
     pages: usize,
     last_token: Option<String>,
     error: Option<String>,
-    /// Selection by key, so it stays on the same message while rows come and go.
-    selected: Option<String>,
+    /// Selection by slot, so it stays on the same message while rows come and go.
+    selected: Option<usize>,
+    /// Where `selected` sits in `view`, kept with it so nothing has to search for it.
+    sel_pos: usize,
     offset: usize,
     page: usize,
     filter: String,
@@ -109,19 +133,25 @@ impl InboxScreen {
             inbox,
             session: None,
             generation: Generation::new(),
-            rows: HashMap::new(),
-            not_email: 0,
+            window_gen: Generation::new(),
+            window_top: None,
+            rows: Vec::new(),
+            index: HashMap::new(),
+            order: Vec::new(),
             view: Vec::new(),
             dirty: false,
+            not_email: 0,
             jobs: HashSet::new(),
             deletes: HashSet::new(),
             handoff: Handoff::default(),
+            deleted: HashSet::new(),
             started: false,
             listing_done: false,
             pages: 0,
             last_token: None,
             error: None,
             selected: None,
+            sel_pos: 0,
             offset: 0,
             page: DEFAULT_PAGE,
             filter: String::new(),
@@ -148,14 +178,22 @@ impl InboxScreen {
         format!("s3://{}/{}", self.inbox.bucket, self.inbox.prefix)
     }
 
+    /// Start over: forget every row and list the folder again.
     fn load(&mut self, ctx: &mut Ctx) {
         self.started = true;
         // Anything still queued from the last load is skipped by the workers.
         self.generation.bump();
+        self.window_gen.bump();
+        self.window_top = None;
         self.rows.clear();
+        self.index.clear();
+        self.order.clear();
+        self.view.clear();
         self.not_email = 0;
         self.dirty = true;
         self.jobs.clear();
+        // A listing started from here on can't see anything deleted before now.
+        self.deleted.clear();
         self.error = None;
         self.listing_done = false;
         self.pages = 0;
@@ -164,9 +202,9 @@ impl InboxScreen {
         self.list_page(None, ctx);
     }
 
-    fn submit(&mut self, job: Job, ctx: &mut Ctx) -> Option<JobId> {
+    fn submit(&mut self, job: Job, generation: &Generation, ctx: &mut Ctx) -> Option<JobId> {
         let session = self.session.as_ref()?;
-        Some(ctx.submit_to(session, job, Some(&self.generation)))
+        Some(ctx.submit_to(session, job, Some(generation)))
     }
 
     fn list_page(&mut self, token: Option<String>, ctx: &mut Ctx) {
@@ -176,7 +214,8 @@ impl InboxScreen {
             delimiter: true,
             token,
         };
-        match self.submit(job, ctx) {
+        let generation = self.generation.clone();
+        match self.submit(job, &generation, ctx) {
             Some(id) => {
                 self.jobs.insert(id);
             }
@@ -187,38 +226,60 @@ impl InboxScreen {
         }
     }
 
-    /// Queue header peeks for the rows on screen (or about to be) and a page beyond. Only once
-    /// the listing is complete: S3 lists in key order, not received order, so until then the
-    /// top of the list keeps changing and peeking it would end up peeking everything.
-    fn request_window(&mut self, ctx: &mut Ctx) {
-        if !self.listing_done {
-            return;
-        }
-        self.refresh_view();
-        // Where the next render will scroll to, so a jump to End peeks the end, not everything.
-        let sel = self.selected_pos();
-        let top = if sel < self.offset {
+    /// The first row of the window: where the next render will scroll to, so a jump to End
+    /// peeks the end, not everything on the way.
+    fn window_start(&self) -> usize {
+        let sel = self.sel_pos;
+        if sel < self.offset {
             sel
         } else if sel >= self.offset + self.page {
             sel + 1 - self.page
         } else {
             self.offset
-        };
+        }
+    }
+
+    /// Queue header peeks for the rows on screen (or about to be) and a page beyond. Only once
+    /// the listing is complete: S3 lists in key order, not received order, so until then the
+    /// top of the list keeps changing and peeking it would end up peeking everything.
+    ///
+    /// When the window moved since the last call, I bump the window generation first: peeks
+    /// still queued for rows scrolled past get skipped, and the rows now on screen are asked
+    /// for again so they go to the front of what's left.
+    fn request_window(&mut self, ctx: &mut Ctx) {
+        if !self.listing_done {
+            return;
+        }
+        self.refresh_view();
+        let top = self.window_start();
+        let moved = self.window_top != Some(top);
+        if moved {
+            self.window_gen.bump();
+            self.window_top = Some(top);
+        }
         let end = (top + 2 * self.page).min(self.view.len());
-        let wanted: Vec<String> = self.view[top.min(end)..end]
+        let wanted: Vec<usize> = self.view[top.min(end)..end]
             .iter()
-            .filter(|k| matches!(self.rows[*k].head, Head::Pending(false)))
-            .cloned()
+            .copied()
+            .filter(|&slot| match self.rows[slot].as_ref().map(|r| &r.head) {
+                Some(Head::Pending(None)) => true,
+                Some(Head::Pending(Some(_))) => moved,
+                _ => false,
+            })
             .collect();
-        for key in wanted {
+        let window_gen = self.window_gen.clone();
+        for slot in wanted {
+            let Some(key) = self.rows[slot].as_ref().map(|r| r.info.key.clone()) else {
+                continue;
+            };
             let job = Job::PeekHead {
                 bucket: self.inbox.bucket.clone(),
-                key: key.clone(),
+                key,
             };
-            if let Some(id) = self.submit(job, ctx) {
+            if let Some(id) = self.submit(job, &window_gen, ctx) {
                 self.jobs.insert(id);
-                if let Some(row) = self.rows.get_mut(&key) {
-                    row.head = Head::Pending(true);
+                if let Some(row) = self.rows[slot].as_mut() {
+                    row.head = Head::Pending(Some(id));
                 }
             }
         }
@@ -248,69 +309,112 @@ impl InboxScreen {
         }
     }
 
-    /// Rebuild the filtered, sorted key list if anything it depends on changed.
+    /// Add one listing page's objects: sort just the page, then merge it into the order, so a
+    /// long listing costs about one sort of each row rather than a re-sort per page.
+    fn add_page(&mut self, objects: &[ObjectInfo]) {
+        let mut fresh = Vec::new();
+        for obj in objects {
+            if !self.is_direct_child(&obj.key)
+                || self.index.contains_key(&obj.key)
+                || self.deleted.contains(&obj.key)
+            {
+                continue;
+            }
+            let slot = self.rows.len();
+            self.rows.push(Some(Row {
+                info: obj.clone(),
+                head: Head::Pending(None),
+            }));
+            self.index.insert(obj.key.clone(), slot);
+            fresh.push(slot);
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        #[cfg(test)]
+        SORTED_ROWS.with(|c| c.set(c.get() + fresh.len()));
+        let rows = &self.rows;
+        let row = |slot: usize| rows[slot].as_ref().expect("a slot in the order is live");
+        fresh.sort_by(|&a, &b| newer(row(a), row(b)));
+        // A linear merge of two sorted runs.
+        let mut merged = Vec::with_capacity(self.order.len() + fresh.len());
+        let (mut i, mut j) = (0, 0);
+        while i < self.order.len() && j < fresh.len() {
+            if newer(row(fresh[j]), row(self.order[i])).is_lt() {
+                merged.push(fresh[j]);
+                j += 1;
+            } else {
+                merged.push(self.order[i]);
+                i += 1;
+            }
+        }
+        merged.extend_from_slice(&self.order[i..]);
+        merged.extend_from_slice(&fresh[j..]);
+        self.order = merged;
+        self.dirty = true;
+    }
+
+    /// Rebuild the shown slots from the order if anything they depend on changed. A pass over
+    /// the order, no sorting and no copies of keys.
     fn refresh_view(&mut self) {
         if !self.dirty {
             return;
         }
         self.dirty = false;
         let needle = self.filter.to_lowercase();
-        let mut view: Vec<&Row> = self
-            .rows
-            .values()
-            .filter(|row| match &row.head {
-                Head::NotEmail => false,
-                Head::Mail(s) => {
+        let rows = &self.rows;
+        self.view = self
+            .order
+            .iter()
+            .copied()
+            .filter(|&slot| match rows[slot].as_ref().map(|r| &r.head) {
+                Some(Head::NotEmail) | None => false,
+                Some(Head::Mail(s)) => {
                     needle.is_empty()
                         || s.from.to_lowercase().contains(&needle)
                         || s.subject.to_lowercase().contains(&needle)
                 }
-                _ => needle.is_empty(),
+                Some(_) => needle.is_empty(),
             })
             .collect();
-        #[cfg(test)]
-        SORTED_ROWS.with(|c| c.set(c.get() + view.len()));
-        view.sort_by_key(|r| (Reverse(r.info.last_modified), Reverse(r.info.key.as_str())));
-        self.view = view.into_iter().map(|r| r.info.key.clone()).collect();
-    }
-
-    fn selected_pos(&self) -> usize {
-        self.selected
-            .as_ref()
-            .and_then(|k| self.view.iter().position(|v| v == k))
-            .unwrap_or(0)
+        self.sel_pos = self
+            .selected
+            .and_then(|slot| self.view.iter().position(|&v| v == slot))
+            .unwrap_or(0);
     }
 
     fn select(&mut self, pos: usize) {
-        self.selected = self
-            .view
-            .get(pos.min(self.view.len().saturating_sub(1)))
-            .cloned();
+        self.sel_pos = pos.min(self.view.len().saturating_sub(1));
+        self.selected = self.view.get(self.sel_pos).copied();
     }
 
     fn current(&self) -> Option<&Row> {
         self.view
-            .get(self.selected_pos())
-            .and_then(|k| self.rows.get(k))
+            .get(self.sel_pos)
+            .and_then(|&slot| self.rows[slot].as_ref())
     }
 
     fn remove_row(&mut self, key: &str) {
         self.refresh_view();
+        let Some(slot) = self.index.remove(key) else {
+            return;
+        };
         // Keep the cursor where it was: on the row that slides up into the gap.
-        if self.selected.as_deref() == Some(key)
-            && let Some(pos) = self.view.iter().position(|k| k == key)
+        if self.selected == Some(slot)
+            && let Some(pos) = self.view.iter().position(|&v| v == slot)
         {
             self.selected = self
                 .view
                 .get(pos + 1)
                 .or_else(|| pos.checked_sub(1).and_then(|p| self.view.get(p)))
-                .cloned();
+                .copied();
         }
-        if let Some(row) = self.rows.remove(key)
+        if let Some(row) = self.rows[slot].take()
             && matches!(row.head, Head::NotEmail)
         {
             self.not_email -= 1;
         }
+        self.order.retain(|&s| s != slot);
         self.dirty = true;
     }
 
@@ -331,10 +435,9 @@ impl InboxScreen {
     }
 
     fn render_table(&mut self, frame: &mut Frame, area: Rect, offset_hint: UtcOffset) {
-        let now = self
-            .now
-            .unwrap_or_else(OffsetDateTime::now_utc)
-            .to_offset(offset_hint);
+        let now_utc = self.now.unwrap_or_else(OffsetDateTime::now_utc);
+        // At the very edge of the calendar the local offset has no room: stay in UTC.
+        let now = now_utc.checked_to_offset(offset_hint).unwrap_or(now_utc);
         let cols = area.width as usize;
         let wide = cols >= NARROW;
         let fixed = if wide {
@@ -371,7 +474,7 @@ impl InboxScreen {
         );
 
         self.page = (body.height as usize).max(1);
-        let sel = self.selected_pos();
+        let sel = self.sel_pos;
         if sel < self.offset {
             self.offset = sel;
         } else if sel >= self.offset + self.page {
@@ -385,8 +488,8 @@ impl InboxScreen {
             .enumerate()
             .skip(self.offset)
             .take(self.page)
-            .map(|(pos, key)| {
-                let row = &self.rows[key];
+            .filter_map(|(pos, &slot)| Some((pos, self.rows[slot].as_ref()?)))
+            .map(|(pos, row)| {
                 let size = human_size(row.info.size);
                 let (text, dim) = match &row.head {
                     Head::Mail(s) => {
@@ -421,7 +524,7 @@ impl View for InboxScreen {
     fn title(&self) -> String {
         let mut t = format!("Inbox {}", self.location());
         if self.error.is_none() && self.started {
-            let messages = self.rows.len() - self.not_email;
+            let messages = self.index.len() - self.not_email;
             let noun = if messages == 1 { "message" } else { "messages" };
             t.push_str(&format!(" · {messages} {noun}"));
             if self.not_email > 0 {
@@ -450,7 +553,8 @@ impl View for InboxScreen {
         } else if self.view.is_empty() {
             let pending = self
                 .rows
-                .values()
+                .iter()
+                .flatten()
                 .any(|r| matches!(r.head, Head::Pending(_)));
             let msg = if !self.listing_done || pending {
                 format!(" Loading {} …", self.location())
@@ -490,7 +594,10 @@ impl View for InboxScreen {
         }
 
         if let Some(key) = &self.confirm {
-            let row = self.rows.get(key);
+            let row = self
+                .index
+                .get(key)
+                .and_then(|&slot| self.rows[slot].as_ref());
             let subject = row.map_or_else(|| "(no subject)".into(), Row::subject);
             let from = row
                 .and_then(Row::summary)
@@ -523,10 +630,12 @@ impl View for InboxScreen {
             match &done.result {
                 Ok(_) if *bucket == self.inbox.bucket => {
                     self.remove_row(key);
+                    // A listing in flight may have been taken before this: keep it from
+                    // bringing the row back.
+                    self.deleted.insert(key.clone());
                     if mine || handed_over {
                         ctx.info(format!("Deleted {location}"));
                     }
-                    self.request_window(ctx);
                 }
                 Ok(_) => {}
                 Err(e) if mine => ctx.error(format!("Could not delete {location}: {e}")),
@@ -542,22 +651,19 @@ impl View for InboxScreen {
             return Transition::None;
         }
         match (&done.job, &done.result) {
+            (Job::PeekHead { key, .. }, Ok(Outcome::Skipped)) => {
+                // Skipped because the window moved on: ask again if it comes back into view,
+                // unless a newer peek for it is already queued.
+                if let Some(row) = self.index.get(key).and_then(|&s| self.rows[s].as_mut())
+                    && matches!(row.head, Head::Pending(Some(id)) if id == done.id)
+                {
+                    row.head = Head::Pending(None);
+                }
+            }
             (_, Ok(Outcome::Skipped)) => {}
             (Job::List { .. }, Ok(Outcome::Listing(listing))) => {
                 self.pages += 1;
-                for obj in &listing.objects {
-                    if !self.is_direct_child(&obj.key) || self.rows.contains_key(&obj.key) {
-                        continue;
-                    }
-                    self.rows.insert(
-                        obj.key.clone(),
-                        Row {
-                            info: obj.clone(),
-                            head: Head::Pending(false),
-                        },
-                    );
-                }
-                self.dirty = true;
+                self.add_page(&listing.objects);
                 match &listing.next_token {
                     Some(t) if self.last_token.as_ref() == Some(t) => {
                         self.listing_done = true;
@@ -583,7 +689,7 @@ impl View for InboxScreen {
             (Job::List { .. }, Err(e)) => {
                 self.listing_done = true;
                 let msg = self.list_error(e);
-                if self.rows.is_empty() {
+                if self.index.is_empty() {
                     self.error = Some(msg);
                 } else {
                     ctx.error(msg);
@@ -598,7 +704,7 @@ impl View for InboxScreen {
                     Ok(_) => return Transition::None,
                     Err(e) => Head::Unreadable(e.to_string()),
                 };
-                if let Some(row) = self.rows.get_mut(key) {
+                if let Some(row) = self.index.get(key).and_then(|&s| self.rows[s].as_mut()) {
                     if matches!(head, Head::NotEmail) && !matches!(row.head, Head::NotEmail) {
                         self.not_email += 1;
                     }
@@ -608,7 +714,7 @@ impl View for InboxScreen {
             }
             _ => {}
         }
-        self.request_window(ctx);
+        // New peeks come from the tick, once per pump, not from each result.
         Transition::None
     }
 
@@ -674,7 +780,7 @@ impl InboxScreen {
         }
 
         self.refresh_view();
-        let pos = self.selected_pos();
+        let pos = self.sel_pos;
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.select(pos.saturating_sub(1)),
             KeyCode::Down | KeyCode::Char('j') => self.select(pos + 1),
@@ -818,11 +924,14 @@ pub(super) fn display_from(from: &str) -> String {
 }
 
 /// In `now`'s offset: today's messages as a time, this year's as "Sep 20", older ones as a date.
+///
+/// A date too close to the edge of the calendar to move to that offset (year 9999 and a zone
+/// ahead of it, say) stays in the offset it was written in rather than crashing the render.
 fn format_date(date: Option<OffsetDateTime>, now: OffsetDateTime) -> String {
     let Some(d) = date else {
         return String::new();
     };
-    let d = d.to_offset(now.offset());
+    let d = d.checked_to_offset(now.offset()).unwrap_or(d);
     if d.date() == now.date() {
         format!("{:02}:{:02}", d.hour(), d.minute())
     } else if d.year() == now.year() {
@@ -1313,6 +1422,10 @@ mod tests {
         // and then delivered newest submission first.
         let mut held = Vec::new();
         loop {
+            // Peeks are asked for on the tick, as the run loop would.
+            if let Some(top) = app.stack.last_mut() {
+                top.on_tick(&mut app.ctx);
+            }
             let batch = app.ctx.jobs.poll();
             if batch.is_empty() {
                 break;
