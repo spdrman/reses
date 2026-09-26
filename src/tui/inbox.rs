@@ -1,39 +1,49 @@
 //! The inbox list: one row per stored message, From / Subject / Date / Size, newest first.
 //!
-//! The listing and every row's header peek go through the job pool, so the table fills in as
-//! results arrive, in whatever order the workers finish them.
+//! Rows are ordered by when S3 received the object, which is known from the listing alone, so
+//! the order never jumps and a forged Date header can't pin a message to the top. Headers are
+//! peeked (and decoded on the worker) only for the rows on screen plus a page ahead.
 
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use time::{OffsetDateTime, UtcOffset};
 
 use super::accounts::AccountsScreen;
-use super::jobs::{Done, Job, JobId, Outcome};
+use super::jobs::{Done, Generation, Job, JobId, Outcome};
 use super::message::MessageScreen;
-use super::{Ctx, Transition, View};
+use super::text::{SIZE_WIDTH, clean, fit, human_size, width};
+use super::{Ctx, Session, Transition, View};
 use crate::config::Inbox;
-use crate::mail::{self, Summary};
+use crate::mail::Summary;
 use crate::s3::{ObjectInfo, S3Error};
 
-/// The first header peek. Most header blocks fit; the rest get a bigger second look.
-const FIRST_PEEK: u64 = 32 * 1024;
-/// Stop growing the peek here and summarize whatever arrived.
-const MAX_PEEK: u64 = 1024 * 1024;
+/// A folder bigger than this many listing pages (a million keys at S3's 1000 a page) stops
+/// there rather than listing forever.
+pub(super) const MAX_PAGES: usize = 1000;
+/// Rows peeked before the first render says how tall the screen is.
+const DEFAULT_PAGE: usize = 24;
 
 const DATE_W: usize = 10;
-const SIZE_W: usize = 8;
 const GAP: usize = 2;
+/// Below this width the Date and Size columns go, leaving the room to Subject and From.
+const NARROW: usize = 50;
+
+/// Delete jobs a closed message screen left in flight, so the inbox can still report them.
+pub(super) type Handoff = Rc<RefCell<HashSet<JobId>>>;
 
 enum Head {
-    Pending,
+    /// Not peeked yet; `true` once the peek is queued.
+    Pending(bool),
     Mail(Summary),
     NotEmail,
     Unreadable(String),
@@ -54,29 +64,34 @@ impl Row {
 
     fn subject(&self) -> String {
         match self.summary() {
-            Some(s) if !s.subject.trim().is_empty() => clean(&s.subject),
+            Some(s) if !s.subject.trim().is_empty() => clean(s.subject.trim()),
             _ => "(no subject)".into(),
         }
-    }
-
-    fn sort_time(&self) -> Option<OffsetDateTime> {
-        self.summary()
-            .and_then(|s| s.date)
-            .or(self.info.last_modified)
     }
 }
 
 pub struct InboxScreen {
     pub inbox: Inbox,
-    rows: Vec<Row>,
-    /// Listing and peek jobs of the current load. A refresh starts a fresh set.
+    /// The account this inbox was opened with. Switching accounts on the accounts screen
+    /// doesn't change what this screen lists or deletes.
+    session: Option<Session>,
+    generation: Generation,
+    rows: HashMap<String, Row>,
+    not_email: usize,
+    /// Visible keys, filtered and sorted. Rebuilt only when `dirty`.
+    view: Vec<String>,
+    dirty: bool,
+    /// Listing and peek jobs of the current load.
     jobs: HashSet<JobId>,
     /// Deletes this screen asked for, so it knows whose result to report.
     deletes: HashSet<JobId>,
+    handoff: Handoff,
     started: bool,
     listing_done: bool,
+    pages: usize,
+    last_token: Option<String>,
     error: Option<String>,
-    /// Selection by key, so it stays on the same message while rows re-sort.
+    /// Selection by key, so it stays on the same message while rows come and go.
     selected: Option<String>,
     offset: usize,
     page: usize,
@@ -92,15 +107,23 @@ impl InboxScreen {
     pub fn new(inbox: Inbox) -> Self {
         Self {
             inbox,
-            rows: Vec::new(),
+            session: None,
+            generation: Generation::new(),
+            rows: HashMap::new(),
+            not_email: 0,
+            view: Vec::new(),
+            dirty: false,
             jobs: HashSet::new(),
             deletes: HashSet::new(),
+            handoff: Handoff::default(),
             started: false,
             listing_done: false,
+            pages: 0,
+            last_token: None,
             error: None,
             selected: None,
             offset: 0,
-            page: 1,
+            page: DEFAULT_PAGE,
             filter: String::new(),
             typing: false,
             confirm: None,
@@ -127,12 +150,23 @@ impl InboxScreen {
 
     fn load(&mut self, ctx: &mut Ctx) {
         self.started = true;
+        // Anything still queued from the last load is skipped by the workers.
+        self.generation.bump();
         self.rows.clear();
+        self.not_email = 0;
+        self.dirty = true;
         self.jobs.clear();
         self.error = None;
         self.listing_done = false;
+        self.pages = 0;
+        self.last_token = None;
         self.offset = 0;
         self.list_page(None, ctx);
+    }
+
+    fn submit(&mut self, job: Job, ctx: &mut Ctx) -> Option<JobId> {
+        let session = self.session.as_ref()?;
+        Some(ctx.submit_to(session, job, Some(&self.generation)))
     }
 
     fn list_page(&mut self, token: Option<String>, ctx: &mut Ctx) {
@@ -142,7 +176,7 @@ impl InboxScreen {
             delimiter: true,
             token,
         };
-        match ctx.submit(job) {
+        match self.submit(job, ctx) {
             Some(id) => {
                 self.jobs.insert(id);
             }
@@ -153,14 +187,40 @@ impl InboxScreen {
         }
     }
 
-    fn peek(&mut self, key: &str, bytes: u64, ctx: &mut Ctx) {
-        let job = Job::Peek {
-            bucket: self.inbox.bucket.clone(),
-            key: key.to_string(),
-            bytes,
+    /// Queue header peeks for the rows on screen (or about to be) and a page beyond. Only once
+    /// the listing is complete: S3 lists in key order, not received order, so until then the
+    /// top of the list keeps changing and peeking it would end up peeking everything.
+    fn request_window(&mut self, ctx: &mut Ctx) {
+        if !self.listing_done {
+            return;
+        }
+        self.refresh_view();
+        // Where the next render will scroll to, so a jump to End peeks the end, not everything.
+        let sel = self.selected_pos();
+        let top = if sel < self.offset {
+            sel
+        } else if sel >= self.offset + self.page {
+            sel + 1 - self.page
+        } else {
+            self.offset
         };
-        if let Some(id) = ctx.submit(job) {
-            self.jobs.insert(id);
+        let end = (top + 2 * self.page).min(self.view.len());
+        let wanted: Vec<String> = self.view[top.min(end)..end]
+            .iter()
+            .filter(|k| matches!(self.rows[*k].head, Head::Pending(false)))
+            .cloned()
+            .collect();
+        for key in wanted {
+            let job = Job::PeekHead {
+                bucket: self.inbox.bucket.clone(),
+                key: key.clone(),
+            };
+            if let Some(id) = self.submit(job, ctx) {
+                self.jobs.insert(id);
+                if let Some(row) = self.rows.get_mut(&key) {
+                    row.head = Head::Pending(true);
+                }
+            }
         }
     }
 
@@ -169,12 +229,8 @@ impl InboxScreen {
             .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
     }
 
-    fn row_mut(&mut self, key: &str) -> Option<&mut Row> {
-        self.rows.iter_mut().find(|r| r.info.key == key)
-    }
-
-    fn list_error(&self, e: &S3Error, ctx: &Ctx) -> String {
-        let profile = ctx
+    fn list_error(&self, e: &S3Error) -> String {
+        let profile = self
             .session
             .as_ref()
             .map_or(self.inbox.profile.as_str(), |s| s.profile.name.as_str());
@@ -192,61 +248,68 @@ impl InboxScreen {
         }
     }
 
-    /// Rows that are shown, filtered and sorted newest first.
-    fn visible(&self) -> Vec<usize> {
+    /// Rebuild the filtered, sorted key list if anything it depends on changed.
+    fn refresh_view(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        self.dirty = false;
         let needle = self.filter.to_lowercase();
-        let mut out: Vec<usize> = (0..self.rows.len())
-            .filter(|&i| {
-                let row = &self.rows[i];
-                if matches!(row.head, Head::NotEmail) {
-                    return false;
+        let mut view: Vec<&Row> = self
+            .rows
+            .values()
+            .filter(|row| match &row.head {
+                Head::NotEmail => false,
+                Head::Mail(s) => {
+                    needle.is_empty()
+                        || s.from.to_lowercase().contains(&needle)
+                        || s.subject.to_lowercase().contains(&needle)
                 }
-                if needle.is_empty() {
-                    return true;
-                }
-                match row.summary() {
-                    Some(s) => {
-                        s.from.to_lowercase().contains(&needle)
-                            || s.subject.to_lowercase().contains(&needle)
-                    }
-                    None => false,
-                }
+                _ => needle.is_empty(),
             })
             .collect();
-        out.sort_by_key(|&i| {
-            let r = &self.rows[i];
-            (Reverse(r.sort_time()), Reverse(r.info.key.clone()))
-        });
-        out
+        view.sort_by_key(|r| (Reverse(r.info.last_modified), Reverse(r.info.key.as_str())));
+        self.view = view.into_iter().map(|r| r.info.key.clone()).collect();
     }
 
-    fn selected_pos(&self, visible: &[usize]) -> usize {
+    fn selected_pos(&self) -> usize {
         self.selected
             .as_ref()
-            .and_then(|k| visible.iter().position(|&i| &self.rows[i].info.key == k))
+            .and_then(|k| self.view.iter().position(|v| v == k))
             .unwrap_or(0)
     }
 
-    fn select(&mut self, visible: &[usize], pos: usize) {
-        self.selected = visible
-            .get(pos.min(visible.len().saturating_sub(1)))
-            .map(|&i| self.rows[i].info.key.clone());
+    fn select(&mut self, pos: usize) {
+        self.selected = self
+            .view
+            .get(pos.min(self.view.len().saturating_sub(1)))
+            .cloned();
     }
 
     fn current(&self) -> Option<&Row> {
-        let visible = self.visible();
-        visible
-            .get(self.selected_pos(&visible))
-            .map(|&i| &self.rows[i])
+        self.view
+            .get(self.selected_pos())
+            .and_then(|k| self.rows.get(k))
     }
 
-    fn counts(&self) -> (usize, usize) {
-        let hidden = self
-            .rows
-            .iter()
-            .filter(|r| matches!(r.head, Head::NotEmail))
-            .count();
-        (self.rows.len() - hidden, hidden)
+    fn remove_row(&mut self, key: &str) {
+        self.refresh_view();
+        // Keep the cursor where it was: on the row that slides up into the gap.
+        if self.selected.as_deref() == Some(key)
+            && let Some(pos) = self.view.iter().position(|k| k == key)
+        {
+            self.selected = self
+                .view
+                .get(pos + 1)
+                .or_else(|| pos.checked_sub(1).and_then(|p| self.view.get(p)))
+                .cloned();
+        }
+        if let Some(row) = self.rows.remove(key)
+            && matches!(row.head, Head::NotEmail)
+        {
+            self.not_email -= 1;
+        }
+        self.dirty = true;
     }
 
     fn on_filter_key(&mut self, key: KeyEvent) {
@@ -260,79 +323,84 @@ impl InboxScreen {
                 self.filter.clear();
                 self.typing = false;
             }
-            _ => {}
+            _ => return,
         }
+        self.dirty = true;
     }
 
-    fn render_table(&mut self, frame: &mut Frame, area: Rect, visible: &[usize]) {
+    fn render_table(&mut self, frame: &mut Frame, area: Rect, offset_hint: UtcOffset) {
         let now = self
             .now
             .unwrap_or_else(OffsetDateTime::now_utc)
-            .to_offset(UtcOffset::UTC);
-        let width = area.width as usize;
-        let rest = width.saturating_sub(1 + GAP + DATE_W + GAP + SIZE_W + GAP);
-        let from_w = (rest * 3 / 10).clamp(rest.min(6), 30);
+            .to_offset(offset_hint);
+        let cols = area.width as usize;
+        let wide = cols >= NARROW;
+        let fixed = if wide {
+            1 + GAP + GAP + DATE_W + GAP + SIZE_WIDTH
+        } else {
+            1 + GAP
+        };
+        let rest = cols.saturating_sub(fixed);
+        // Subject gets the room first: From takes a quarter (at least 8, at most 24 columns).
+        let from_w = (rest / 4).max(rest.min(8)).min(24);
         let subject_w = rest - from_w;
+        let line = |from: &str, subject: &str, date: &str, size: &str| {
+            let mut s = format!(
+                " {}{:GAP$}{}",
+                fit(from, from_w),
+                "",
+                fit(subject, subject_w)
+            );
+            if wide {
+                s.push_str(&format!(
+                    "{:GAP$}{:>DATE_W$}{:GAP$}{:>SIZE_WIDTH$}",
+                    "", date, "", size
+                ));
+            }
+            s
+        };
 
         let [head, body] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-        let header = format!(
-            " {}{:GAP$}{}{:GAP$}{:>DATE_W$}{:GAP$}{:>SIZE_W$}",
-            fit("From", from_w),
-            "",
-            fit("Subject", subject_w),
-            "",
-            "Date",
-            "",
-            "Size"
-        );
         frame.render_widget(
-            Paragraph::new(header).style(Style::default().add_modifier(Modifier::BOLD)),
+            Paragraph::new(line("From", "Subject", "Date", "Size"))
+                .style(Style::default().add_modifier(Modifier::BOLD)),
             head,
         );
 
         self.page = (body.height as usize).max(1);
-        let sel = self.selected_pos(visible);
+        let sel = self.selected_pos();
         if sel < self.offset {
             self.offset = sel;
         } else if sel >= self.offset + self.page {
             self.offset = sel + 1 - self.page;
         }
-        self.offset = self.offset.min(visible.len().saturating_sub(self.page));
+        self.offset = self.offset.min(self.view.len().saturating_sub(self.page));
 
-        let lines: Vec<Line> = visible
+        let lines: Vec<Line> = self
+            .view
             .iter()
             .enumerate()
             .skip(self.offset)
             .take(self.page)
-            .map(|(pos, &i)| {
-                let row = &self.rows[i];
+            .map(|(pos, key)| {
+                let row = &self.rows[key];
                 let size = human_size(row.info.size);
-                let (from, subject, date, dim) = match &row.head {
-                    Head::Mail(s) => (
-                        display_from(&s.from),
-                        row.subject(),
-                        format_date(row.sort_time(), now),
-                        false,
-                    ),
+                let (text, dim) = match &row.head {
+                    Head::Mail(s) => {
+                        // Show the Date the sender wrote, falling back to when S3 got it.
+                        let date = format_date(s.date.or(row.info.last_modified), now);
+                        (
+                            line(&display_from(&s.from), &row.subject(), &date, &size),
+                            false,
+                        )
+                    }
                     Head::Unreadable(e) => (
-                        String::new(),
-                        format!("(could not read headers: {e})"),
-                        String::new(),
+                        line("", &format!("(could not read headers: {e})"), "", &size),
                         true,
                     ),
-                    _ => ("…".into(), "loading…".into(), String::new(), true),
+                    _ => (line("…", "loading…", "", &size), true),
                 };
-                let text = format!(
-                    " {}{:GAP$}{}{:GAP$}{:>DATE_W$}{:GAP$}{:>SIZE_W$}",
-                    fit(&from, from_w),
-                    "",
-                    fit(&subject, subject_w),
-                    "",
-                    date,
-                    "",
-                    size
-                );
                 let mut style = Style::default();
                 if dim {
                     style = style.fg(Color::DarkGray);
@@ -351,20 +419,18 @@ impl View for InboxScreen {
     fn title(&self) -> String {
         let mut t = format!("Inbox {}", self.location());
         if self.error.is_none() && self.started {
-            let (messages, hidden) = self.counts();
+            let messages = self.rows.len() - self.not_email;
             let noun = if messages == 1 { "message" } else { "messages" };
             t.push_str(&format!(" · {messages} {noun}"));
-            if hidden > 0 {
-                t.push_str(&format!(" · {hidden} not email"));
-            }
-            if !self.filter.is_empty() {
-                t.push_str(&format!(" · {} shown", self.visible().len()));
+            if self.not_email > 0 {
+                t.push_str(&format!(" · {} not email", self.not_email));
             }
         }
         t
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx) {
+        self.refresh_view();
         let show_filter = self.typing || !self.filter.is_empty();
         let [main, filter_area] = Layout::vertical([
             Constraint::Min(0),
@@ -372,7 +438,6 @@ impl View for InboxScreen {
         ])
         .areas(area);
 
-        let visible = self.visible();
         if let Some(err) = &self.error {
             frame.render_widget(
                 Paragraph::new(format!(" {err}"))
@@ -380,37 +445,50 @@ impl View for InboxScreen {
                     .wrap(Wrap { trim: false }),
                 main,
             );
-        } else if visible.is_empty() {
-            let pending = self.rows.iter().any(|r| matches!(r.head, Head::Pending));
+        } else if self.view.is_empty() {
+            let pending = self
+                .rows
+                .values()
+                .any(|r| matches!(r.head, Head::Pending(_)));
             let msg = if !self.listing_done || pending {
                 format!(" Loading {} …", self.location())
             } else if !self.filter.is_empty() {
                 format!(" Nothing matches /{}", self.filter)
             } else {
-                let (_, hidden) = self.counts();
                 let mut m = format!(" No messages in {}.", self.location());
-                if hidden > 0 {
-                    let noun = if hidden == 1 { "object" } else { "objects" };
-                    m.push_str(&format!(" ({hidden} other {noun} there are not email.)"));
+                if self.not_email > 0 {
+                    let noun = if self.not_email == 1 {
+                        "object"
+                    } else {
+                        "objects"
+                    };
+                    m.push_str(&format!(
+                        " ({} other {noun} there are not email.)",
+                        self.not_email
+                    ));
                 }
                 m
             };
             frame.render_widget(Paragraph::new(msg).wrap(Wrap { trim: false }), main);
         } else {
-            self.render_table(frame, main, &visible);
+            self.render_table(frame, main, ctx.local_offset);
         }
 
         if show_filter {
             let cursor = if self.typing { "_" } else { "" };
             frame.render_widget(
-                Paragraph::new(format!(" /{}{cursor}", self.filter))
-                    .style(Style::default().fg(Color::Yellow)),
+                Paragraph::new(format!(
+                    " /{}{cursor}   {} shown",
+                    self.filter,
+                    self.view.len()
+                ))
+                .style(Style::default().fg(Color::Yellow)),
                 filter_area,
             );
         }
 
         if let Some(key) = &self.confirm {
-            let row = self.rows.iter().find(|r| &r.info.key == key);
+            let row = self.rows.get(key);
             let subject = row.map_or_else(|| "(no subject)".into(), Row::subject);
             let from = row
                 .and_then(Row::summary)
@@ -427,76 +505,32 @@ impl View for InboxScreen {
     }
 
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
-        if let Some(target) = self.confirm.take() {
-            if key.code == KeyCode::Char('y') {
-                let job = Job::Delete {
-                    bucket: self.inbox.bucket.clone(),
-                    key: target,
-                };
-                match ctx.submit(job) {
-                    Some(id) => {
-                        self.deletes.insert(id);
-                    }
-                    None => ctx.error("Not connected to an account."),
-                }
-            } else {
-                ctx.info("Delete cancelled.");
-            }
-            return Transition::None;
+        let t = self.handle_key(key, ctx);
+        if matches!(t, Transition::None) {
+            self.request_window(ctx);
         }
-        if self.typing {
-            self.on_filter_key(key);
-            return Transition::None;
-        }
-
-        let visible = self.visible();
-        let pos = self.selected_pos(&visible);
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.select(&visible, pos.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => self.select(&visible, pos + 1),
-            KeyCode::PageUp => self.select(&visible, pos.saturating_sub(self.page)),
-            KeyCode::PageDown => self.select(&visible, pos + self.page),
-            KeyCode::Home | KeyCode::Char('g') => self.select(&visible, 0),
-            KeyCode::End | KeyCode::Char('G') => self.select(&visible, usize::MAX),
-            KeyCode::Enter => {
-                if let Some(row) = self.current() {
-                    let screen =
-                        MessageScreen::new(self.inbox.bucket.clone(), row.info.key.clone())
-                            .with_subject(row.subject())
-                            .with_out_dir(self.downloads.clone());
-                    return Transition::Push(Box::new(screen));
-                }
-            }
-            KeyCode::Char('d') => {
-                self.confirm = self.current().map(|r| r.info.key.clone());
-            }
-            KeyCode::Char('r') => {
-                self.load(ctx);
-                ctx.info(format!("Refreshing {}", self.location()));
-            }
-            KeyCode::Char('/') => self.typing = true,
-            KeyCode::Char('u') => return Transition::Push(Box::new(AccountsScreen::new(ctx))),
-            KeyCode::Esc if !self.filter.is_empty() => self.filter.clear(),
-            KeyCode::Esc | KeyCode::Char('q') => return Transition::Pop,
-            _ => {}
-        }
-        Transition::None
+        t
     }
 
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
         // A delete from this screen or from the message screen: either way the row goes.
         if let Job::Delete { bucket, key } = &done.job {
             let mine = self.deletes.remove(&done.id);
+            let handed_over = self.handoff.borrow_mut().remove(&done.id);
             let location = format!("s3://{bucket}/{key}");
             match &done.result {
                 Ok(_) if *bucket == self.inbox.bucket => {
-                    self.rows.retain(|r| &r.info.key != key);
-                    if mine {
+                    self.remove_row(key);
+                    if mine || handed_over {
                         ctx.info(format!("Deleted {location}"));
                     }
+                    self.request_window(ctx);
                 }
                 Ok(_) => {}
                 Err(e) if mine => ctx.error(format!("Could not delete {location}: {e}")),
+                Err(e) if handed_over => ctx.error(format!(
+                    "Could not delete {location} (after closing the message): {e}"
+                )),
                 Err(_) => {}
             }
             return Transition::None;
@@ -506,67 +540,93 @@ impl View for InboxScreen {
             return Transition::None;
         }
         match (&done.job, &done.result) {
+            (_, Ok(Outcome::Skipped)) => {}
             (Job::List { .. }, Ok(Outcome::Listing(listing))) => {
+                self.pages += 1;
                 for obj in &listing.objects {
-                    if !self.is_direct_child(&obj.key) || self.row_mut(&obj.key).is_some() {
+                    if !self.is_direct_child(&obj.key) || self.rows.contains_key(&obj.key) {
                         continue;
                     }
-                    self.rows.push(Row {
-                        info: obj.clone(),
-                        head: Head::Pending,
-                    });
-                    self.peek(&obj.key, FIRST_PEEK, ctx);
+                    self.rows.insert(
+                        obj.key.clone(),
+                        Row {
+                            info: obj.clone(),
+                            head: Head::Pending(false),
+                        },
+                    );
                 }
+                self.dirty = true;
                 match &listing.next_token {
-                    Some(t) => self.list_page(Some(t.clone()), ctx),
+                    Some(t) if self.last_token.as_ref() == Some(t) => {
+                        self.listing_done = true;
+                        ctx.error(format!(
+                            "Stopped listing {}: S3 sent the same continuation token twice.",
+                            self.location()
+                        ));
+                    }
+                    Some(_) if self.pages >= MAX_PAGES => {
+                        self.listing_done = true;
+                        ctx.error(format!(
+                            "Stopped listing {} after {MAX_PAGES} pages.",
+                            self.location()
+                        ));
+                    }
+                    Some(t) => {
+                        self.last_token = Some(t.clone());
+                        self.list_page(Some(t.clone()), ctx);
+                    }
                     None => self.listing_done = true,
                 }
             }
             (Job::List { .. }, Err(e)) => {
                 self.listing_done = true;
-                let msg = self.list_error(e, ctx);
+                let msg = self.list_error(e);
                 if self.rows.is_empty() {
                     self.error = Some(msg);
                 } else {
                     ctx.error(msg);
                 }
             }
-            (Job::Peek { key, bytes, .. }, Ok(Outcome::Data(data))) => {
-                let grow = !header_ended(data) && data.len() as u64 >= *bytes && *bytes < MAX_PEEK;
-                let head = if !mail::looks_like_email(data) {
-                    Some(Head::NotEmail)
-                } else if grow {
-                    None
-                } else {
-                    Some(Head::Mail(mail::summarize(data)))
+            (Job::PeekHead { key, .. }, result) => {
+                let head = match result {
+                    Ok(Outcome::Head(h)) => match &h.summary {
+                        Some(s) if h.is_email => Head::Mail(s.clone()),
+                        _ => Head::NotEmail,
+                    },
+                    Ok(_) => return Transition::None,
+                    Err(e) => Head::Unreadable(e.to_string()),
                 };
-                match head {
-                    Some(head) => {
-                        if let Some(row) = self.row_mut(key) {
-                            row.head = head;
-                        }
+                if let Some(row) = self.rows.get_mut(key) {
+                    if matches!(head, Head::NotEmail) && !matches!(row.head, Head::NotEmail) {
+                        self.not_email += 1;
                     }
-                    None => {
-                        let key = key.clone();
-                        self.peek(&key, (*bytes * 4).min(MAX_PEEK), ctx);
-                    }
-                }
-            }
-            (Job::Peek { key, .. }, Err(e)) => {
-                let msg = e.to_string();
-                if let Some(row) = self.row_mut(key) {
-                    row.head = Head::Unreadable(msg);
+                    row.head = head;
+                    self.dirty = true;
                 }
             }
             _ => {}
         }
+        self.request_window(ctx);
         Transition::None
     }
 
     fn on_focus(&mut self, ctx: &mut Ctx) {
+        if self.session.is_none() {
+            self.session = ctx.session.clone();
+        }
         if !self.started {
             self.load(ctx);
         }
+    }
+
+    fn on_tick(&mut self, ctx: &mut Ctx) {
+        if self.started && self.error.is_none() {
+            self.request_window(ctx);
+        }
+    }
+
+    fn session(&self) -> Option<&Session> {
+        self.session.as_ref()
     }
 
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
@@ -585,7 +645,77 @@ impl View for InboxScreen {
     }
 }
 
-/// The delete confirmation both screens show: what is going, from where, and which key does it.
+impl InboxScreen {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
+        if let Some(target) = self.confirm.take() {
+            if key.code == KeyCode::Char('y') {
+                let job = Job::Delete {
+                    bucket: self.inbox.bucket.clone(),
+                    key: target,
+                };
+                // Deliberately not stamped: a refresh never cancels a delete.
+                match &self.session {
+                    Some(session) => {
+                        let id = ctx.submit_to(session, job, None);
+                        self.deletes.insert(id);
+                    }
+                    None => ctx.error("Not connected to an account."),
+                }
+            } else {
+                ctx.info("Delete cancelled.");
+            }
+            return Transition::None;
+        }
+        if self.typing {
+            self.on_filter_key(key);
+            return Transition::None;
+        }
+
+        self.refresh_view();
+        let pos = self.selected_pos();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.select(pos.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => self.select(pos + 1),
+            KeyCode::PageUp => self.select(pos.saturating_sub(self.page)),
+            KeyCode::PageDown => self.select(pos + self.page),
+            KeyCode::Home | KeyCode::Char('g') => self.select(0),
+            KeyCode::End | KeyCode::Char('G') => self.select(usize::MAX),
+            KeyCode::Enter => {
+                if let Some(row) = self.current() {
+                    let mut screen =
+                        MessageScreen::new(self.inbox.bucket.clone(), row.info.key.clone())
+                            .with_subject(row.subject())
+                            .with_out_dir(self.downloads.clone())
+                            .with_handoff(Rc::clone(&self.handoff));
+                    if let Some(session) = &self.session {
+                        screen = screen.with_session(session.clone());
+                    }
+                    return Transition::Push(Box::new(screen));
+                }
+            }
+            KeyCode::Char('d') => {
+                self.confirm = self.current().map(|r| r.info.key.clone());
+            }
+            KeyCode::Char('r') => {
+                self.load(ctx);
+                ctx.info(format!("Refreshing {}", self.location()));
+            }
+            KeyCode::Char('/') => self.typing = true,
+            KeyCode::Char('u') => return Transition::Push(Box::new(AccountsScreen::new(ctx))),
+            KeyCode::Esc if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.dirty = true;
+            }
+            // The inbox is the root screen, so Esc staying put keeps a stray press from quitting.
+            KeyCode::Char('q') => return Transition::Pop,
+            _ => {}
+        }
+        Transition::None
+    }
+}
+
+/// The delete confirmation both screens show. The full `s3://` location and the "y" line always
+/// show in full (wrapped if they must); the sender-controlled subject and From are what get cut.
 pub(super) fn render_confirm(
     frame: &mut Frame,
     area: Rect,
@@ -593,35 +723,66 @@ pub(super) fn render_confirm(
     from: &str,
     location: &str,
 ) {
-    let mut lines = vec![
-        Line::styled(
+    let prompt = "Press y to delete, any other key to cancel.";
+    let object = format!("Object:  {location}");
+    let aw = area.width as usize;
+    // The box is as wide as its fixed lines need, within the screen, 2 of border and 2 of pad.
+    let widest = width(&object).max(width(prompt)).max(40);
+    let inner = widest.min(aw.saturating_sub(4)).max(1);
+    let rows_for = |s: &str| width(s).div_ceil(inner).max(1);
+
+    // Rows inside the box: the subject, location and prompt always; the rest if they fit.
+    let ah = area.height as usize;
+    let mut spare = ah
+        .saturating_sub(2)
+        .saturating_sub(1 + rows_for(&object) + rows_for(prompt));
+    let mut take = |wanted: bool| {
+        let yes = wanted && spare > 0;
+        if yes {
+            spare -= 1;
+        }
+        yes
+    };
+    let title = take(true);
+    let from_line = take(!from.is_empty());
+    let gap_before_prompt = take(true);
+    let gap_after_title = take(title);
+
+    let mut lines = Vec::new();
+    if title {
+        lines.push(Line::styled(
             "Delete this message from S3?",
             Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Line::raw(""),
-        Line::raw(format!("Subject: {subject}")),
-    ];
-    if !from.is_empty() {
-        lines.push(Line::raw(format!("From:    {from}")));
+        ));
     }
-    lines.push(Line::raw(format!("Object:  {location}")));
-    lines.push(Line::raw(""));
-    lines.push(Line::raw("Press y to delete, any other key to cancel."));
+    if gap_after_title {
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::raw(fit(
+        &format!("Subject: {}", clean(subject)),
+        inner,
+    )));
+    if from_line {
+        lines.push(Line::raw(fit(&format!("From:    {}", clean(from)), inner)));
+    }
+    let mut text_rows = lines.len() + rows_for(&object) + rows_for(prompt);
+    lines.push(Line::raw(object));
+    if gap_before_prompt {
+        lines.push(Line::raw(""));
+        text_rows += 1;
+    }
+    lines.push(Line::styled(
+        prompt,
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
 
-    let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
-    let w = (inner_w + 4).min(area.width);
-    let text_w = w.saturating_sub(4).max(1);
-    // Wrapped height, so a long key still fits inside the box.
-    let text_h: u16 = lines
-        .iter()
-        .map(|l| (l.width() as u16).div_ceil(text_w).max(1))
-        .sum();
-    let h = (text_h + 2).min(area.height);
+    let w = (inner + 4).min(aw);
+    let h = (text_rows + 2).min(ah);
     let rect = Rect {
-        x: area.x + (area.width - w) / 2,
-        y: area.y + (area.height - h) / 2,
-        width: w,
-        height: h,
+        x: area.x.saturating_add(((aw - w) / 2) as u16),
+        y: area.y.saturating_add(((ah - h) / 2) as u16),
+        width: w as u16,
+        height: h as u16,
     };
     frame.render_widget(Clear, rect);
     frame.render_widget(
@@ -639,11 +800,6 @@ fn default_downloads() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Downloads")
 }
 
-/// True once the blank line that ends the header block is in the bytes we have.
-fn header_ended(data: &[u8]) -> bool {
-    data.windows(2).any(|w| w == b"\n\n") || data.windows(4).any(|w| w == b"\r\n\r\n")
-}
-
 /// The display name when there is one, else the address.
 pub(super) fn display_from(from: &str) -> String {
     let from = clean(from);
@@ -659,19 +815,12 @@ pub(super) fn display_from(from: &str) -> String {
     from.to_string()
 }
 
-/// Header text on one line: control characters (folded headers, tabs) become spaces.
-fn clean(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
-}
-
-/// Today's messages as a time, this year's as "Sep 20", older ones as a full date.
+/// In `now`'s offset: today's messages as a time, this year's as "Sep 20", older ones as a date.
 fn format_date(date: Option<OffsetDateTime>, now: OffsetDateTime) -> String {
     let Some(d) = date else {
         return String::new();
     };
-    let d = d.to_offset(UtcOffset::UTC);
+    let d = d.to_offset(now.offset());
     if d.date() == now.date() {
         format!("{:02}:{:02}", d.hour(), d.minute())
     } else if d.year() == now.year() {
@@ -682,60 +831,141 @@ fn format_date(date: Option<OffsetDateTime>, now: OffsetDateTime) -> String {
     }
 }
 
-fn human_size(n: u64) -> String {
-    if n < 1024 {
-        return format!("{n} B");
-    }
-    let mut v = n as f64 / 1024.0;
-    for unit in ["KB", "MB", "GB"] {
-        if v < 1000.0 {
-            return format!("{v:.1} {unit}");
-        }
-        v /= 1024.0;
-    }
-    format!("{v:.1} TB")
-}
-
-fn char_width(c: char) -> usize {
-    let mut buf = [0u8; 4];
-    Span::raw(&*c.encode_utf8(&mut buf)).width()
-}
-
-/// Exactly `width` columns: padded, or cut with an ellipsis.
-fn fit(s: &str, width: usize) -> String {
-    let total: usize = s.chars().map(char_width).sum();
-    if total <= width {
-        return format!("{s}{}", " ".repeat(width - total));
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for c in s.chars() {
-        let w = char_width(c);
-        if used + w > width - 1 {
-            break;
-        }
-        out.push(c);
-        used += w;
-    }
-    out.push('…');
-    used += 1;
-    out.push_str(&" ".repeat(width - used));
-    out
-}
-
 /// Message builders and a store that fails on demand, shared with the message screen's tests.
 #[cfg(test)]
 pub(super) mod fixtures {
-    use std::sync::Arc;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use time::OffsetDateTime;
 
     use crate::config::Inbox;
     use crate::s3::{Bucket, Listing, MemoryStore, S3Error, Store};
 
     pub const BUCKET: &str = "inbox-bucket";
     pub const PREFIX: &str = "mail/";
+
+    /// A MemoryStore that lists each object with the time S3 received it (MemoryStore itself
+    /// stamps everything with the epoch), and counts header peeks.
+    pub struct Timed {
+        inner: MemoryStore,
+        received: Mutex<HashMap<String, OffsetDateTime>>,
+        peeks: AtomicUsize,
+    }
+
+    impl Timed {
+        pub fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: MemoryStore::new(),
+                received: Mutex::new(HashMap::new()),
+                peeks: AtomicUsize::new(0),
+            })
+        }
+
+        /// Received when its Date header says, the ordinary case for mail SES delivers.
+        pub fn put(&self, bucket: &str, key: &str, data: &[u8]) {
+            let at = crate::mail::summarize(data)
+                .date
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+            self.put_received(bucket, key, data, at);
+        }
+
+        pub fn put_received(&self, bucket: &str, key: &str, data: &[u8], at: OffsetDateTime) {
+            self.inner.put(bucket, key, data);
+            self.received.lock().unwrap().insert(key.to_string(), at);
+        }
+
+        pub fn create_bucket(&self, bucket: &str) {
+            self.inner.create_bucket(bucket);
+        }
+
+        pub fn contains(&self, bucket: &str, key: &str) -> bool {
+            self.inner.contains(bucket, key)
+        }
+
+        /// Ranged gets so far, which is what a header peek does.
+        pub fn peeks(&self) -> usize {
+            self.peeks.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Store for Timed {
+        fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
+            self.inner.list_buckets()
+        }
+        fn list(
+            &self,
+            bucket: &str,
+            prefix: &str,
+            delimiter: Option<&str>,
+            token: Option<&str>,
+        ) -> Result<Listing, S3Error> {
+            let mut listing = self.inner.list(bucket, prefix, delimiter, token)?;
+            let received = self.received.lock().unwrap();
+            for obj in &mut listing.objects {
+                if let Some(at) = received.get(&obj.key) {
+                    obj.last_modified = Some(*at);
+                }
+            }
+            Ok(listing)
+        }
+        fn get_range(
+            &self,
+            bucket: &str,
+            key: &str,
+            start: u64,
+            end: u64,
+        ) -> Result<Vec<u8>, S3Error> {
+            self.peeks.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_range(bucket, key, start, end)
+        }
+        fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
+            self.inner.get(bucket, key)
+        }
+        fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
+            self.inner.delete(bucket, key)
+        }
+    }
+
+    /// Always answers a listing with the same page and a continuation token from `next`.
+    pub struct Endless {
+        pub next: fn(usize) -> String,
+        pub calls: AtomicUsize,
+    }
+
+    impl Store for Endless {
+        fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
+            Ok(Vec::new())
+        }
+        fn list(
+            &self,
+            _: &str,
+            prefix: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<Listing, S3Error> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Listing {
+                prefixes: Vec::new(),
+                objects: vec![crate::s3::ObjectInfo {
+                    key: format!("{prefix}obj{n}"),
+                    size: 10,
+                    last_modified: None,
+                }],
+                next_token: Some((self.next)(n)),
+            })
+        }
+        fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
+            Ok(b"not mail".to_vec())
+        }
+        fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
+            Ok(b"not mail".to_vec())
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
+            Ok(())
+        }
+    }
 
     pub fn inbox() -> Inbox {
         Inbox {
@@ -773,7 +1003,7 @@ pub(super) mod fixtures {
 
     /// Delegates to a MemoryStore, except for the calls told to fail.
     pub struct Failing {
-        pub inner: Arc<MemoryStore>,
+        pub inner: Arc<Timed>,
         pub list_err: Option<S3Error>,
         pub delete_err: Option<S3Error>,
     }
@@ -818,13 +1048,14 @@ pub(super) mod fixtures {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use ratatui::crossterm::event::KeyCode;
     use time::macros::datetime;
 
     use super::fixtures::*;
     use super::*;
-    use crate::s3::{MemoryStore, Store};
+    use crate::s3::Store;
     use crate::tui::App;
     use crate::tui::jobs::Job;
     use crate::tui::testing::{self, chars, key, screen, settle};
@@ -843,8 +1074,8 @@ mod tests {
     }
 
     /// Three messages: today, earlier this month, and last year, stored oldest key first.
-    fn three() -> Arc<MemoryStore> {
-        let s = Arc::new(MemoryStore::new());
+    fn three() -> Arc<Timed> {
+        let s = Timed::new();
         s.put(
             BUCKET,
             "mail/aaa",
@@ -910,7 +1141,7 @@ mod tests {
 
     #[test]
     fn size_column_is_human_readable() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         let mut raw = email("a@example.com", "Sized", "Fri, 25 Sep 2026 09:30:00 +0000");
         raw.resize(2048, b'x');
         s.put(BUCKET, "mail/sized", &raw);
@@ -919,7 +1150,7 @@ mod tests {
         s.put(BUCKET, "mail/tiny", &small);
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
-        assert!(line_with(&scr, "Sized").contains("2.0 KB"), "{scr}");
+        assert!(line_with(&scr, "Sized").contains("2.0 KiB"), "{scr}");
         assert!(
             line_with(&scr, "Tiny").contains(&format!("{tiny_len} B")),
             "{scr}"
@@ -928,7 +1159,7 @@ mod tests {
 
     #[test]
     fn columns_truncate_cleanly_at_narrow_width() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         s.put(
             BUCKET,
             "mail/long",
@@ -939,7 +1170,7 @@ mod tests {
             ),
         );
         let (mut app, _d) = app_with(s);
-        for width in [60u16, 45] {
+        for width in [80u16, 60, 50] {
             let scr = screen(&mut app, width, 8);
             let row = line_with(&scr, "A subject");
             // Both long cells are cut with an ellipsis, and Date and Size still fit on the row.
@@ -952,6 +1183,19 @@ mod tests {
             );
             let head = line_with(&scr, "Subject");
             assert!(head.contains("Date") && head.contains("Size"), "{scr}");
+            // Subject gets more of the room than From.
+            assert!(
+                head.find("Subject").unwrap() < width as usize / 2,
+                "width {width}:\n{scr}"
+            );
+        }
+        // Below the minimum width Date and Size give their room to Subject and From.
+        for width in [49u16, 30] {
+            let scr = screen(&mut app, width, 8);
+            let row = line_with(&scr, "A subject");
+            assert!(!row.contains("09:30"), "width {width}:\n{scr}");
+            assert!(!line_with(&scr, "Subject").contains("Size"), "{scr}");
+            assert!(row.contains('…'), "width {width}:\n{scr}");
         }
     }
 
@@ -984,7 +1228,7 @@ mod tests {
     #[test]
     fn lists_every_page_but_only_direct_children() {
         // MemoryStore pages three keys at a time, so this needs several pages.
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         for i in 0..8 {
             s.put(
                 BUCKET,
@@ -1052,7 +1296,7 @@ mod tests {
                 break;
             }
             for done in batch {
-                if matches!(done.job, Job::Peek { .. }) {
+                if matches!(done.job, Job::PeekHead { .. }) {
                     held.push(done);
                 } else {
                     deliver(&mut app, &done);
@@ -1085,7 +1329,7 @@ mod tests {
 
     #[test]
     fn a_header_block_longer_than_the_first_peek_is_fetched_in_full() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         let mut raw = String::new();
         // 40 KiB of Received headers before the ones the list needs.
         for i in 0..400 {
@@ -1112,7 +1356,7 @@ mod tests {
     #[test]
     fn results_for_jobs_it_did_not_submit_are_ignored() {
         let (mut app, _d) = app_with(three());
-        let other = Arc::new(MemoryStore::new());
+        let other = Timed::new();
         other.put(
             BUCKET,
             "mail/zzz",
@@ -1319,7 +1563,7 @@ mod tests {
 
     #[test]
     fn an_empty_inbox_says_so() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         s.create_bucket(BUCKET);
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
@@ -1332,7 +1576,7 @@ mod tests {
 
     #[test]
     fn a_folder_with_only_non_email_says_so() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         s.put(BUCKET, "mail/image.png", b"\x89PNG\r\n\x1a\n\x00\x00");
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
@@ -1345,7 +1589,7 @@ mod tests {
 
     #[test]
     fn a_missing_bucket_says_so() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
         assert!(scr.contains("bucket inbox-bucket does not exist"), "{scr}");
@@ -1379,7 +1623,7 @@ mod tests {
 
     #[test]
     fn selection_scrolls_with_a_long_list() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         for i in 0..30 {
             s.put(
                 BUCKET,
@@ -1405,5 +1649,275 @@ mod tests {
         );
         app.key(key(KeyCode::Home));
         assert!(screen(&mut app, 80, 10).contains("Numbered 29"));
+    }
+
+    fn row_with<'a>(scr: &'a str, needle: &str) -> Option<&'a str> {
+        scr.lines().find(|l| l.contains(needle))
+    }
+
+    #[test]
+    fn esc_at_the_root_inbox_does_not_quit_but_q_does() {
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::Esc));
+        assert!(!app.quit);
+        assert!(screen(&mut app, 100, 12).contains("Lunch today"));
+        app.key(key(KeyCode::Char('q')));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn the_inbox_keeps_its_own_account_after_another_one_connects() {
+        let mine = three();
+        let (mut app, _d) = app_with(mine.clone());
+        // Somewhere else (the accounts screen behind `u`) connects a different account
+        // that happens to have an object under the same key.
+        let theirs = Timed::new();
+        theirs.put(
+            BUCKET,
+            "mail/bbb",
+            &email("x@example.com", "Theirs", "Fri, 25 Sep 2026 09:30:00 +0000"),
+        );
+        app.ctx.session.as_mut().unwrap().store = theirs.clone();
+
+        app.key(key(KeyCode::Char('r')));
+        settle(&mut app);
+        let scr = screen(&mut app, 100, 12);
+        assert!(
+            scr.contains("Lunch today") && !scr.contains("Theirs"),
+            "{scr}"
+        );
+
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        assert!(screen(&mut app, 100, 20).contains("body of Lunch today"));
+        app.key(key(KeyCode::Char('q')));
+
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        assert!(!mine.contains(BUCKET, "mail/bbb"));
+        assert!(theirs.contains(BUCKET, "mail/bbb"));
+    }
+
+    #[test]
+    fn dates_show_in_the_local_offset() {
+        let s = Timed::new();
+        // 02:30 UTC on the 25th is still the evening of the 24th four hours west.
+        s.put(
+            BUCKET,
+            "mail/late",
+            &email(
+                "a@example.com",
+                "Late last night",
+                "Fri, 25 Sep 2026 02:30:00 +0000",
+            ),
+        );
+        s.put(
+            BUCKET,
+            "mail/morning",
+            &email(
+                "a@example.com",
+                "This morning",
+                "Fri, 25 Sep 2026 13:15:00 +0000",
+            ),
+        );
+        let (mut app, _d) = app_with(s);
+        app.ctx.local_offset = time::UtcOffset::from_hms(-4, 0, 0).unwrap();
+        let scr = screen(&mut app, 100, 10);
+        assert!(
+            line_with(&scr, "Late last night").contains("Sep 24"),
+            "{scr}"
+        );
+        assert!(line_with(&scr, "This morning").contains("09:15"), "{scr}");
+    }
+
+    #[test]
+    fn a_forged_future_date_cannot_pin_a_message_to_the_top() {
+        let s = Timed::new();
+        s.put_received(
+            BUCKET,
+            "mail/forged",
+            &email(
+                "spam@example.com",
+                "Forged date",
+                "Tue, 01 Jan 2030 00:00:00 +0000",
+            ),
+            datetime!(2026-09-01 08:00 UTC),
+        );
+        s.put(
+            BUCKET,
+            "mail/real",
+            &email(
+                "a@example.com",
+                "Honest mail",
+                "Sun, 20 Sep 2026 12:00:00 +0000",
+            ),
+        );
+        let (mut app, _d) = app_with(s);
+        let scr = screen(&mut app, 100, 10);
+        let pos = |s: &str| scr.find(s).unwrap_or_else(|| panic!("{s} missing:\n{scr}"));
+        assert!(pos("Honest mail") < pos("Forged date"), "{scr}");
+        // The Date column still shows what the sender wrote.
+        assert!(
+            line_with(&scr, "Forged date").contains("2030-01-01"),
+            "{scr}"
+        );
+    }
+
+    #[test]
+    fn only_rows_on_screen_and_a_page_ahead_get_peeked() {
+        let s = Timed::new();
+        for i in 0..200 {
+            s.put_received(
+                BUCKET,
+                &format!("mail/m{i:03}"),
+                &email(
+                    "a@example.com",
+                    &format!("Number {i:03}"),
+                    "25 Sep 2026 10:00:00 +0000",
+                ),
+                OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(i),
+            );
+        }
+        let (mut app, _d) = app_with(s.clone());
+        let before = s.peeks();
+        assert!(before > 0 && before <= 2 * DEFAULT_PAGE, "{before} peeks");
+        assert!(screen(&mut app, 80, 12).contains("Number 199"));
+        // The first render says the page is 9 rows; jumping to the end peeks around there.
+        settle(&mut app);
+        app.key(key(KeyCode::End));
+        settle(&mut app);
+        let scr = screen(&mut app, 80, 12);
+        assert!(
+            scr.contains("Number 000") && !scr.contains("loading"),
+            "{scr}"
+        );
+        assert!(s.peeks() < 100, "{} peeks for 200 rows", s.peeks());
+        // Everything is still listed, peeked or not.
+        assert!(scr.contains("200 messages"), "{scr}");
+    }
+
+    #[test]
+    fn a_taller_screen_gets_its_rows_peeked_without_a_key_press() {
+        let s = Timed::new();
+        for i in 0..200 {
+            s.put_received(
+                BUCKET,
+                &format!("mail/m{i:03}"),
+                &email(
+                    "a@example.com",
+                    &format!("Number {i:03}"),
+                    "25 Sep 2026 10:00:00 +0000",
+                ),
+                OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(i),
+            );
+        }
+        let (mut app, _d) = app_with(s.clone());
+        assert!(s.peeks() <= 2 * DEFAULT_PAGE);
+        // A render at 80 rows, then only the job pump: the extra rows get peeked.
+        screen(&mut app, 100, 80);
+        settle(&mut app);
+        let scr = screen(&mut app, 100, 80);
+        assert!(!scr.contains("loading"), "{scr}");
+        assert!(s.peeks() > 2 * DEFAULT_PAGE, "{} peeks", s.peeks());
+    }
+
+    #[test]
+    fn after_a_delete_the_next_row_takes_the_selection() {
+        let (mut app, _d) = app_with(three());
+        // Rows: Lunch today, Invoice for September, Old news. Delete the middle one.
+        app.key(key(KeyCode::Down));
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        assert!(screen(&mut app, 100, 20).contains("body of Old news"));
+        app.key(key(KeyCode::Char('q')));
+        // Deleting the last row selects the one above it, not the top.
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::End));
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        assert!(screen(&mut app, 100, 20).contains("body of Invoice for September"));
+    }
+
+    #[test]
+    fn a_repeated_continuation_token_stops_the_listing() {
+        let store = Arc::new(Endless {
+            next: |_| "same".into(),
+            calls: AtomicUsize::new(0),
+        });
+        let (mut app, _d) = app_with(store.clone());
+        assert_eq!(store.calls.load(Ordering::SeqCst), 2);
+        let scr = screen(&mut app, 120, 10);
+        assert!(
+            scr.lines()
+                .last()
+                .unwrap()
+                .contains("same continuation token"),
+            "{scr}"
+        );
+    }
+
+    #[test]
+    fn the_listing_stops_at_the_page_cap() {
+        let store = Arc::new(Endless {
+            next: |n| format!("token-{n}"),
+            calls: AtomicUsize::new(0),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), Some(store.clone()));
+        let mut app = App::with_view(ctx, Box::new(InboxScreen::new(inbox()).with_now(NOW)));
+        // More pages than `settle` allows pumps for.
+        for _ in 0..10 * MAX_PAGES {
+            if app.pump() == 0 {
+                break;
+            }
+        }
+        assert_eq!(store.calls.load(Ordering::SeqCst), MAX_PAGES);
+        let scr = screen(&mut app, 120, 10);
+        assert!(
+            scr.lines()
+                .last()
+                .unwrap()
+                .contains(&format!("after {MAX_PAGES} pages")),
+            "{scr}"
+        );
+    }
+
+    #[test]
+    fn the_confirmation_always_shows_the_key_and_the_y_line() {
+        let s = Timed::new();
+        let subject = format!("URGENT {}", "account suspended verify now ".repeat(12));
+        s.put(
+            BUCKET,
+            "mail/bbb",
+            &email(
+                "\"Very Long Sender Name Indeed\" <x@example.com>",
+                &subject,
+                "Fri, 25 Sep 2026 09:30:00 +0000",
+            ),
+        );
+        let (mut app, _d) = app_with(s);
+        app.key(key(KeyCode::Char('d')));
+        for (w, h) in [(100u16, 20u16), (60, 20), (44, 20), (44, 9), (60, 8)] {
+            let scr = screen(&mut app, w, h);
+            assert!(
+                scr.contains("s3://inbox-bucket/mail/bbb"),
+                "{w}x{h}:\n{scr}"
+            );
+            assert!(scr.contains("y to delete"), "{w}x{h}:\n{scr}");
+            let subject_line = line_with(&scr, "Subject: URGENT");
+            assert!(subject_line.contains('…'), "{w}x{h}:\n{scr}");
+        }
+        // A screen too small for any of it still renders rather than panicking.
+        for (w, h) in [(10u16, 5u16), (3, 3), (1, 1)] {
+            screen(&mut app, w, h);
+        }
+        assert!(row_with(&screen(&mut app, 100, 20), "y to delete").is_some());
     }
 }

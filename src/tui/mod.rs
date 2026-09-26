@@ -55,8 +55,18 @@ pub trait View {
     fn on_focus(&mut self, ctx: &mut Ctx) {
         let _ = ctx;
     }
+    /// Called on the top view on every pump, after any finished jobs. For work that depends
+    /// on what the last render showed, such as peeking the rows now on screen.
+    fn on_tick(&mut self, ctx: &mut Ctx) {
+        let _ = ctx;
+    }
     /// Key hints for the footer, e.g. `[("enter", "open"), ("d", "delete")]`.
     fn hints(&self) -> Vec<(&'static str, &'static str)>;
+    /// The account this view works in, when it holds its own. The header bar shows it in
+    /// place of `ctx.session`.
+    fn session(&self) -> Option<&Session> {
+        None
+    }
 }
 
 /// A connected account.
@@ -277,6 +287,10 @@ impl App {
 
     /// Hand finished jobs to the views. Returns how many there were.
     pub fn pump(&mut self) -> usize {
+        // Tick first, so whatever the top view queues is collected by this same pump.
+        if let Some(top) = self.stack.last_mut() {
+            top.on_tick(&mut self.ctx);
+        }
         let finished = self.ctx.jobs.poll();
         let n = finished.len();
         for done in finished {
@@ -307,7 +321,7 @@ impl App {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let who = match &self.ctx.session {
+        let who = match top.session().or(self.ctx.session.as_ref()) {
             Some(s) => format!("  {} ({})", s.profile.name, s.region),
             None => String::new(),
         };
@@ -582,5 +596,67 @@ mod shell_tests {
         assert_eq!(ctx.local_offset, UtcOffset::UTC);
         let east = UtcOffset::from_hms(2, 0, 0).unwrap();
         assert_eq!(ctx.with_local_offset(east).local_offset, east);
+    }
+
+    #[test]
+    fn the_header_names_the_top_views_own_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), Some(Arc::new(MemoryStore::new())));
+        let mut other = ctx.session.clone().unwrap();
+        other.profile.name = "work".into();
+        other.region = "eu-west-2".into();
+
+        let inbox = inbox::InboxScreen::new(crate::config::Inbox {
+            profile: "test".into(),
+            bucket: "b".into(),
+            prefix: String::new(),
+            region: None,
+        });
+        let mut app = App::with_view(ctx, Box::new(inbox));
+        testing::settle(&mut app);
+        let header = |app: &mut App| {
+            testing::screen(app, 100, 5)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+
+        // Another account connects: the inbox still says whose it is.
+        let personal = app.ctx.session.replace(other.clone()).unwrap();
+        assert!(
+            header(&mut app).contains("test (us-east-1)"),
+            "{}",
+            header(&mut app)
+        );
+
+        // A message opened in the other account, on top of the inbox, names that one.
+        let message = message::MessageScreen::new("b".into(), "k".into()).with_session(other);
+        app.apply(Transition::Push(Box::new(message)));
+        testing::settle(&mut app);
+        assert!(
+            header(&mut app).contains("work (eu-west-2)"),
+            "{}",
+            header(&mut app)
+        );
+
+        // Back on the inbox, its own account again.
+        app.apply(Transition::Pop);
+        assert!(
+            header(&mut app).contains("test (us-east-1)"),
+            "{}",
+            header(&mut app)
+        );
+
+        // A view with no session of its own shows whatever is connected.
+        app.ctx.session = Some(personal);
+        let accounts = accounts::AccountsScreen::new(&mut app.ctx);
+        app.apply(Transition::Push(Box::new(accounts)));
+        app.ctx.session.as_mut().unwrap().profile.name = "current".into();
+        assert!(
+            header(&mut app).contains("current (us-east-1)"),
+            "{}",
+            header(&mut app)
+        );
     }
 }
