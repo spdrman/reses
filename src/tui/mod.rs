@@ -25,9 +25,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::aws_profile::{self, CredentialsFile, Profile};
+use crate::aws_profile::{CredentialsFile, Profile};
 use crate::config::AppConfig;
-use crate::s3::{Credentials, S3Client, Store};
+use crate::s3::{S3Client, Store};
 use jobs::{Done, Generation, Job, JobId, Jobs};
 use time::UtcOffset;
 
@@ -79,27 +79,45 @@ pub struct Session {
 }
 
 impl Session {
-    /// Region: the caller's hint, else the profile's, else ~/.aws/config, else us-east-1.
-    pub fn connect(profile: Profile, region_hint: Option<&str>) -> Self {
-        let region = region_hint
-            .map(str::to_string)
-            .or_else(|| profile.region.clone())
-            .or_else(|| aws_profile::region_from_config(&profile.name))
-            .unwrap_or_else(|| "us-east-1".to_string());
-        let creds = Credentials {
-            access_key_id: profile.access_key_id.clone(),
-            secret_access_key: profile.secret_access_key.clone(),
-            session_token: profile.session_token.clone(),
-        };
-        let mut client = S3Client::new(creds, &region);
-        // Lets the whole app run against MinIO or another S3-compatible endpoint.
+    /// I connect by profile name and let aws-config resolve the credentials from the AWS files
+    /// itself, so static keys, session tokens, SSO, assume-role and credential_process all work.
+    /// A `Profile` read from the credentials file still works here (only its name is used for
+    /// credentials), so existing callers don't change. The region is the caller's hint, else the
+    /// profile's region from the AWS files, else us-east-1.
+    pub fn connect(profile: impl Into<Profile>, region_hint: Option<&str>) -> Self {
+        let profile = profile.into();
+        let mut client = S3Client::from_profile(&profile.name, region_hint);
+        // RESES_S3_ENDPOINT lets the whole app run against MinIO or another S3-compatible
+        // endpoint, with the bucket in the path.
         if let Ok(url) = std::env::var("RESES_S3_ENDPOINT") {
             client = client.with_endpoint(&url, true);
         }
+        let region = client.region().to_string();
         Self {
             profile,
             region,
             store: Arc::new(client),
+        }
+    }
+}
+
+/// A bare profile name as a `Profile`, so `Session::connect("work", None)` reads naturally. The
+/// keys stay empty: the SDK reads them from the AWS files when it needs them.
+impl From<&str> for Profile {
+    fn from(name: &str) -> Self {
+        Profile {
+            name: name.to_string(),
+            ..Profile::default()
+        }
+    }
+}
+
+/// The owned-string form of the conversion above.
+impl From<String> for Profile {
+    fn from(name: String) -> Self {
+        Profile {
+            name,
+            ..Profile::default()
         }
     }
 }

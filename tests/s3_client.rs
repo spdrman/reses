@@ -1,80 +1,186 @@
-//! `S3Client` against a scripted transport: URLs, signing inputs, ranges, errors, secrets and
-//! region redirects. The redirect answers copy the shapes S3 sends (a 301 with
-//! `x-amz-bucket-region`, a 400 `AuthorizationHeaderMalformed` carrying `<Region>`, a 400
-//! `PermanentRedirect`), since MinIO never redirects.
+//! `S3Client` over aws-sdk-s3, driven through a scripted HTTP client so every case runs offline.
+//!
+//! I swap the SDK's HTTP layer for a closure that records each request and answers from a queue.
+//! That lets me check what reses promises on top of the SDK: ranged reads past the end, the size
+//! cap on a whole get, empty keys refused, listings that end even when a server sends a stray
+//! token, cross-region buckets, credentials resolved from profile files (including
+//! credential_process), and no secret in any error or Debug output. MinIO never redirects, so the
+//! region cases can only be tested this way.
 
 use std::collections::VecDeque;
+use std::io::Write as _;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use reses::s3::{
-    Credentials, ERROR_BODY_LIMIT, HttpRequest, HttpResponse, LIST_BODY_LIMIT, Listing,
-    MAX_GET_BYTES, RANGE_SLACK, S3Client, S3Error, Store, Transport, valid_region,
-};
+use aws_smithy_http_client::test_util::infallible_client_fn;
+use aws_smithy_types::body::SdkBody;
+use reses::s3::{Credentials, MAX_GET_BYTES, RANGE_SLACK, S3Client, S3Error, Store};
 
 const SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 const TOKEN: &str = "FQoGZXIvYXdzEXAMPLE/session+token==";
 
+/// Reads one of the recorded S3 response bodies under tests/fixtures/s3.
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/s3/{name}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
-type Answer = Result<HttpResponse, String>;
+/// What the fake saw of one request.
+#[derive(Debug, Clone)]
+struct Sent {
+    method: String,
+    uri: String,
+    headers: Vec<(String, String)>,
+}
 
-/// Answers requests from a queue and records what it was sent.
+impl Sent {
+    /// The first header with this name, ignoring case.
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The region in the SigV4 credential scope, which is what S3 checks against the bucket.
+    fn scope_region(&self) -> String {
+        let auth = self.header("authorization").expect("signed");
+        let cred = auth.split("Credential=").nth(1).unwrap();
+        cred.split('/').nth(2).unwrap().to_string()
+    }
+
+    /// The host the request went to.
+    fn host(&self) -> String {
+        let rest = self.uri.split("://").nth(1).unwrap();
+        rest.split('/').next().unwrap().to_string()
+    }
+}
+
+/// One scripted answer: status, headers, body, and whether the body breaks after its bytes.
+type Answer = (u16, Vec<(String, String)>, Vec<u8>, bool);
+
+/// A body that hands over its bytes in one chunk and then fails. A reader that stops once it
+/// has enough never sees the failure; one that drains the whole body does.
+struct ThenFail {
+    data: Option<bytes::Bytes>,
+}
+
+impl http_body::Body for ThenFail {
+    type Data = bytes::Bytes;
+    type Error = std::io::Error;
+
+    /// The bytes first, then an error, for as long as anyone keeps asking.
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, std::io::Error>>> {
+        std::task::Poll::Ready(Some(match self.data.take() {
+            Some(d) => Ok(http_body::Frame::data(d)),
+            None => Err(std::io::Error::other("the body broke")),
+        }))
+    }
+}
+
+/// Records requests and answers them from a queue, in order.
 #[derive(Default)]
 struct Fake {
     answers: Mutex<VecDeque<Answer>>,
-    sent: Mutex<Vec<HttpRequest>>,
+    sent: Mutex<Vec<Sent>>,
 }
 
 impl Fake {
+    /// A fake that will give these answers, one per request.
     fn new(answers: Vec<Answer>) -> Arc<Self> {
         Arc::new(Self {
             answers: Mutex::new(answers.into()),
             sent: Mutex::default(),
         })
     }
-    fn sent(&self) -> Vec<HttpRequest> {
+
+    /// Everything sent so far.
+    fn sent(&self) -> Vec<Sent> {
         self.sent.lock().unwrap().clone()
     }
+
+    /// Queue another answer.
     fn push(&self, a: Answer) {
         self.answers.lock().unwrap().push_back(a);
     }
-}
 
-impl Transport for Fake {
-    fn send(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
-        self.sent.lock().unwrap().push(req.clone());
-        self.answers
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or_else(|| panic!("unexpected request {req:?}"))
+    /// The fake as an SDK HTTP client. A request with no answer queued gets a 599, which the
+    /// tests never expect, so an extra request shows up as a failure rather than a hang.
+    fn http(self: &Arc<Self>) -> aws_sdk_s3::config::SharedHttpClient {
+        let fake = self.clone();
+        infallible_client_fn(move |req| {
+            fake.sent.lock().unwrap().push(Sent {
+                method: req.method().to_string(),
+                uri: req.uri().to_string(),
+                headers: req
+                    .headers()
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect(),
+            });
+            let (status, headers, body, fail) = fake
+                .answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or((599, vec![], b"no answer queued".to_vec(), false));
+            let mut resp = http::Response::builder().status(status);
+            for (k, v) in headers {
+                resp = resp.header(k, v);
+            }
+            let body = if fail {
+                SdkBody::from_body_1_x(ThenFail {
+                    data: Some(body.into()),
+                })
+            } else {
+                SdkBody::from(body)
+            };
+            resp.body(body).unwrap()
+        })
     }
 }
 
+/// A plain answer with no headers beyond Content-Length.
 fn ok(status: u16, body: &[u8]) -> Answer {
-    Ok(HttpResponse {
-        status,
-        headers: vec![],
-        body: body.to_vec(),
-        ..Default::default()
-    })
+    with_headers(status, &[], body)
 }
 
+/// An answer with headers. Content-Length is added unless the test sets its own.
 fn with_headers(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Answer {
-    Ok(HttpResponse {
-        status,
-        headers: headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-        body: body.to_vec(),
-        ..Default::default()
-    })
+    let mut h: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    if !h
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+    {
+        h.push(("content-length".into(), body.len().to_string()));
+    }
+    (status, h, body.to_vec(), false)
 }
 
+/// An answer whose body breaks once its bytes are read, with no Content-Length.
+fn then_fail(status: u16, headers: &[(&str, &str)], body: Vec<u8>) -> Answer {
+    let h = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    (status, h, body, true)
+}
+
+/// An S3 error document with this code and message.
+fn error_doc(code: &str, message: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>{code}</Code><Message>{message}</Message><RequestId>R</RequestId></Error>"
+    )
+    .into_bytes()
+}
+
+/// The fixed test keys, with or without a session token.
 fn creds(token: Option<&str>) -> Credentials {
     Credentials {
         access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
@@ -83,137 +189,57 @@ fn creds(token: Option<&str>) -> Credentials {
     }
 }
 
+/// A client for real AWS addressing in `region`, talking to the fake.
 fn aws(region: &str, fake: &Arc<Fake>) -> S3Client {
-    S3Client::new(creds(None), region).with_transport(fake.clone())
+    S3Client::new(creds(None), region).with_http_client(fake.http())
 }
 
+/// A client for a MinIO-style endpoint with path-style addressing, talking to the fake.
 fn minio(fake: &Arc<Fake>) -> S3Client {
     S3Client::new(creds(None), "us-east-1")
         .with_endpoint("http://minio:9000/", true)
-        .with_transport(fake.clone())
+        .with_http_client(fake.http())
 }
 
-fn scope_region(req: &HttpRequest) -> String {
-    let auth = req.header("authorization").expect("signed");
-    let cred = auth.split("Credential=").nth(1).unwrap();
-    cred.split('/').nth(2).unwrap().to_string()
-}
-
-const WEIRD_KEY: &str = "inbox/a b+c/é%.eml";
-const WEIRD_PATH: &str = "inbox/a%20b%2Bc/%C3%A9%25.eml";
-
-// URLs and addressing
+// Addressing
 
 #[test]
 fn virtual_hosted_style_by_default() {
     let fake = Fake::new(vec![ok(200, b"hello")]);
     aws("eu-west-1", &fake)
-        .get("mail-inbound", WEIRD_KEY)
+        .get("mail-inbound", "inbox/k")
         .unwrap();
     let req = &fake.sent()[0];
     assert_eq!(req.method, "GET");
-    assert_eq!(
-        req.url,
-        format!("https://mail-inbound.s3.eu-west-1.amazonaws.com/{WEIRD_PATH}")
-    );
-    assert_eq!(scope_region(req), "eu-west-1");
+    assert_eq!(req.host(), "mail-inbound.s3.eu-west-1.amazonaws.com");
+    assert!(req.uri.contains("/inbox/k"), "{}", req.uri);
+    assert_eq!(req.scope_region(), "eu-west-1");
 }
 
 #[test]
 fn path_style_with_a_custom_endpoint() {
     let fake = Fake::new(vec![ok(200, b"hello")]);
-    minio(&fake).get("mail", WEIRD_KEY).unwrap();
-    assert_eq!(
-        fake.sent()[0].url,
-        format!("http://minio:9000/mail/{WEIRD_PATH}")
-    );
-}
-
-#[test]
-fn virtual_hosted_style_with_a_custom_endpoint() {
-    let fake = Fake::new(vec![ok(200, b"x")]);
-    S3Client::new(creds(None), "us-east-1")
-        .with_endpoint("https://s3.example.test", false)
-        .with_transport(fake.clone())
-        .get("mail", "k")
-        .unwrap();
-    assert_eq!(fake.sent()[0].url, "https://mail.s3.example.test/k");
-}
-
-#[test]
-fn dotted_bucket_names_fall_back_to_path_style_on_aws() {
-    // A dot in the bucket breaks the *.s3 wildcard certificate, so AWS clients use the path.
-    let fake = Fake::new(vec![ok(200, b"x")]);
-    aws("us-east-1", &fake).get("quotes.example", "k").unwrap();
-    assert_eq!(
-        fake.sent()[0].url,
-        "https://s3.us-east-1.amazonaws.com/quotes.example/k"
-    );
-}
-
-#[test]
-fn keys_keep_slashes_and_leading_or_doubled_ones() {
-    let fake = Fake::new(vec![ok(200, b"x")]);
-    minio(&fake).get("mail", "/a//b/").unwrap();
-    assert_eq!(fake.sent()[0].url, "http://minio:9000/mail//a//b/");
-}
-
-// Operations
-
-#[test]
-fn list_buckets_hits_the_service_endpoint() {
-    let fake = Fake::new(vec![ok(200, &fixture("list_buckets.xml"))]);
-    let buckets = aws("ap-southeast-2", &fake).list_buckets().unwrap();
-    assert_eq!(
-        buckets.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
-        ["mail-inbound", "quotes.example"]
-    );
+    minio(&fake).get("mail", "inbox/k").unwrap();
     let req = &fake.sent()[0];
-    assert_eq!(req.method, "GET");
-    assert_eq!(req.url, "https://s3.ap-southeast-2.amazonaws.com/");
-}
-
-#[test]
-fn list_sends_a_list_objects_v2_query_and_decodes_keys() {
-    let fake = Fake::new(vec![ok(200, &fixture("list_objects_v2_folders.xml"))]);
-    let l = aws("us-east-1", &fake)
-        .with_max_keys(4)
-        .list("mail-inbound", "inbox/", Some("/"), Some("tok+/="))
-        .unwrap();
-    let req = &fake.sent()[0];
-    assert_eq!(
-        req.url,
-        "https://mail-inbound.s3.us-east-1.amazonaws.com/?continuation-token=tok%2B%2F%3D\
-         &delimiter=%2F&encoding-type=url&list-type=2&max-keys=4&prefix=inbox%2F"
-    );
-    assert_eq!(l.prefixes, vec!["inbox/2024/", "inbox/spam folder/"]);
-    assert_eq!(l.objects[1].key, "inbox/a b+cé%.eml");
-    assert!(l.next_token.is_some());
-}
-
-#[test]
-fn list_without_delimiter_or_token_leaves_them_out() {
-    let fake = Fake::new(vec![ok(200, &fixture("list_objects_v2_empty.xml"))]);
-    minio(&fake).list("mail", "", None, None).unwrap();
-    assert_eq!(
-        fake.sent()[0].url,
-        "http://minio:9000/mail?encoding-type=url&list-type=2&prefix="
+    assert_eq!(req.host(), "minio:9000");
+    assert!(
+        req.uri.starts_with("http://minio:9000/mail/inbox/k"),
+        "{}",
+        req.uri
     );
 }
+
+// Ranged reads
 
 #[test]
 fn get_range_sends_a_range_header() {
-    let fake = Fake::new(vec![ok(206, b"56789")]);
-    let data = minio(&fake).get_range("mail", "k", 5, 9).unwrap();
-    assert_eq!(data, b"56789");
-    let req = &fake.sent()[0];
-    assert_eq!(req.header("range"), Some("bytes=5-9"));
-    // Range is part of what gets signed.
-    assert!(
-        req.header("authorization")
-            .unwrap()
-            .contains("SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,")
-    );
+    let fake = Fake::new(vec![with_headers(
+        206,
+        &[("content-range", "bytes 5-9/20")],
+        b"56789",
+    )]);
+    assert_eq!(minio(&fake).get_range("mail", "k", 5, 9).unwrap(), b"56789");
+    assert_eq!(fake.sent()[0].header("range"), Some("bytes=5-9"));
 }
 
 #[test]
@@ -221,7 +247,7 @@ fn get_range_past_the_end_is_empty_not_an_error() {
     let fake = Fake::new(vec![with_headers(
         416,
         &[("content-range", "bytes */5")],
-        b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>InvalidRange</Code><Message>The requested range is not satisfiable</Message></Error>",
+        &error_doc("InvalidRange", "The requested range is not satisfiable"),
     )]);
     assert_eq!(minio(&fake).get_range("mail", "k", 100, 200).unwrap(), b"");
 }
@@ -235,399 +261,107 @@ fn get_range_with_end_before_start_is_empty_without_a_request() {
 
 #[test]
 fn get_range_clamps_when_the_server_ignores_the_range() {
-    // Some S3-compatible servers answer 200 with the whole object.
-    let fake = Fake::new(vec![ok(200, b"hello world"), ok(200, b"hello")]);
+    // A 200 with no Content-Range is the whole object; I cut the range out of it.
+    let fake = Fake::new(vec![
+        ok(200, b"hello world"),
+        ok(200, b"hello world"),
+        ok(200, b"hello"),
+    ]);
     let c = minio(&fake);
     assert_eq!(c.get_range("mail", "k", 6, 99).unwrap(), b"world");
+    assert_eq!(c.get_range("mail", "k", 0, 4).unwrap(), b"hello");
     assert_eq!(c.get_range("mail", "k", 10, 20).unwrap(), b"");
 }
 
 #[test]
-fn get_range_clamps_an_oversized_partial_answer() {
-    let fake = Fake::new(vec![ok(206, b"0123456789")]);
+fn get_range_trims_an_oversized_partial_answer() {
+    let fake = Fake::new(vec![with_headers(
+        206,
+        &[("content-range", "bytes 0-9/10")],
+        b"0123456789",
+    )]);
     assert_eq!(minio(&fake).get_range("mail", "k", 0, 3).unwrap(), b"0123");
 }
 
 #[test]
+fn get_range_stops_reading_a_partial_answer_past_its_slack() {
+    // A server that answers a 4-byte range with far more than that: I stop reading once past
+    // the range plus slack, so the body breaking afterwards never surfaces.
+    let big = vec![b'x'; (4 + RANGE_SLACK + 100) as usize];
+    let fake = Fake::new(vec![then_fail(
+        206,
+        &[("content-range", "bytes 0-3/99999")],
+        big,
+    )]);
+    assert_eq!(minio(&fake).get_range("mail", "k", 0, 3).unwrap(), b"xxxx");
+}
+
+#[test]
+fn get_range_on_a_200_stops_reading_once_it_has_the_range() {
+    // A server that ignores Range and streams the whole object: I only need bytes up to `end`.
+    let fake = Fake::new(vec![then_fail(
+        200,
+        &[],
+        b"hello world, and a lot more".to_vec(),
+    )]);
+    assert_eq!(
+        minio(&fake).get_range("mail", "k", 6, 10).unwrap(),
+        b"world"
+    );
+}
+
+#[test]
+fn a_body_that_breaks_before_the_limit_is_a_transport_error() {
+    // The positive control for the two tests above: when the break comes before I have
+    // enough, it does surface.
+    let fake = Fake::new(vec![then_fail(200, &[], b"short".to_vec())]);
+    assert!(matches!(
+        minio(&fake).get("mail", "k"),
+        Err(S3Error::Transport(_))
+    ));
+}
+
+// The size cap on a whole get
+
+#[test]
 fn get_returns_the_body() {
-    let fake = Fake::new(vec![ok(200, b"From: a@b\r\n\r\nhi")]);
+    let fake = Fake::new(vec![ok(200, b"From: a@example.com\r\n\r\nhi")]);
     assert_eq!(
         minio(&fake).get("mail", "k").unwrap(),
-        b"From: a@b\r\n\r\nhi"
+        b"From: a@example.com\r\n\r\nhi"
     );
     assert_eq!(fake.sent()[0].header("range"), None);
 }
 
 #[test]
-fn delete_sends_delete() {
-    let fake = Fake::new(vec![ok(204, b"")]);
-    minio(&fake).delete("mail", WEIRD_KEY).unwrap();
-    let req = &fake.sent()[0];
-    assert_eq!(req.method, "DELETE");
-    assert_eq!(req.url, format!("http://minio:9000/mail/{WEIRD_PATH}"));
-}
-
-#[test]
-fn every_request_carries_date_and_payload_hash() {
-    let fake = Fake::new(vec![ok(204, b"")]);
-    minio(&fake).delete("mail", "k").unwrap();
-    let req = &fake.sent()[0];
-    assert_eq!(
-        req.header("x-amz-content-sha256"),
-        Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-    );
-    let date = req.header("x-amz-date").unwrap();
-    assert_eq!(date.len(), 16, "{date}");
-    assert!(date.ends_with('Z'));
-    assert!(
-        req.header("authorization")
-            .unwrap()
-            .starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/")
-    );
-}
-
-#[test]
-fn session_token_goes_out_as_a_signed_header() {
-    let fake = Fake::new(vec![ok(200, b"x")]);
-    S3Client::new(creds(Some(TOKEN)), "us-east-1")
-        .with_transport(fake.clone())
-        .get("mail", "k")
-        .unwrap();
-    let req = &fake.sent()[0];
-    assert_eq!(req.header("x-amz-security-token"), Some(TOKEN));
-    assert!(
-        req.header("authorization")
-            .unwrap()
-            .contains(";x-amz-security-token,")
-    );
-}
-
-#[test]
-fn put_object_signs_the_body_hash() {
-    let fake = Fake::new(vec![ok(200, b"")]);
-    minio(&fake)
-        .put_object("mail", "k", b"Welcome to Amazon S3.")
-        .unwrap();
-    let req = &fake.sent()[0];
-    assert_eq!(req.method, "PUT");
-    assert_eq!(req.body, b"Welcome to Amazon S3.");
-    assert_eq!(
-        req.header("x-amz-content-sha256"),
-        Some("44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072")
-    );
-}
-
-#[test]
-fn create_bucket_outside_us_east_1_sends_a_location_constraint() {
-    let fake = Fake::new(vec![ok(200, b""), ok(200, b"")]);
-    minio(&fake).create_bucket("mail").unwrap();
-    assert_eq!(fake.sent()[0].method, "PUT");
-    assert_eq!(fake.sent()[0].url, "http://minio:9000/mail");
-    assert!(fake.sent()[0].body.is_empty());
-
-    aws("eu-west-2", &fake).create_bucket("mail").unwrap();
-    let body = String::from_utf8(fake.sent()[1].body.clone()).unwrap();
-    assert!(
-        body.contains("<LocationConstraint>eu-west-2</LocationConstraint>"),
-        "{body}"
-    );
-}
-
-// Errors
-
-#[test]
-fn error_documents_become_service_errors() {
-    let fake = Fake::new(vec![ok(404, &fixture("error_no_such_key.xml"))]);
-    let err = minio(&fake).get("mail", "inbox/missing").unwrap_err();
-    assert_eq!(
-        err,
-        S3Error::Service {
-            status: 404,
-            code: "NoSuchKey".into(),
-            message: "The specified key does not exist.".into(),
-        }
-    );
-    assert!(err.is_not_found());
-}
-
-#[test]
-fn an_error_without_a_document_still_carries_the_status() {
-    let fake = Fake::new(vec![ok(403, b""), ok(503, b"<html>busy</html>")]);
-    let c = minio(&fake);
-    match c.get("mail", "k").unwrap_err() {
-        S3Error::Service { status: 403, .. } => {}
-        other => panic!("{other:?}"),
-    }
-    match c.list_buckets().unwrap_err() {
-        S3Error::Service { status: 503, .. } => {}
-        other => panic!("{other:?}"),
-    }
-}
-
-#[test]
-fn network_failures_become_transport_errors() {
-    let fake = Fake::new(vec![Err("connection refused".into())]);
-    assert_eq!(
-        minio(&fake).get("mail", "k").unwrap_err(),
-        S3Error::Transport("connection refused".into())
-    );
-}
-
-#[test]
-fn malformed_xml_becomes_a_parse_error() {
-    let fake = Fake::new(vec![
-        ok(200, &fixture("malformed_truncated.xml")),
-        ok(200, b"<ListAllMyBucketsResult><Buckets><Bucket><Name>x"),
-    ]);
-    let c = minio(&fake);
-    assert!(matches!(
-        c.list("mail", "", None, None),
-        Err(S3Error::Parse(_))
-    ));
-    assert!(matches!(c.list_buckets(), Err(S3Error::Parse(_))));
-}
-
-// Secrets
-
-#[test]
-fn secrets_never_reach_debug_output() {
-    let c = S3Client::new(creds(Some(TOKEN)), "us-east-1");
-    let dbg = format!("{c:?}");
-    assert!(!dbg.contains(SECRET), "{dbg}");
-    assert!(!dbg.contains(TOKEN), "{dbg}");
-
-    let fake = Fake::new(vec![ok(200, b"x")]);
-    S3Client::new(creds(Some(TOKEN)), "us-east-1")
-        .with_transport(fake.clone())
-        .get("mail", "k")
-        .unwrap();
-    let dbg = format!("{:?}", fake.sent()[0]);
-    assert!(!dbg.contains(TOKEN), "{dbg}");
-    assert!(!dbg.contains("Signature="), "{dbg}");
-    assert!(dbg.contains("mail"), "{dbg}");
-}
-
-#[test]
-fn secrets_are_scrubbed_from_errors() {
-    // A transport error or an error document that echoes a secret back must not show it.
-    let echo = format!(
-        "<Error><Code>SignatureDoesNotMatch</Code><Message>bad sig for {SECRET} with {TOKEN}</Message></Error>"
-    );
-    let fake = Fake::new(vec![
-        Err(format!("tls failure near {SECRET} and {TOKEN}")),
-        ok(403, echo.as_bytes()),
-        ok(
-            200,
-            format!("<ListAllMyBucketsResult><oops {TOKEN}").as_bytes(),
-        ),
-    ]);
-    let c = S3Client::new(creds(Some(TOKEN)), "us-east-1").with_transport(fake.clone());
-    for err in [
-        c.get("mail", "k").unwrap_err(),
-        c.get("mail", "k").unwrap_err(),
-        c.list_buckets().unwrap_err(),
-    ] {
-        for text in [err.to_string(), format!("{err:?}")] {
-            assert!(!text.contains(SECRET), "{text}");
-            assert!(!text.contains(TOKEN), "{text}");
-        }
-    }
-}
-
-// Region redirects
-
-#[test]
-fn a_301_with_a_region_header_retries_there_and_remembers_it() {
-    let fake = Fake::new(vec![
-        with_headers(
-            301,
-            &[("x-amz-bucket-region", "eu-west-2")],
-            &fixture("error_permanent_redirect.xml"),
-        ),
-        ok(200, b"hello"),
-    ]);
-    let c = aws("us-east-1", &fake);
-    assert_eq!(c.get("mail-inbound", "k").unwrap(), b"hello");
-    let sent = fake.sent();
-    assert_eq!(sent.len(), 2);
-    assert_eq!(scope_region(&sent[0]), "us-east-1");
-    assert_eq!(
-        sent[1].url,
-        "https://mail-inbound.s3.eu-west-2.amazonaws.com/k"
-    );
-    assert_eq!(scope_region(&sent[1]), "eu-west-2");
-    assert_eq!(
-        c.bucket_region("mail-inbound").as_deref(),
-        Some("eu-west-2")
-    );
-
-    // The next call goes straight to the right region.
-    fake.push(ok(204, b""));
-    c.delete("mail-inbound", "k").unwrap();
-    let sent = fake.sent();
-    assert_eq!(sent.len(), 3);
-    assert_eq!(scope_region(&sent[2]), "eu-west-2");
-    assert_eq!(
-        sent[2].url,
-        "https://mail-inbound.s3.eu-west-2.amazonaws.com/k"
-    );
-
-    // Other buckets are not affected.
-    fake.push(ok(200, b"x"));
-    c.get("other", "k").unwrap();
-    assert_eq!(scope_region(&fake.sent()[3]), "us-east-1");
-}
-
-#[test]
-fn a_400_authorization_header_malformed_with_a_region_in_the_body_retries() {
-    let fake = Fake::new(vec![
-        ok(400, &fixture("error_authorization_header_malformed.xml")),
-        ok(200, &fixture("list_objects_v2_last_page.xml")),
-    ]);
-    let c = aws("us-east-1", &fake);
-    let l = c.list("mail-inbound", "inbox/", Some("/"), None).unwrap();
-    assert_eq!(l.objects[0].key, "inbox/zz-last");
-    assert_eq!(scope_region(&fake.sent()[1]), "eu-west-2");
-    assert_eq!(
-        c.bucket_region("mail-inbound").as_deref(),
-        Some("eu-west-2")
-    );
-}
-
-#[test]
-fn a_400_permanent_redirect_with_a_region_header_retries() {
-    let fake = Fake::new(vec![
-        with_headers(
-            400,
-            &[("X-Amz-Bucket-Region", "ap-northeast-1")],
-            &fixture("error_permanent_redirect.xml"),
-        ),
-        ok(206, b"From"),
-    ]);
-    let c = aws("us-east-1", &fake);
-    assert_eq!(c.get_range("mail-inbound", "k", 0, 3).unwrap(), b"From");
-    let retry = &fake.sent()[1];
-    assert_eq!(scope_region(retry), "ap-northeast-1");
-    assert_eq!(retry.header("range"), Some("bytes=0-3"));
-}
-
-#[test]
-fn redirects_on_a_custom_endpoint_change_only_the_signing_region() {
-    let fake = Fake::new(vec![
-        ok(400, &fixture("error_authorization_header_malformed.xml")),
-        ok(200, b"x"),
-    ]);
-    minio(&fake).get("mail", "k").unwrap();
-    let retry = &fake.sent()[1];
-    assert_eq!(retry.url, "http://minio:9000/mail/k");
-    assert_eq!(scope_region(retry), "eu-west-2");
-}
-
-#[test]
-fn only_one_retry() {
-    let fake = Fake::new(vec![
-        with_headers(301, &[("x-amz-bucket-region", "eu-west-2")], b""),
-        with_headers(301, &[("x-amz-bucket-region", "eu-west-3")], b""),
-    ]);
-    let err = aws("us-east-1", &fake)
-        .get("mail-inbound", "k")
-        .unwrap_err();
-    assert!(
-        matches!(err, S3Error::Service { status: 301, .. }),
-        "{err:?}"
-    );
-    assert_eq!(fake.sent().len(), 2);
-}
-
-#[test]
-fn a_redirect_without_a_region_hint_is_an_error() {
-    let fake = Fake::new(vec![ok(301, &fixture("error_permanent_redirect.xml"))]);
-    let err = aws("us-east-1", &fake)
-        .get("mail-inbound", "k")
-        .unwrap_err();
-    match err {
-        S3Error::Service { status, code, .. } => {
-            assert_eq!((status, code.as_str()), (301, "PermanentRedirect"));
-        }
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(fake.sent().len(), 1);
-}
-
-#[test]
-fn other_400s_do_not_retry_even_with_a_region_header() {
+fn get_of_an_object_over_the_cap_is_too_large() {
     let fake = Fake::new(vec![with_headers(
-        400,
-        &[("x-amz-bucket-region", "eu-west-2")],
-        b"<Error><Code>InvalidArgument</Code><Message>nope</Message></Error>",
-    )]);
-    let err = aws("us-east-1", &fake)
-        .get("mail-inbound", "k")
-        .unwrap_err();
-    assert!(
-        matches!(err, S3Error::Service { status: 400, ref code, .. } if code == "InvalidArgument")
-    );
-    assert_eq!(fake.sent().len(), 1);
-}
-
-#[test]
-fn a_redirect_to_the_same_region_does_not_loop() {
-    let fake = Fake::new(vec![with_headers(
-        301,
-        &[("x-amz-bucket-region", "us-east-1")],
+        200,
+        &[("content-length", "52428800")],
         b"",
     )]);
-    assert!(aws("us-east-1", &fake).get("mail-inbound", "k").is_err());
-    assert_eq!(fake.sent().len(), 1);
-}
-
-#[test]
-fn client_is_usable_as_a_shared_store() {
-    fn assert_store<T: Store + 'static>() {}
-    assert_store::<S3Client>();
-    let fake = Fake::new(vec![ok(200, b"x")]);
-    let store: Arc<dyn Store> = Arc::new(minio(&fake));
-    assert_eq!(store.get("mail", "k").unwrap(), b"x");
-}
-
-fn truncated(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Answer {
-    let mut resp = with_headers(status, headers, body).unwrap();
-    resp.truncated = true;
-    Ok(resp)
-}
-
-// Review item 4: every read is bounded.
-
-#[test]
-fn get_reads_at_most_the_message_limit() {
-    let fake = Fake::new(vec![ok(200, b"x")]);
-    minio(&fake).get("mail", "k").unwrap();
-    assert_eq!(fake.sent()[0].body_limit.ok, MAX_GET_BYTES);
-}
-
-#[test]
-fn get_of_an_object_over_the_limit_is_too_large() {
-    let size = "52428800";
-    let fake = Fake::new(vec![
-        truncated(200, &[("content-length", size)], b"partial"),
-        truncated(200, &[], b"partial"),
-    ]);
-    let c = minio(&fake);
     assert_eq!(
-        c.get("mail", "k").unwrap_err(),
+        minio(&fake).get("mail", "k").unwrap_err(),
         S3Error::TooLarge {
             size: Some(52_428_800),
             limit: MAX_GET_BYTES,
         }
     );
-    // Without a Content-Length the size is unknown, but it's still the same error.
-    assert_eq!(
-        c.get("mail", "k").unwrap_err(),
-        S3Error::TooLarge {
-            size: None,
-            limit: MAX_GET_BYTES,
-        }
-    );
+}
+
+#[test]
+fn get_stops_reading_a_body_that_runs_past_the_cap() {
+    // No trustworthy length up front: the body itself runs over, and I stop at the cap.
+    let body = vec![b'x'; (MAX_GET_BYTES + 10) as usize];
+    let fake = Fake::new(vec![then_fail(200, &[], body)]);
+    match minio(&fake).get("mail", "k").unwrap_err() {
+        S3Error::TooLarge { limit, .. } => assert_eq!(limit, MAX_GET_BYTES),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_too_large_message_names_both_sizes() {
     let text = S3Error::TooLarge {
         size: Some(52_428_800),
         limit: MAX_GET_BYTES,
@@ -637,171 +371,7 @@ fn get_of_an_object_over_the_limit_is_too_large() {
     assert!(text.contains(&MAX_GET_BYTES.to_string()), "{text}");
 }
 
-#[test]
-fn get_range_limits_the_partial_and_the_whole_body() {
-    let fake = Fake::new(vec![ok(206, b"x")]);
-    minio(&fake).get_range("mail", "k", 100, 199).unwrap();
-    let limit = fake.sent()[0].body_limit;
-    assert_eq!(limit.partial, 100 + RANGE_SLACK);
-    // A 200 needs only the bytes up to the end of the range.
-    assert_eq!(limit.ok, 200);
-}
-
-#[test]
-fn get_range_on_a_200_stops_once_it_has_enough() {
-    // The transport stopped at the limit; the bytes it has cover the range.
-    let fake = Fake::new(vec![truncated(200, &[], b"hello")]);
-    assert_eq!(minio(&fake).get_range("mail", "k", 1, 4).unwrap(), b"ello");
-}
-
-#[test]
-fn get_range_on_a_200_clamps_an_end_inside_the_object() {
-    // Review item 29: the 200 path with end < len.
-    let fake = Fake::new(vec![ok(200, b"hello world")]);
-    assert_eq!(minio(&fake).get_range("mail", "k", 0, 4).unwrap(), b"hello");
-}
-
-#[test]
-fn get_range_far_into_an_object_caps_the_200_limit() {
-    let fake = Fake::new(vec![truncated(200, &[], b"")]);
-    let err = minio(&fake)
-        .get_range("mail", "k", 1 << 40, (1 << 40) + 9)
-        .unwrap_err();
-    assert!(matches!(err, S3Error::TooLarge { .. }), "{err:?}");
-    let limit = fake.sent()[0].body_limit;
-    assert_eq!(limit.ok, MAX_GET_BYTES);
-    assert_eq!(limit.partial, 10 + RANGE_SLACK);
-}
-
-#[test]
-fn listings_and_small_answers_are_bounded_too() {
-    let fake = Fake::new(vec![
-        ok(200, &fixture("list_buckets.xml")),
-        ok(200, &fixture("list_objects_v2_empty.xml")),
-        ok(204, b""),
-        ok(200, b""),
-    ]);
-    let c = minio(&fake);
-    c.list_buckets().unwrap();
-    c.list("mail", "", None, None).unwrap();
-    c.delete("mail", "k").unwrap();
-    c.put_object("mail", "k", b"x").unwrap();
-    let sent = fake.sent();
-    assert_eq!(sent[0].body_limit.ok, LIST_BODY_LIMIT);
-    assert_eq!(sent[1].body_limit.ok, LIST_BODY_LIMIT);
-    assert_eq!(sent[2].body_limit.ok, ERROR_BODY_LIMIT);
-    assert_eq!(sent[3].body_limit.ok, ERROR_BODY_LIMIT);
-}
-
-#[test]
-fn a_truncated_listing_is_too_large_not_a_parse_error() {
-    let fake = Fake::new(vec![truncated(200, &[], b"<ListBucketResult>")]);
-    let err = minio(&fake).list("mail", "", None, None).unwrap_err();
-    assert!(
-        matches!(err, S3Error::TooLarge { limit, .. } if limit == LIST_BODY_LIMIT),
-        "{err:?}"
-    );
-}
-
-// Review item 18: the client trusts the response's EncodingType, not its own request.
-
-#[test]
-fn list_leaves_keys_alone_when_the_server_ignored_encoding_type() {
-    let body = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>a+b%41</Key><Size>1</Size></Contents></ListBucketResult>"#;
-    let fake = Fake::new(vec![ok(200, body), ok(204, b"")]);
-    let c = minio(&fake);
-    let key = c.list("mail", "", None, None).unwrap().objects[0]
-        .key
-        .clone();
-    assert_eq!(key, "a+b%41");
-    // And deleting it deletes that key, not "a bA".
-    c.delete("mail", &key).unwrap();
-    assert_eq!(fake.sent()[1].url, "http://minio:9000/mail/a%2Bb%2541");
-}
-
-// Review item 22: region strings are checked before they go anywhere.
-
-#[test]
-fn valid_region_accepts_region_names_only() {
-    for ok in [
-        "us-east-1",
-        "eu-west-2",
-        "ap-southeast-4",
-        "us-gov-west-1",
-        "cn-north-1",
-        "minio",
-    ] {
-        assert!(valid_region(ok), "{ok}");
-    }
-    for bad in [
-        "",
-        "x.attacker.example/#",
-        "eu-west-2.evil",
-        "us-east-1/",
-        "US-EAST-1",
-        "eu west",
-        "-eu",
-        "eu-",
-        "a:1",
-        "reg\u{e9}on",
-        &"a".repeat(64),
-    ] {
-        assert!(!valid_region(bad), "{bad:?}");
-    }
-}
-
-#[test]
-fn a_redirect_to_a_bad_region_header_is_ignored() {
-    let fake = Fake::new(vec![with_headers(
-        301,
-        &[("x-amz-bucket-region", "x.attacker.example/#")],
-        b"",
-    )]);
-    let c = aws("us-east-1", &fake);
-    let err = c.get("mail-inbound", "k").unwrap_err();
-    assert!(
-        matches!(err, S3Error::Service { status: 301, .. }),
-        "{err:?}"
-    );
-    assert_eq!(fake.sent().len(), 1);
-    assert_eq!(c.bucket_region("mail-inbound"), None);
-}
-
-#[test]
-fn a_bad_region_in_an_error_body_is_ignored() {
-    let body = b"<Error><Code>AuthorizationHeaderMalformed</Code><Message>m</Message><Region>evil.example/x</Region></Error>";
-    let fake = Fake::new(vec![ok(400, body)]);
-    assert!(aws("us-east-1", &fake).get("mail-inbound", "k").is_err());
-    assert_eq!(fake.sent().len(), 1);
-}
-
-#[test]
-fn a_bad_region_header_falls_back_to_a_good_body_region() {
-    let fake = Fake::new(vec![
-        with_headers(
-            400,
-            &[("x-amz-bucket-region", "evil.example/x")],
-            &fixture("error_authorization_header_malformed.xml"),
-        ),
-        ok(200, b"x"),
-    ]);
-    aws("us-east-1", &fake).get("mail-inbound", "k").unwrap();
-    assert_eq!(
-        fake.sent()[1].url,
-        "https://mail-inbound.s3.eu-west-2.amazonaws.com/k"
-    );
-}
-
-#[test]
-fn a_bad_region_given_to_new_falls_back_to_us_east_1() {
-    let fake = Fake::new(vec![ok(200, &fixture("list_buckets.xml"))]);
-    aws("evil.example/#", &fake).list_buckets().unwrap();
-    let req = &fake.sent()[0];
-    assert_eq!(req.url, "https://s3.us-east-1.amazonaws.com/");
-    assert_eq!(scope_region(req), "us-east-1");
-}
-
-// Review item 23: an empty key never reaches the bucket root.
+// Empty keys
 
 #[test]
 fn empty_keys_are_refused_without_a_request() {
@@ -820,53 +390,184 @@ fn empty_keys_are_refused_without_a_request() {
     assert!(fake.sent().is_empty());
 }
 
-// Review item 29: a secret echoed back url-encoded is scrubbed too.
+// Listings
 
 #[test]
-fn url_encoded_secrets_are_scrubbed_from_errors() {
-    // SECRET has `/` in it and TOKEN has `/`, `+` and `=`, so encoding changes them.
-    let upper = |s: &str| reses::s3::sigv4::uri_encode(s, false);
-    let lower = |s: &str| {
-        let mut out = String::new();
-        let enc = upper(s);
-        let mut chars = enc.chars().peekable();
-        while let Some(c) = chars.next() {
-            out.push(c);
-            if c == '%' {
-                for _ in 0..2 {
-                    out.push(chars.next().unwrap().to_ascii_lowercase());
-                }
-            }
-        }
-        out
-    };
-    assert_ne!(upper(SECRET), SECRET);
-    assert_ne!(lower(SECRET), upper(SECRET));
-    let echoes = [
-        format!("{} and {}", upper(SECRET), upper(TOKEN)),
-        format!("{} and {}", lower(SECRET), lower(TOKEN)),
-    ];
-    let fake = Fake::new(
-        echoes
-            .iter()
-            .flat_map(|e| {
-                [
-                    Err(format!("proxy said {e}")),
-                    ok(
-                        403,
-                        format!("<Error><Code>SignatureDoesNotMatch</Code><Message>{e}</Message></Error>")
-                            .as_bytes(),
-                    ),
-                ]
-            })
-            .collect(),
+fn list_buckets_reads_every_bucket() {
+    let fake = Fake::new(vec![ok(200, &fixture("list_buckets.xml"))]);
+    let buckets = aws("ap-southeast-2", &fake).list_buckets().unwrap();
+    assert_eq!(
+        buckets.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
+        ["mail-inbound", "quotes.example"]
     );
-    let c = S3Client::new(creds(Some(TOKEN)), "us-east-1").with_transport(fake.clone());
-    for _ in 0..4 {
+    assert!(buckets[0].created.is_some());
+    assert_eq!(fake.sent()[0].scope_region(), "ap-southeast-2");
+}
+
+#[test]
+fn list_sends_a_list_objects_v2_query() {
+    let fake = Fake::new(vec![ok(200, &fixture("list_objects_v2_folders.xml"))]);
+    minio(&fake)
+        .with_max_keys(4)
+        .list("mail", "inbox/", Some("/"), Some("tok+/="))
+        .unwrap();
+    let uri = &fake.sent()[0].uri;
+    for part in [
+        "list-type=2",
+        "prefix=inbox%2F",
+        "delimiter=%2F",
+        "continuation-token=tok%2B%2F%3D",
+        "encoding-type=url",
+        "max-keys=4",
+    ] {
+        assert!(uri.contains(part), "{part} missing from {uri}");
+    }
+}
+
+#[test]
+fn list_decodes_keys_when_the_response_is_url_encoded() {
+    let fake = Fake::new(vec![ok(200, &fixture("list_objects_v2_folders.xml"))]);
+    let l = minio(&fake)
+        .list("mail", "inbox/", Some("/"), None)
+        .unwrap();
+    assert_eq!(l.prefixes, vec!["inbox/2024/", "inbox/spam folder/"]);
+    assert_eq!(l.objects[0].key, "inbox/0a1b2c3d4e5f");
+    assert_eq!(l.objects[0].size, 48213);
+    assert!(l.objects[0].last_modified.is_some());
+    // Keys go up raw: `+` is a space and `%2B` a plus once decoded, and nothing is escaped
+    // for display here. The screens do that.
+    assert_eq!(l.objects[1].key, "inbox/a b+cé%.eml");
+    assert_eq!(
+        l.next_token.as_deref(),
+        Some("1ueGcxLPRx1Tr/XYExHnhbYLgveDs2J/wm36Hy4vbOwM=")
+    );
+}
+
+#[test]
+fn list_leaves_keys_alone_when_the_server_ignored_encoding_type() {
+    let body = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>a+b%41</Key><Size>1</Size></Contents></ListBucketResult>"#;
+    let fake = Fake::new(vec![ok(200, body)]);
+    let l = minio(&fake).list("mail", "", None, None).unwrap();
+    assert_eq!(l.objects[0].key, "a+b%41");
+}
+
+#[test]
+fn keys_with_control_characters_come_up_raw() {
+    // An escape sequence in a key is data. It reaches the screens as is, and they escape it.
+    let body = br#"<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>inbox%2F%1B%5B31mred</Key><Size>1</Size></Contents></ListBucketResult>"#;
+    let fake = Fake::new(vec![ok(200, body)]);
+    let l = minio(&fake).list("mail", "", None, None).unwrap();
+    assert_eq!(l.objects[0].key, "inbox/\u{1b}[31mred");
+}
+
+#[test]
+fn a_page_that_says_it_is_not_truncated_has_no_next_token() {
+    // Panel item N23: a stray NextContinuationToken on the last page must not keep paging.
+    let body = br#"<ListBucketResult><IsTruncated>false</IsTruncated><NextContinuationToken>stray</NextContinuationToken><Contents><Key>a</Key><Size>1</Size></Contents></ListBucketResult>"#;
+    let fake = Fake::new(vec![ok(200, body)]);
+    let l = minio(&fake).list("mail", "", None, None).unwrap();
+    assert_eq!(l.next_token, None);
+}
+
+#[test]
+fn a_truncated_page_keeps_its_token() {
+    let body = br#"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>more</NextContinuationToken><Contents><Key>a</Key><Size>1</Size></Contents></ListBucketResult>"#;
+    let fake = Fake::new(vec![ok(200, body)]);
+    let l = minio(&fake).list("mail", "", None, None).unwrap();
+    assert_eq!(l.next_token.as_deref(), Some("more"));
+}
+
+// Errors
+
+#[test]
+fn error_documents_become_service_errors() {
+    let fake = Fake::new(vec![ok(
+        404,
+        &error_doc("NoSuchKey", "The specified key does not exist."),
+    )]);
+    let err = minio(&fake).get("mail", "inbox/missing").unwrap_err();
+    assert_eq!(
+        err,
+        S3Error::Service {
+            status: 404,
+            code: "NoSuchKey".into(),
+            message: "The specified key does not exist.".into(),
+        }
+    );
+    assert!(err.is_not_found());
+}
+
+#[test]
+fn delete_sends_delete() {
+    let fake = Fake::new(vec![ok(204, b"")]);
+    minio(&fake).delete("mail", "inbox/k").unwrap();
+    let req = &fake.sent()[0];
+    assert_eq!(req.method, "DELETE");
+    assert!(
+        req.uri.starts_with("http://minio:9000/mail/inbox/k"),
+        "{}",
+        req.uri
+    );
+}
+
+#[test]
+fn an_unreachable_endpoint_is_a_transport_error() {
+    let c = S3Client::new(creds(None), "us-east-1").with_endpoint("http://127.0.0.1:9", true);
+    assert!(matches!(c.list_buckets(), Err(S3Error::Transport(_))));
+}
+
+// Secrets
+
+#[test]
+fn secrets_never_reach_debug_output() {
+    let c = S3Client::new(creds(Some(TOKEN)), "us-east-1");
+    let dbg = format!("{c:?}");
+    assert!(!dbg.contains(SECRET), "{dbg}");
+    assert!(!dbg.contains(TOKEN), "{dbg}");
+    assert!(dbg.contains("us-east-1"), "{dbg}");
+}
+
+#[test]
+fn secrets_are_scrubbed_from_errors() {
+    // A server that echoes a secret back, raw or url-encoded, must not get it shown.
+    let enc = |s: &str| {
+        s.replace('/', "%2F")
+            .replace('+', "%2B")
+            .replace('=', "%3D")
+    };
+    // The same escapes with lower-case hex digits, which some servers write.
+    let low = |s: &str| {
+        enc(s)
+            .replace("%2F", "%2f")
+            .replace("%2B", "%2b")
+            .replace("%3D", "%3d")
+    };
+    let fake = Fake::new(vec![
+        ok(
+            403,
+            &error_doc("SignatureDoesNotMatch", &format!("{SECRET} {TOKEN}")),
+        ),
+        ok(
+            403,
+            &error_doc(
+                "SignatureDoesNotMatch",
+                &format!("{} {}", enc(SECRET), enc(TOKEN)),
+            ),
+        ),
+        ok(
+            403,
+            &error_doc(
+                "SignatureDoesNotMatch",
+                &format!("{} {}", low(SECRET), low(TOKEN)),
+            ),
+        ),
+    ]);
+    let c = S3Client::new(creds(Some(TOKEN)), "us-east-1").with_http_client(fake.http());
+    for _ in 0..3 {
         let err = c.get("mail", "k").unwrap_err();
         for text in [err.to_string(), format!("{err:?}")] {
-            for secret in [SECRET, TOKEN] {
-                for form in [secret.to_string(), upper(secret), lower(secret)] {
+            for s in [SECRET, TOKEN] {
+                for form in [s.to_string(), enc(s), low(s)] {
                     assert!(!text.contains(&form), "{form} in {text}");
                 }
             }
@@ -874,22 +575,70 @@ fn url_encoded_secrets_are_scrubbed_from_errors() {
     }
 }
 
-// Review item 25: a small helper so the screens can stop a listing that repeats itself.
-
 #[test]
-fn next_page_refuses_a_token_that_does_not_move() {
-    let page = |t: Option<&str>| Listing {
-        next_token: t.map(str::to_string),
-        ..Listing::default()
-    };
-    assert_eq!(page(Some("b")).next_page(Some("a")), Some("b"));
-    assert_eq!(page(Some("b")).next_page(None), Some("b"));
-    assert_eq!(page(Some("a")).next_page(Some("a")), None);
-    assert_eq!(page(Some("")).next_page(None), None);
-    assert_eq!(page(None).next_page(Some("a")), None);
+fn a_session_token_goes_out_as_a_signed_header() {
+    let fake = Fake::new(vec![ok(200, b"x")]);
+    S3Client::new(creds(Some(TOKEN)), "us-east-1")
+        .with_http_client(fake.http())
+        .get("mail", "k")
+        .unwrap();
+    let req = &fake.sent()[0];
+    assert_eq!(req.header("x-amz-security-token"), Some(TOKEN));
+    assert!(
+        req.header("authorization")
+            .unwrap()
+            .contains("x-amz-security-token")
+    );
 }
 
-// The browser only holds an `Arc<dyn Store>`, so the learned region has to be on the trait.
+// Cross-region buckets
+
+#[test]
+fn a_301_with_a_region_header_moves_the_bucket_to_that_region() {
+    let fake = Fake::new(vec![
+        with_headers(
+            301,
+            &[("x-amz-bucket-region", "eu-west-2")],
+            &error_doc("PermanentRedirect", "use the right endpoint"),
+        ),
+        ok(200, b"hello"),
+    ]);
+    let c = aws("us-east-1", &fake);
+    assert_eq!(c.get("mail-inbound", "k").unwrap(), b"hello");
+    let sent = fake.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].scope_region(), "us-east-1");
+    assert_eq!(sent[1].host(), "mail-inbound.s3.eu-west-2.amazonaws.com");
+    assert_eq!(sent[1].scope_region(), "eu-west-2");
+
+    // The next call goes straight there, and other buckets stay put.
+    fake.push(ok(204, b""));
+    c.delete("mail-inbound", "k").unwrap();
+    fake.push(ok(200, b"x"));
+    c.get("other", "k").unwrap();
+    let sent = fake.sent();
+    assert_eq!(sent.len(), 4);
+    assert_eq!(sent[2].scope_region(), "eu-west-2");
+    assert_eq!(sent[3].scope_region(), "us-east-1");
+}
+
+#[test]
+fn a_redirect_without_a_region_header_asks_head_bucket() {
+    let fake = Fake::new(vec![
+        ok(
+            400,
+            &error_doc("AuthorizationHeaderMalformed", "wrong region"),
+        ),
+        with_headers(301, &[("x-amz-bucket-region", "ap-northeast-1")], b""),
+        ok(200, b"x"),
+    ]);
+    let c = aws("us-east-1", &fake);
+    assert_eq!(c.get("mail-inbound", "k").unwrap(), b"x");
+    let sent = fake.sent();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[1].method, "HEAD");
+    assert_eq!(sent[2].scope_region(), "ap-northeast-1");
+}
 
 #[test]
 fn a_learned_region_is_visible_through_dyn_store() {
@@ -908,9 +657,184 @@ fn a_learned_region_is_visible_through_dyn_store() {
 }
 
 #[test]
-fn memory_store_has_no_learned_region() {
-    let m = reses::s3::MemoryStore::new();
-    m.put("bk", "k", b"x");
-    let store: &dyn Store = &m;
-    assert_eq!(store.bucket_region("bk"), None);
+fn a_bad_region_hint_is_ignored() {
+    let fake = Fake::new(vec![
+        with_headers(301, &[("x-amz-bucket-region", "x.attacker.example/#")], b""),
+        with_headers(301, &[("x-amz-bucket-region", "x.attacker.example/#")], b""),
+    ]);
+    let c = aws("us-east-1", &fake);
+    assert!(matches!(
+        c.get("mail-inbound", "k"),
+        Err(S3Error::Service { status: 301, .. })
+    ));
+    assert_eq!(c.bucket_region("mail-inbound"), None);
+    assert!(fake.sent().iter().all(|r| !r.uri.contains("attacker")));
+}
+
+#[test]
+fn other_400s_are_not_redirects() {
+    let fake = Fake::new(vec![with_headers(
+        400,
+        &[("x-amz-bucket-region", "eu-west-2")],
+        &error_doc("InvalidArgument", "nope"),
+    )]);
+    let err = aws("us-east-1", &fake)
+        .get("mail-inbound", "k")
+        .unwrap_err();
+    assert!(
+        matches!(err, S3Error::Service { status: 400, ref code, .. } if code == "InvalidArgument")
+    );
+    assert_eq!(fake.sent().len(), 1);
+}
+
+// Credentials and regions from profile files
+
+/// Writes `name` under `dir` and hands back its path.
+fn write(dir: &Path, name: &str, text: &str) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+#[test]
+fn a_profile_with_static_keys_and_a_token_signs_with_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write(
+        dir.path(),
+        "config",
+        "[profile work]\nregion = eu-central-1\n",
+    );
+    let credentials = write(
+        dir.path(),
+        "credentials",
+        &format!(
+            "[default]\naws_access_key_id = AKIDDEFAULT\naws_secret_access_key = nope\n\
+             [work]\naws_access_key_id = AKIDWORK\naws_secret_access_key = {SECRET}\naws_session_token = {TOKEN}\n"
+        ),
+    );
+    let fake = Fake::new(vec![ok(200, b"x")]);
+    let c = S3Client::from_profile_files("work", None, &config, &credentials)
+        .with_http_client(fake.http());
+    assert_eq!(c.region(), "eu-central-1");
+    c.get("mail-inbound", "k").unwrap();
+    let req = &fake.sent()[0];
+    assert!(
+        req.header("authorization")
+            .unwrap()
+            .contains("Credential=AKIDWORK/")
+    );
+    assert_eq!(req.header("x-amz-security-token"), Some(TOKEN));
+    assert_eq!(req.scope_region(), "eu-central-1");
+}
+
+#[test]
+fn a_region_hint_beats_the_profile_and_a_bad_one_falls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write(
+        dir.path(),
+        "config",
+        "[profile work]\nregion = eu-central-1\n",
+    );
+    let credentials = write(
+        dir.path(),
+        "credentials",
+        "[work]\naws_access_key_id = AKIDWORK\naws_secret_access_key = s\n",
+    );
+    let hinted = S3Client::from_profile_files("work", Some("ca-central-1"), &config, &credentials);
+    assert_eq!(hinted.region(), "ca-central-1");
+    let bad = S3Client::from_profile_files("work", Some("evil.example/#"), &config, &credentials);
+    assert_eq!(bad.region(), "eu-central-1");
+    let none = write(dir.path(), "config-empty", "");
+    assert_eq!(
+        S3Client::from_profile_files("work", None, &none, &credentials).region(),
+        "us-east-1"
+    );
+}
+
+#[test]
+fn credential_process_supplies_the_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("creds.sh");
+    let mut f = std::fs::File::create(&script).unwrap();
+    writeln!(
+        f,
+        "#!/bin/sh\necho '{{\"Version\": 1, \"AccessKeyId\": \"AKIDPROCESS\", \"SecretAccessKey\": \"process-secret\", \"SessionToken\": \"process-token\"}}'"
+    )
+    .unwrap();
+    drop(f);
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let config = write(
+        dir.path(),
+        "config",
+        &format!(
+            "[profile proc]\nregion = us-west-2\ncredential_process = {}\n",
+            script.display()
+        ),
+    );
+    let credentials = write(dir.path(), "credentials", "");
+    let fake = Fake::new(vec![ok(200, b"x")]);
+    S3Client::from_profile_files("proc", None, &config, &credentials)
+        .with_http_client(fake.http())
+        .get("mail-inbound", "k")
+        .unwrap();
+    let req = &fake.sent()[0];
+    assert!(
+        req.header("authorization")
+            .unwrap()
+            .contains("Credential=AKIDPROCESS/")
+    );
+    assert_eq!(req.header("x-amz-security-token"), Some("process-token"));
+}
+
+#[test]
+fn a_missing_profile_is_an_error_that_names_it_and_hides_other_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write(dir.path(), "config", "");
+    let credentials = write(
+        dir.path(),
+        "credentials",
+        &format!("[other]\naws_access_key_id = AKIDOTHER\naws_secret_access_key = {SECRET}\n"),
+    );
+    let fake = Fake::new(vec![]);
+    let err = S3Client::from_profile_files("ghost", None, &config, &credentials)
+        .with_http_client(fake.http())
+        .list_buckets()
+        .unwrap_err();
+    let text = format!("{err} {err:?}");
+    assert!(text.contains("ghost"), "{text}");
+    assert!(!text.contains(SECRET), "{text}");
+    assert!(fake.sent().is_empty());
+}
+
+#[test]
+fn a_profile_client_hides_its_secrets_from_debug() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write(dir.path(), "config", "");
+    let credentials = write(
+        dir.path(),
+        "credentials",
+        &format!(
+            "[work]\naws_access_key_id = AKIDWORK\naws_secret_access_key = {SECRET}\naws_session_token = {TOKEN}\n"
+        ),
+    );
+    let c = S3Client::from_profile_files("work", None, &config, &credentials);
+    let dbg = format!("{c:?}");
+    assert!(dbg.contains("work"), "{dbg}");
+    assert!(!dbg.contains(SECRET) && !dbg.contains(TOKEN), "{dbg}");
+}
+
+#[test]
+fn a_range_past_the_cap_on_a_server_that_ignores_range_is_too_large() {
+    // The server streams the whole object and the range starts beyond what I'll read of it,
+    // so the honest answer is TooLarge, not an empty range.
+    let start = MAX_GET_BYTES + 100;
+    let body = vec![b'x'; (MAX_GET_BYTES + 200) as usize];
+    let fake = Fake::new(vec![then_fail(200, &[], body)]);
+    match minio(&fake)
+        .get_range("mail", "k", start, start + 9)
+        .unwrap_err()
+    {
+        S3Error::TooLarge { limit, .. } => assert_eq!(limit, MAX_GET_BYTES),
+        other => panic!("{other:?}"),
+    }
 }

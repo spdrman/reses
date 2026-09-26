@@ -296,3 +296,37 @@ fn dot_segment_keys_are_never_normalised() {
         );
     }
 }
+
+/// The profile route end to end: aws-config reads the keys from a credentials file by profile
+/// name, and the SDK signs with them against MinIO.
+#[test]
+#[ignore]
+fn a_profile_from_files_works_against_minio() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    std::fs::write(&config, "[profile minio]\nregion = us-east-1\n").unwrap();
+    let credentials = dir.path().join("credentials");
+    std::fs::write(
+        &credentials,
+        format!(
+            "[minio]\naws_access_key_id = {}\naws_secret_access_key = {}\n",
+            env("RESES_TEST_S3_ACCESS_KEY"),
+            env("RESES_TEST_S3_SECRET_KEY")
+        ),
+    )
+    .unwrap();
+    let c = S3Client::from_profile_files("minio", None, &config, &credentials)
+        .with_endpoint(&env("RESES_TEST_S3_ENDPOINT"), true);
+    let b = bucket("profile");
+    c.create_bucket(&b).unwrap();
+    c.put_object(&b, "inbox/m", b"From: a@example.com\r\n\r\nhi")
+        .unwrap();
+    assert_eq!(c.get_range(&b, "inbox/m", 0, 3).unwrap(), b"From");
+    let names: Vec<String> = c
+        .list_buckets()
+        .unwrap()
+        .into_iter()
+        .map(|x| x.name)
+        .collect();
+    assert!(names.contains(&b), "{names:?}");
+}
