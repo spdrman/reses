@@ -115,6 +115,20 @@ impl Pty {
         self.master.flush().unwrap();
     }
 
+    /// True when the app is still running after `d`: it is waiting for a key, not gone already.
+    fn still_running_after(&mut self, d: Duration) -> bool {
+        let deadline = Instant::now() + d;
+        while Instant::now() < deadline {
+            if self.child.try_wait().unwrap().is_some() {
+                return false;
+            }
+            while let Ok(chunk) = self.output.recv_timeout(Duration::from_millis(20)) {
+                self.seen.extend(chunk);
+            }
+        }
+        true
+    }
+
     /// Whether the app exited within `limit`, killing it if not.
     fn exits_within(&mut self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
@@ -140,6 +154,12 @@ fn first_q_quits(env: &[(&str, &str)]) {
     assert!(
         pty.wait_for("Accounts", Duration::from_secs(20)),
         "{env:?}: the accounts screen never drew:\n{}",
+        String::from_utf8_lossy(&pty.seen)
+    );
+    // A positive control: without a key it keeps running, so a quick exit below is the q.
+    assert!(
+        pty.still_running_after(Duration::from_millis(300)),
+        "{env:?}: reses exited before any key:\n{}",
         String::from_utf8_lossy(&pty.seen)
     );
     pty.press("q");

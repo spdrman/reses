@@ -45,6 +45,8 @@ The inbox shows From, Subject, Date and Size, newest first. Enter opens a messag
 
 Settings live in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
 
+The header shows the logo as an image in iTerm2, WezTerm, Ghostty, kitty, foot and mlterm, and as a styled `re:SES` everywhere else. It goes by the environment and never asks the terminal anything, so a terminal that doesn't answer can't swallow your keys. `RESES_LOGO=text` always uses the text, and `RESES_LOGO=image` asks the terminal what it supports, for trying an unlisted one (a terminal that never replies can then eat keypresses until you quit).
+
 ## Decode a stored message (optional)
 
 If you have a raw message file, for example one downloaded from the bucket, reses can print it readably instead of opening the inbox:

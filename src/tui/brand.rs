@@ -108,16 +108,46 @@ impl Env {
     }
 }
 
-/// Decide from the environment alone.
+/// Decide from the environment alone. Only a terminal the environment names gets the image,
+/// and even then nothing is asked of it: asking means reading stdin until it answers, and a
+/// terminal that never does would lose every keypress to that read.
 pub fn plan(env: &Env) -> Plan {
-    let _ = env;
-    Plan::Query
+    match env.reses_logo.as_deref() {
+        Some("text") => return Plan::Text,
+        Some("image") => return Plan::Query,
+        _ => {}
+    }
+    // Image escapes inside tmux need passthrough, which isn't on by default.
+    let term_program = env.term_program.as_deref().unwrap_or("");
+    if env.tmux.is_some() || term_program == "tmux" {
+        return Plan::Text;
+    }
+    let term = env.term.as_deref().unwrap_or("");
+    if term_program == "iTerm.app" || term_program == "WezTerm" || env.wezterm_executable.is_some()
+    {
+        return Plan::Image(ProtocolType::Iterm2);
+    }
+    if term_program == "ghostty"
+        || term.contains("ghostty")
+        || term == "xterm-kitty"
+        || env.kitty_window_id.is_some()
+    {
+        return Plan::Image(ProtocolType::Kitty);
+    }
+    if term == "foot" || term.starts_with("foot-") || env.mlterm.is_some() {
+        return Plan::Image(ProtocolType::Sixel);
+    }
+    Plan::Text
 }
 
-/// Pixels per cell from a window size, or None when the terminal doesn't report one.
+/// Pixels per cell from a window size, or None when the terminal doesn't report one (or
+/// reports something too small to be a real cell).
 fn cell_size(width_px: u16, height_px: u16, cols: u16, rows: u16) -> Option<(u16, u16)> {
-    let _ = (width_px, height_px, cols, rows);
-    Some((8, 16))
+    if cols == 0 || rows == 0 {
+        return None;
+    }
+    let (w, h) = (width_px / cols, height_px / rows);
+    (w >= 2 && h >= 4).then_some((w, h))
 }
 
 /// How the header draws the logo, decided once at startup.
@@ -169,16 +199,31 @@ impl Brand {
         }
     }
 
-    /// Ask the terminal. Call it once, after the terminal is in raw mode and before the job
-    /// pool starts (the query itself uses a thread). `RESES_LOGO=text` skips the query.
+    /// Decide once at startup, after the terminal is in raw mode and before the job pool starts.
+    /// Only `RESES_LOGO=image` asks the terminal anything: ratatui-image's query leaves a
+    /// thread reading stdin until the terminal answers, so it's opt-in, for testing.
     pub fn detect() -> Self {
         let background = Background::from_colorfgbg(std::env::var("COLORFGBG").ok().as_deref());
-        if std::env::var("RESES_LOGO").is_ok_and(|v| v == "text") {
-            return Self::text(background);
-        }
-        match Picker::from_query_stdio() {
-            Ok(picker) => Self::with_picker(picker, background),
-            Err(_) => Self::text(background),
+        match plan(&Env::from_process()) {
+            Plan::Text => Self::text(background),
+            Plan::Image(protocol) => {
+                // The window's pixel size comes from an ioctl, which reads nothing from stdin.
+                let size = ratatui::crossterm::terminal::window_size()
+                    .ok()
+                    .and_then(|w| cell_size(w.width, w.height, w.columns, w.rows));
+                match size {
+                    Some(size) => {
+                        let mut picker = Picker::from_fontsize(size);
+                        picker.set_protocol_type(protocol);
+                        Self::with_picker(picker, background)
+                    }
+                    None => Self::text(background),
+                }
+            }
+            Plan::Query => match Picker::from_query_stdio() {
+                Ok(picker) => Self::with_picker(picker, background),
+                Err(_) => Self::text(background),
+            },
         }
     }
 

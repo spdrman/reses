@@ -13,14 +13,16 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 hmac = "0.12"
-# Only PNG: the header logo is the one image reses decodes.
+# reses asks for PNG only: the header logo is the one image it decodes. ratatui-image turns on
+# image's jpeg feature regardless, so zune-jpeg and moxcms (colour management) get built too.
+# Both are pure Rust and only add build time; I accept that rather than patch the dependency.
 image = { version = "0.25", default-features = false, features = ["png"] }
 mail-parser = "0.11"
 percent-encoding = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 ratatui = "0.29"
-# 8.1 is the last release on ratatui 0.29. No default features: they add jpeg and more
-# decoders, and the crossterm backend ratatui already brings.
+# 8.1 is the last release on ratatui 0.29. No default features: they would add image's whole
+# default decoder set and the crossterm backend ratatui already brings.
 ratatui-image = { version = "8.1", default-features = false }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
