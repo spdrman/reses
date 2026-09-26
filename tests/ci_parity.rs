@@ -48,7 +48,7 @@ fn every_ci_command_runs_locally_and_back() {
     // the local mirror cross-builds it from Linux with zigbuild. The macOS job also builds a
     // debug binary as the "already ran" side of tests/macos-replace-binary.sh (#15); the local
     // mirror runs that test with the release binary on both sides instead of a second build.
-    const CI_ONLY: &[&str] = &["cargo build --release --locked", "cargo build --locked"];
+    const CI_ONLY: &[&str] = &["cargo build --release --locked"];
     const LOCAL_ONLY: &[&str] =
         &["cargo zigbuild --release --locked --target aarch64-apple-darwin"];
     for c in CI_ONLY {
@@ -153,4 +153,68 @@ fn the_msrv_job_name_carries_no_version() {
             );
         }
     }
+}
+
+/// Lines that copy, move or link something into `dist/`, comments skipped.
+fn dist_writes(text: &str) -> Vec<String> {
+    let verbs = ["cp ", "mv ", "install ", "ln ", "rsync "];
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#') && l.contains("dist/"))
+        .filter(|l| verbs.iter().any(|v| l.contains(v)) || l.contains("place-binary.sh"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn every_write_into_dist_goes_through_place_binary() {
+    // #15: an in-place overwrite of a binary that has run, while anything holds it open, leaves
+    // it dead for exec. scripts/place-binary.sh puts each build on a new inode; nothing else may
+    // write a binary into dist/.
+    for file in ["Makefile", "scripts/ci-docker.sh"] {
+        let writes = dist_writes(&read(file));
+        // Positive control: each file does place a binary, so an empty list means the
+        // parsing broke, not that everything is fine.
+        assert!(
+            writes.iter().any(|l| l.contains("place-binary.sh")),
+            "{file} places no binary through place-binary.sh: {writes:#?}"
+        );
+        let bad: Vec<_> = writes
+            .iter()
+            .filter(|l| !l.contains("place-binary.sh"))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "{file} writes into dist/ without scripts/place-binary.sh (#15): {bad:#?}"
+        );
+    }
+}
+
+#[test]
+fn make_darwin_checks_the_build_before_it_becomes_dist_reses() {
+    // ~/.local/bin/reses links to dist/reses, so whatever lands there is the installed command.
+    // The goldens and the #15 replace test run on the fresh build first.
+    let makefile = read("Makefile");
+    let recipe: Vec<&str> = makefile
+        .lines()
+        .skip_while(|l| !l.starts_with("darwin:"))
+        .skip(1)
+        .take_while(|l| l.starts_with('\t'))
+        .map(str::trim)
+        .collect();
+    let at = |needle: &str| {
+        recipe
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("the darwin recipe has no step with {needle:?}: {recipe:#?}"))
+    };
+    let place = at("dist/reses-aarch64-apple-darwin dist/reses");
+    assert!(
+        at("check-goldens.sh") < place,
+        "goldens run after dist/reses is replaced: {recipe:#?}"
+    );
+    assert!(
+        at("macos-replace-binary.sh") < place,
+        "the #15 test runs after dist/reses is replaced: {recipe:#?}"
+    );
 }

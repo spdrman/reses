@@ -116,7 +116,7 @@ jobs:
       # the check that the zigbuild binary isn't hiding a real macOS problem.
       - run: cargo build --release --locked
       - run: scripts/check-goldens.sh target/release/reses
-      # #15: a rebuilt binary placed over one that already ran must still run. The debug build
-      # is the "one that already ran", the release build is the rebuild.
-      - run: cargo build --locked
-      - run: tests/macos-replace-binary.sh target/debug/reses target/release/reses
+      # #15: a rebuilt binary placed over one that already ran, while it is held open, must still
+      # run. Identical bytes are killed too, so the release build on both sides is a full test,
+      # and the test fails here if the runner ever stops reproducing the kill.
+      - run: tests/macos-replace-binary.sh target/release/reses
