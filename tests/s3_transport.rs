@@ -153,3 +153,32 @@ fn a_timed_out_body_under_the_limit_is_an_error_not_a_short_body() {
     ));
     assert!(result.is_err(), "{result:?}");
 }
+
+#[test]
+fn reading_stops_at_the_limit_without_waiting_for_the_rest() {
+    // The server sends a byte past the limit and then stalls. A transport that drained the
+    // whole body would sit in the stall until the body timeout and fail.
+    let url = serve_once(|sock| {
+        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n");
+        let _ = sock.write_all(&[9u8; 101]);
+        let _ = sock.flush();
+        thread::sleep(Duration::from_secs(10));
+    });
+    let started = Instant::now();
+    let resp = quick()
+        .send(&get(
+            url,
+            BodyLimit {
+                ok: 100,
+                partial: 1,
+            },
+        ))
+        .unwrap();
+    assert!(resp.truncated);
+    assert_eq!(resp.body, vec![9u8; 100]);
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        started.elapsed()
+    );
+}
