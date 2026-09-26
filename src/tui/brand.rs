@@ -94,9 +94,6 @@ impl Brand {
     /// The real logo when `picker` found an image protocol. Halfblocks, which is what the
     /// picker settles on when it found none, gets the text wordmark instead.
     pub fn with_picker(mut picker: Picker, background: Background) -> Self {
-        if true {
-            return Self::text(background);
-        }
         if picker.protocol_type() == ProtocolType::Halfblocks {
             return Self::text(background);
         }

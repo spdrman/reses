@@ -321,29 +321,55 @@ impl App {
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
+        let full = frame.area();
+        // The image logo when there's one and room for it; otherwise the one-row text bar.
+        let image = self.ctx.brand.image_for(full.width, full.height);
+        let header_rows = if image.is_some() {
+            brand::IMAGE_ROWS
+        } else {
+            1
+        };
         let [header, body, footer] = Layout::vertical([
-            Constraint::Length(1),
+            Constraint::Length(header_rows),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
-        .areas(frame.area());
+        .areas(full);
 
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let who = match top.session().or(self.ctx.session.as_ref()) {
-            Some(s) => format!("  {} ({})", s.profile.name, s.region),
-            None => String::new(),
-        };
-        let bar = Style::default().bg(Color::Blue).fg(Color::White);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" reses ", bar.add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" {}{who}", top.title()), bar),
-            ]))
-            .style(bar),
-            header,
-        );
+        let account = top
+            .session()
+            .or(self.ctx.session.as_ref())
+            .map(|s| format!("{} ({})", s.profile.name, s.region));
+        let bar = brand::bar_style();
+        match image {
+            Some((logo, cols)) => {
+                let [logo_area, _gap, rest] = Layout::horizontal([
+                    Constraint::Length(cols),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .areas(header);
+                frame.render_stateful_widget(
+                    ratatui_image::StatefulImage::default(),
+                    logo_area,
+                    logo,
+                );
+                let lines = vec![
+                    Line::from(format!(" {}", top.title())),
+                    Line::from(account.map(|a| format!(" {a}")).unwrap_or_default()),
+                ];
+                frame.render_widget(Paragraph::new(lines).style(bar), rest);
+            }
+            None => {
+                let mut spans = brand::wordmark(bar);
+                let who = account.map(|a| format!("  {a}")).unwrap_or_default();
+                spans.push(Span::styled(format!("  {}{who}", top.title()), bar));
+                frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), header);
+            }
+        }
 
         top.render(frame, body, &self.ctx);
 

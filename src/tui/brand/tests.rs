@@ -51,6 +51,19 @@ fn row(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
 }
 
+/// The column where `text` starts on row `y`, counting cells: an image escape sits in one cell,
+/// so a byte offset into the row would be far off.
+fn col_of(buf: &Buffer, y: u16, text: &str) -> Option<u16> {
+    let chars: Vec<String> = text.chars().map(String::from).collect();
+    let n = chars.len() as u16;
+    (0..buf.area.width.saturating_sub(n)).find(|&x| {
+        chars
+            .iter()
+            .enumerate()
+            .all(|(i, c)| buf[(x + i as u16, y)].symbol() == c)
+    })
+}
+
 /// Columns of row `y` whose symbol is `s`, left to right.
 fn cols_of(buf: &Buffer, y: u16, s: &str) -> Vec<u16> {
     (0..buf.area.width)
@@ -107,7 +120,8 @@ fn the_bar_uses_the_terminals_own_colours_reversed_and_bold() {
     ] {
         let (mut app, _area, _d) = app(brand);
         let buf = buffer(&mut app, 100, 20);
-        let title_x = row(&buf, 0).find("Inbox").expect("title on row 0") as u16;
+        let title_x = col_of(&buf, 0, "Inbox").expect("title on row 0");
+        assert!(title_x < 30, "title at {title_x}");
         // Every cell of the bar from the title on: no fixed colours, reversed, bold.
         for x in title_x..100 {
             let c = &buf[(x, 0)];
@@ -135,7 +149,7 @@ fn image_mode_reserves_the_logo_area_left_of_the_bar() {
         assert!(
             buf[(0, 0)].symbol().starts_with("\x1b_G"),
             "{bg:?}: no kitty image at 0,0: {:?}",
-            &buf[(0, 0)].symbol().chars().take(12).collect::<String>()
+            buf[(0, 0)].symbol().chars().take(12).collect::<String>()
         );
         // Two rows of header, with the title right of the image and no text wordmark.
         assert_eq!(area.get().y, IMAGE_ROWS, "{bg:?}");
@@ -145,10 +159,11 @@ fn image_mode_reserves_the_logo_area_left_of_the_bar() {
             !top.contains("re:SES") && !row(&buf, 1).contains("re:SES"),
             "{bg:?}: {top:?}"
         );
-        let title_x = top.find("Inbox").expect("title");
-        // 702x192 at two 16px rows is 117px, 15 columns of 8px, and a space.
+        let title_x = col_of(&buf, 0, "Inbox").expect("title");
+        // 702x192 at two 16px rows is 117px: 15 columns of 8px, a gap column, then the bar's
+        // leading space.
         assert!(
-            title_x > 15,
+            title_x == 17,
             "{bg:?}: title at {title_x} overlaps the logo: {top:?}"
         );
     }
