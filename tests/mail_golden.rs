@@ -1,5 +1,6 @@
-//! Oracle tests: every tests/fixtures/mail/NAME.eml has goldens produced by python/reses.py
-//! (see regen.sh there). The Rust decoder has to match them byte for byte.
+//! Golden tests: every tests/fixtures/mail/NAME.eml has committed expected outputs next to it,
+//! first captured from the original Python version of reses. The decoder has to match them byte for
+//! byte; see CONTRIBUTING.md for how an intended change updates them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,7 +65,7 @@ fn check_all(prefer_html: bool, suffix: &str) {
     }
     assert!(
         failures.is_empty(),
-        "{} of {} fixtures differ from reses.py{}:\n{}",
+        "{} of {} fixtures differ from their goldens{}:\n{}",
         failures.len(),
         all.len(),
         if prefer_html { " --html" } else { "" },
@@ -73,17 +74,17 @@ fn check_all(prefer_html: bool, suffix: &str) {
 }
 
 #[test]
-fn plain_output_matches_python_goldens() {
+fn plain_output_matches_the_goldens() {
     check_all(false, ".out");
 }
 
 #[test]
-fn html_output_matches_python_goldens() {
+fn html_output_matches_the_goldens() {
     check_all(true, ".html.out");
 }
 
 #[test]
-fn saved_attachments_match_python_goldens() {
+fn saved_attachments_match_the_goldens() {
     let mut checked = 0;
     for eml in fixtures() {
         let want = golden(&eml, ".saved");

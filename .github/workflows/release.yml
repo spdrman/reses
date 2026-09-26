@@ -63,7 +63,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo test --locked --no-fail-fast
-      - run: (cd python && python3 -m unittest -q)
 
   build:
     name: Build ${{ matrix.target }}

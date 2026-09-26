@@ -2,7 +2,7 @@ name: CI
 
 # The same shape as libviprs's CI, cut down to a single binary crate with no features and no
 # unsafe code. scripts/ci-docker.sh is the local mirror of this file, and tests/ci_parity.rs
-# fails if the two stop running the same cargo and python commands.
+# fails if the two stop running the same cargo commands.
 
 on:
   # Branch pushes carry CI. A `pull_request` run builds the PR's merge ref, and GitHub drops
@@ -74,8 +74,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --no-fail-fast
-      # python/reses.py is the reference the Rust decoder is pinned to, so its own tests run too.
-      - run: (cd python && python3 -m unittest -q)
 
   integration:
     name: Integration (MinIO)

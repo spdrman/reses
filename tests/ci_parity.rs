@@ -1,5 +1,5 @@
 //! `scripts/ci-docker.sh` is the local mirror of `.github/workflows/ci.yml`. Nothing else ties
-//! them together, so these tests do: every cargo and python command one of them runs, the other
+//! them together, so these tests do: every cargo command one of them runs, the other
 //! runs too, and the toolchain the CI image pins is the MSRV that Cargo.toml and the README claim.
 
 use std::collections::BTreeSet;
@@ -11,19 +11,18 @@ fn read(rel: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-/// A command worth comparing: a cargo invocation or the python oracle suite, whitespace-folded.
+/// A command worth comparing: a cargo invocation, whitespace-folded.
 fn command_of(line: &str) -> Option<String> {
     let line = line.trim();
     let line = line.strip_prefix("- run:").unwrap_or(line).trim();
     let line = line.strip_prefix("run:").unwrap_or(line).trim();
     let is_cargo = line.starts_with("cargo ") || line.contains(" cargo ");
-    let is_python = line.contains("python3 -m unittest");
     // In ci-docker.sh the last command of a case arm ends with the closing quote and `;;`.
     let line = line
         .trim_end_matches(";;")
         .trim_end()
         .trim_end_matches('\'');
-    (is_cargo || is_python).then(|| line.split_whitespace().collect::<Vec<_>>().join(" "))
+    is_cargo.then(|| line.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn commands(text: &str) -> BTreeSet<String> {
@@ -217,4 +216,51 @@ fn make_darwin_checks_the_build_before_it_becomes_dist_reses() {
         at("macos-replace-binary.sh") < place,
         "the #15 test runs after dist/reses is replaced: {recipe:#?}"
     );
+}
+
+/// Every file git tracks, relative to the repo root. Only tracked files count, so local scratch
+/// files and symlinks can't change the answer.
+fn repo_files() -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("running git ls-files");
+    assert!(out.status.success(), "git ls-files failed");
+    String::from_utf8(out.stdout)
+        .expect("tracked paths are UTF-8")
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn the_only_python_left_is_the_configparser_oracle() {
+    // The Python version of reses used to be the reference the goldens came from. It's gone
+    // (#24); the one Python file that stays reads credentials the way the AWS CLI does.
+    let files = repo_files();
+    assert!(
+        files.iter().any(|f| f == "Cargo.toml"),
+        "the walk found nothing: {files:?}"
+    );
+    let python: Vec<_> = files.iter().filter(|f| f.ends_with(".py")).collect();
+    assert_eq!(
+        python,
+        vec!["tests/profile_oracle.py"],
+        "unexpected Python files"
+    );
+    for f in ["python/reses.py", "tests/fixtures/mail/regen.sh"] {
+        assert!(!files.iter().any(|x| x == f), "{f} should be gone");
+    }
+    for rel in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "scripts/ci-docker.sh",
+    ] {
+        assert!(
+            !read(rel).contains("unittest"),
+            "{rel} still runs the Python unit tests"
+        );
+    }
 }

@@ -35,7 +35,7 @@ A bug in the terminal UI comes with an animated recording of it in the issue bod
 
 ## The mail decoder
 
-`src/mail` is pinned to `python/reses.py`. If a decoding change is intended, change the Python first, regenerate the goldens with `scripts/ci-docker.sh --exec tests/fixtures/mail/regen.sh`, and commit both. Fixtures are synthetic (`example.com` addresses): never commit real mail.
+Each `tests/fixtures/mail/NAME.eml` has its expected output next to it (`NAME.out`, `NAME.html.out` and `NAME.saved`). The goldens were first captured from the original Python version of reses, which is gone now. If a decoding change is intended, edit the goldens by hand to what the output should be and commit them with the change. Never regenerate them by running reses itself, because a golden made by the code under test can't catch that code being wrong. Fixtures are synthetic (`example.com` addresses): never commit real mail.
 
 ## Secrets
 

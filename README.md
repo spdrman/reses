@@ -61,7 +61,7 @@ plain body
 
 Bcc never survives delivery as a header, so I work it out from the envelope recipients (`Delivered-To`, `X-Original-To`, and the `for <addr>` in `Received`) that aren't already in To or Cc.
 
-The output matches `python/reses.py` byte for byte. That script was the first version of reses, and it stays in the repo as the reference: the mail goldens in `tests/fixtures/mail/` come from it.
+The expected output for each test message lives in `tests/fixtures/mail/` next to it.
 
 ## Download
 
@@ -72,7 +72,7 @@ Ready-to-run binaries for Linux (x86_64 and arm64, static) and macOS (Apple Sili
 Everything runs in Docker through `scripts/ci-docker.sh`, and the Makefile wraps it:
 
 ```
-make gate          fmt, clippy, check, docs, tests, python oracle tests
+make gate          fmt, clippy, check, docs and tests
 make integration   the S3 tests, against a throwaway MinIO
 make darwin        cross-build the macOS binary into dist/ and check it against the goldens
 make install       make darwin, then link ~/.local/bin/reses to dist/reses
