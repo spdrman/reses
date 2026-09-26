@@ -420,9 +420,21 @@ fn finish_waits_for_queued_deletes_and_skips_everything_else() {
     jobs.submit(store.clone(), peek("a"));
     jobs.submit(store.clone(), list());
     jobs.submit(store.clone(), delete("c"));
+    // Open the gate only once finish has started draining, so the order is certain.
+    let shared = match &jobs.mode {
+        Mode::Pool { shared, .. } => Arc::clone(shared),
+        Mode::Inline(_) => unreachable!(),
+    };
     let opener = {
         let store = store.clone();
-        std::thread::spawn(move || store.release())
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + LIMIT;
+            while !shared.queues.lock().unwrap().draining {
+                assert!(Instant::now() < deadline, "finish never started draining");
+                std::thread::yield_now();
+            }
+            store.release();
+        })
     };
     let dropped = jobs.finish(LIMIT);
     opener.join().unwrap();
