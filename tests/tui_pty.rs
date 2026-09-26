@@ -16,8 +16,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::process::{Pid, Signal, kill_process};
+use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{LocalModes, Winsize, tcgetattr, tcsetwinsize};
 
 /// The sequences crossterm writes to enter and leave the alternate screen.
@@ -182,7 +182,10 @@ impl Pty {
         let stat = format!("/proc/{}/stat", self.child.id());
         while Instant::now() < deadline {
             let s = std::fs::read_to_string(&stat).unwrap_or_default();
-            if s.rsplit(") ").next().is_some_and(|rest| rest.starts_with('T')) {
+            if s.rsplit(") ")
+                .next()
+                .is_some_and(|rest| rest.starts_with('T'))
+            {
                 return true;
             }
             std::thread::yield_now();
@@ -313,7 +316,10 @@ fn ctrl_z_hands_the_terminal_back_and_resume_takes_it_again() {
         pty.wait_for_count(LEAVE, 1, Duration::from_secs(10)),
         "ctrl-z never left the alternate screen"
     );
-    assert!(pty.stopped_within(Duration::from_secs(10)), "ctrl-z didn't stop the app");
+    assert!(
+        pty.stopped_within(Duration::from_secs(10)),
+        "ctrl-z didn't stop the app"
+    );
     assert!(pty.cooked(), "the pty was left in raw mode while stopped");
 
     pty.signal(Signal::Cont);
@@ -327,6 +333,9 @@ fn ctrl_z_hands_the_terminal_back_and_resume_takes_it_again() {
     );
     assert!(!pty.cooked(), "the app should be back in raw mode");
     pty.press("q");
-    assert!(pty.exits_within(Duration::from_secs(5)), "q didn't quit after resuming");
+    assert!(
+        pty.exits_within(Duration::from_secs(5)),
+        "q didn't quit after resuming"
+    );
     assert!(pty.cooked());
 }

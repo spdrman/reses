@@ -18,8 +18,7 @@ use super::text::escape;
 /// The quarantine value: flags 0081 (downloaded, not yet opened), the time in hex seconds, and
 /// the agent that wrote it, in the format LaunchServices uses.
 pub fn quarantine_value(unix_secs: u64) -> String {
-    let _ = unix_secs;
-    String::new()
+    format!("0081;{unix_secs:08x};reses;")
 }
 
 /// Mark `path` as downloaded, on macOS. A no-op that succeeds everywhere else.
@@ -50,14 +49,31 @@ fn set_quarantine(path: &Path, value: &str) -> io::Result<()> {
 /// Quarantine every file in `paths`, and say how it went: None when every one was marked, or
 /// a short note naming the first failure otherwise. The files stay saved either way.
 pub fn quarantine_all(paths: &[PathBuf]) -> Option<String> {
-    let _ = paths;
-    None
+    let failed: Vec<(PathBuf, io::Error)> = paths
+        .iter()
+        .filter_map(|p| quarantine(p).err().map(|e| (p.clone(), e)))
+        .collect();
+    let (first, e) = failed.first()?;
+    Some(format!(
+        "couldn't mark {} of them as downloaded ({}: {e})",
+        failed.len(),
+        escape(&first.display().to_string())
+    ))
 }
 
 /// The saved files' names for the status line, escaped, as written on disk.
 pub fn names(paths: &[PathBuf]) -> String {
-    let _ = paths;
-    String::new()
+    paths
+        .iter()
+        .map(|p| {
+            let name = p.file_name().map_or_else(
+                || p.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            escape(&name).into_owned()
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]

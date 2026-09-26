@@ -45,7 +45,10 @@ fn for_stdout(text: String, stdout_tty: bool, cli: &Cli) -> String {
 /// The line printed for each saved attachment. Its name came from the message, so it's
 /// escaped: stderr is usually the terminal.
 fn saved_line(path: &std::path::Path) -> String {
-    format!("saved {}", path.display())
+    format!(
+        "saved {}",
+        reses::tui::text::escape(&path.display().to_string())
+    )
 }
 
 /// What a run does, from the arguments and whether stdin and stdout are terminals.
