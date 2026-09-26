@@ -50,7 +50,16 @@ enum Session {
 }
 
 fn start_as(env: &[(&str, &str)], session: Session) -> (Pty, tempfile::TempDir) {
-    let home = tempfile::tempdir().unwrap();
+    start_in(tempfile::tempdir().unwrap(), &[], env, session)
+}
+
+/// Start reses with `args` in `home`, which may already hold a config and credentials.
+fn start_in(
+    home: tempfile::TempDir,
+    args: &[&str],
+    env: &[(&str, &str)],
+    session: Session,
+) -> (Pty, tempfile::TempDir) {
     let master: OwnedFd = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
     grantpt(&master).unwrap();
     unlockpt(&master).unwrap();
@@ -72,7 +81,8 @@ fn start_as(env: &[(&str, &str)], session: Session) -> (Pty, tempfile::TempDir) 
         .unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_reses"));
-    cmd.env_clear()
+    cmd.args(args)
+        .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
@@ -338,4 +348,121 @@ fn ctrl_z_hands_the_terminal_back_and_resume_takes_it_again() {
         "q didn't quit after resuming"
     );
     assert!(pty.cooked());
+}
+
+/// A home whose settings save an inbox. With `bucket` a name S3 can't have, the settings file
+/// itself fails to load. The profile it names is in the credentials file, and every S3 call goes
+/// to a closed local port, so nothing here can reach AWS.
+fn home_with_saved_inbox(bucket: &str) -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "[inbox]\nprofile = \"mail\"\nbucket = \"{bucket}\"\nprefix = \"\"\nregion = \"us-east-1\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("credentials"),
+        "[mail]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n\
+         aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("aws-config"),
+        "[profile mail]\nregion = us-east-1\nendpoint_url = http://127.0.0.1:9\n",
+    )
+    .unwrap();
+    home
+}
+
+/// Env that keeps the SDK off the network whatever the profile says.
+const OFFLINE: &[(&str, &str)] = &[
+    ("AWS_ENDPOINT_URL", "http://127.0.0.1:9"),
+    ("AWS_EC2_METADATA_DISABLED", "true"),
+];
+
+/// #14: a saved inbox that makes the settings file fail to load stops a plain `reses`, and the
+/// error it leaves says how to get past it.
+#[test]
+fn a_saved_inbox_that_cannot_load_names_the_way_past_it() {
+    let (mut pty, _home) = start_in(home_with_saved_inbox("no"), &[], OFFLINE, Session::New);
+    assert!(
+        pty.exits_within(Duration::from_secs(20)),
+        "reses kept running on a settings file it can't load"
+    );
+    pty.wait_for("--accounts", Duration::from_secs(2));
+    let out = String::from_utf8_lossy(&pty.seen).into_owned();
+    assert!(out.contains("is not a valid S3 bucket name"), "{out}");
+    assert!(out.contains("reses --accounts"), "{out}");
+}
+
+/// #14: `reses --accounts` opens on the accounts screen even when the saved inbox makes the
+/// settings file fail to load, and says what it couldn't read.
+#[test]
+fn accounts_flag_gets_past_a_saved_inbox_that_cannot_load() {
+    let (mut pty, _home) = start_in(
+        home_with_saved_inbox("no"),
+        &["--accounts"],
+        OFFLINE,
+        Session::New,
+    );
+    assert!(
+        pty.wait_for("Accounts", Duration::from_secs(20)),
+        "the accounts screen never drew:\n{}",
+        String::from_utf8_lossy(&pty.seen)
+    );
+    assert!(
+        pty.still_running_after(Duration::from_millis(300)),
+        "reses exited on its own:\n{}",
+        String::from_utf8_lossy(&pty.seen)
+    );
+    assert!(
+        String::from_utf8_lossy(&pty.seen).contains("not a valid S3 bucket name"),
+        "the screen doesn't say what it couldn't read:\n{}",
+        String::from_utf8_lossy(&pty.seen)
+    );
+    pty.press("q");
+    assert!(pty.exits_within(Duration::from_secs(5)), "q didn't quit");
+}
+
+/// #14: with a saved inbox that loads fine, plain `reses` opens it (the control) and
+/// `reses --accounts` opens the accounts screen instead, never the inbox.
+#[test]
+fn accounts_flag_skips_a_saved_inbox_that_loads() {
+    let inbox_title = "Inbox s3://mail-bucket/";
+
+    let (mut pty, _home) = start_in(
+        home_with_saved_inbox("mail-bucket"),
+        &[],
+        OFFLINE,
+        Session::New,
+    );
+    assert!(
+        pty.wait_for(inbox_title, Duration::from_secs(20)),
+        "plain reses didn't open the saved inbox:\n{}",
+        String::from_utf8_lossy(&pty.seen)
+    );
+    pty.signal(Signal::Term);
+    assert!(pty.exits_within(Duration::from_secs(10)));
+
+    let (mut pty, _home) = start_in(
+        home_with_saved_inbox("mail-bucket"),
+        &["--accounts"],
+        OFFLINE,
+        Session::New,
+    );
+    assert!(
+        pty.wait_for("Accounts", Duration::from_secs(20)),
+        "the accounts screen never drew:\n{}",
+        String::from_utf8_lossy(&pty.seen)
+    );
+    assert!(pty.still_running_after(Duration::from_millis(300)));
+    assert!(
+        !String::from_utf8_lossy(&pty.seen).contains(inbox_title),
+        "--accounts opened the saved inbox:\n{}",
+        String::from_utf8_lossy(&pty.seen)
+    );
+    pty.press("q");
+    assert!(pty.exits_within(Duration::from_secs(5)), "q didn't quit");
 }

@@ -1,0 +1,8 @@
+Received: from mail.example.com by inbound-smtp.us-east-1.example.net with SMTP id n1 for inbox@example.org; Tue, 22 Sep 2026 10:00:00 +0000
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+To: inbox@example.org
+From: Amazon Web Services <no-reply-aws@example.com>
+Subject: Amazon SES Setup Notification
+Message-ID: <setup-1@example.com>
+
+Someone sent this with the notice's subject, so it came in through SES like any other message.

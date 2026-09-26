@@ -1,0 +1,19 @@
+From: a@example.com
+To: b@example.com
+Subject: related with start
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="R"; type="text/plain"; start="<root@example.com>"
+
+--R
+Content-Type: image/png
+Content-ID: <logo@example.com>
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgo=
+--R
+Content-Type: text/plain; charset=utf-8
+Content-ID: <root@example.com>
+
+The root part comes second, and start= points at it.
+--R--

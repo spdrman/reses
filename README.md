@@ -51,8 +51,11 @@ Rust 1.98+ is needed to build it, but you never need Rust installed, since every
 
 ```
 reses                            open the inbox (in a terminal, this is all you need)
+reses --accounts                 open on the accounts screen instead of the saved inbox
 reses FILE [FILE ...]            optional: decode stored messages instead
 ```
+
+If the saved inbox ever stops loading (a broken settings file, a bucket that's gone), `reses --accounts` still starts, on the accounts screen, so you can pick another one.
 
 ## The inbox
 

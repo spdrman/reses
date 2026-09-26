@@ -1,0 +1,11 @@
+From: sender@example.com
+Reply-To: 
+To: someone@example.org
+Cc: Copied Person <copied@example.org>
+Bcc: hidden@example.org
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Subject: envelope recipient already in Cc
+Message-ID: 
+Message:
+
+The Cc recipient reached the mailbox too, but only hidden@example.org is a blind copy.

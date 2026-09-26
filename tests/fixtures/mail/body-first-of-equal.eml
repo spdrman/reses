@@ -1,0 +1,23 @@
+From: a@example.com
+To: b@example.com
+Subject: two bodies of each kind
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=M
+
+--M
+Content-Type: text/plain
+
+first plain
+--M
+Content-Type: text/html
+
+<p>first html</p>
+--M
+Content-Type: text/plain
+
+second plain
+--M
+Content-Type: text/html
+
+<p>second html</p>
+--M--

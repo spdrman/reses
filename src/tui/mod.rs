@@ -228,9 +228,22 @@ impl Ctx {
     }
 }
 
-/// The first screen: straight into the saved inbox when there is one, else account selection.
-pub(crate) fn initial_view(ctx: &mut Ctx) -> Box<dyn View> {
-    if let Some(inbox) = ctx.config.inbox.clone() {
+/// Which screen the inbox opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// The saved inbox when there is one, else the accounts screen.
+    SavedInbox,
+    /// The accounts screen whatever is saved (`reses --accounts`), so a saved inbox that can't
+    /// load never keeps anyone out.
+    Accounts,
+}
+
+/// The first screen: straight into the saved inbox when there is one and `start` allows it,
+/// else account selection.
+pub(crate) fn initial_view(ctx: &mut Ctx, start: Start) -> Box<dyn View> {
+    if start == Start::SavedInbox
+        && let Some(inbox) = ctx.config.inbox.clone()
+    {
         let profile = ctx.credentials().and_then(|f| f.get(&inbox.profile));
         match profile {
             Some(profile) => {
@@ -255,8 +268,8 @@ pub(crate) struct App {
 }
 
 impl App {
-    pub fn new(mut ctx: Ctx) -> Self {
-        let mut first = initial_view(&mut ctx);
+    pub fn new(mut ctx: Ctx, start: Start) -> Self {
+        let mut first = initial_view(&mut ctx, start);
         first.on_focus(&mut ctx);
         Self {
             ctx,
@@ -516,8 +529,17 @@ pub fn run(
     config_path: PathBuf,
     creds_path: PathBuf,
     local_offset: UtcOffset,
+    start: Start,
 ) -> anyhow::Result<()> {
-    let config = AppConfig::load(&config_path)?;
+    // A settings file that doesn't load would stop reses before any screen. With --accounts it
+    // starts anyway, on empty settings, and says what it couldn't read.
+    let (config, unreadable) = match AppConfig::load(&config_path) {
+        Ok(config) => (config, None),
+        Err(e) if start == Start::Accounts => (AppConfig::default(), Some(e)),
+        Err(e) => anyhow::bail!(
+            "{e}\nRun `reses --accounts` to start on the accounts screen and pick another inbox."
+        ),
+    };
     #[cfg(unix)]
     let signalled = quit_on_signals()?;
 
@@ -532,7 +554,12 @@ pub fn run(
     let ctx = Ctx::new(config, config_path, creds_path, Jobs::pool(8))
         .with_local_offset(local_offset)
         .with_brand(brand);
-    let mut app = App::new(ctx);
+    let mut app = App::new(ctx, start);
+    if let Some(e) = unreadable {
+        app.ctx.error(format!(
+            "{e}. Saving an inbox or a default replaces that file."
+        ));
+    }
     // ratatui's hook restores the terminal on any thread's panic, which would drop the screen
     // under a still-running app when a worker panics. Workers catch their own panics, so only
     // a panic on this thread gets the restore (and the report).

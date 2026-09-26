@@ -1,0 +1,11 @@
+From: a@example.com
+Reply-To: 
+To: b@example.com
+Cc: 
+Bcc: 
+Date: Fri, 22 Sep 1950 10:00:00 +0000
+Subject: year 50
+Message-ID: 
+Message:
+
+RFC 5322 4.3 reads 50 as 1950, where Python's parser would say 2050.

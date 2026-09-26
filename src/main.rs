@@ -28,6 +28,11 @@ struct Cli {
     /// them written out visibly (`\x1b`), so a message can't send escape sequences to it.
     #[arg(long)]
     raw: bool,
+    /// Open the inbox on the accounts screen instead of the saved inbox. It still starts when
+    /// the saved inbox can't load (a broken settings file, a deleted bucket), so you can pick
+    /// another one.
+    #[arg(long)]
+    accounts: bool,
 }
 
 /// The decoded text as it should reach stdout. A message is untrusted: its subject, names and
@@ -60,6 +65,9 @@ enum Mode {
 }
 
 fn mode(cli: &Cli, stdin_tty: bool, stdout_tty: bool) -> Mode {
+    if cli.accounts && (!cli.files.is_empty() || !stdin_tty) {
+        return Mode::Refuse("--accounts only applies to the inbox, not to decoding a message");
+    }
     if !cli.files.is_empty() || !stdin_tty {
         return Mode::Decode;
     }
@@ -93,6 +101,11 @@ fn main() -> anyhow::Result<()> {
                 AppConfig::default_path(),
                 CredentialsFile::default_path(),
                 local_offset,
+                if cli.accounts {
+                    reses::tui::Start::Accounts
+                } else {
+                    reses::tui::Start::SavedInbox
+                },
             );
         }
         Mode::Refuse(why) => anyhow::bail!(why),
@@ -195,6 +208,19 @@ mod tests {
     fn a_saved_attachment_name_is_escaped_on_stderr() {
         let line = saved_line(std::path::Path::new("dl/evil\u{1b}]0;x\u{7}.pdf"));
         assert_eq!(line, "saved dl/evil\\x1b]0;x\\x07.pdf");
+    }
+
+    #[test]
+    fn accounts_opens_the_inbox_and_refuses_to_decode() {
+        assert_eq!(mode(&cli(&["--accounts"]), true, true), Mode::Tui);
+        assert!(matches!(
+            mode(&cli(&["--accounts", "m.eml"]), true, true),
+            Mode::Refuse(_)
+        ));
+        assert!(matches!(
+            mode(&cli(&["--accounts"]), false, true),
+            Mode::Refuse(_)
+        ));
     }
 
     #[test]
