@@ -121,6 +121,12 @@ pub trait Store: Send + Sync {
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error>;
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error>;
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error>;
+    /// The region the store learned for `bucket` from a redirect, if it did. The default
+    /// is `None`, for stores that have no regions.
+    fn bucket_region(&self, bucket: &str) -> Option<String> {
+        let _ = bucket;
+        None
+    }
 }
 
 /// In-memory store for tests. Page size is small on purpose so paging gets exercised.

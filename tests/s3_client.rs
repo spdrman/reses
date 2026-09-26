@@ -888,3 +888,29 @@ fn next_page_refuses_a_token_that_does_not_move() {
     assert_eq!(page(Some("")).next_page(None), None);
     assert_eq!(page(None).next_page(Some("a")), None);
 }
+
+// The browser only holds an `Arc<dyn Store>`, so the learned region has to be on the trait.
+
+#[test]
+fn a_learned_region_is_visible_through_dyn_store() {
+    let fake = Fake::new(vec![
+        with_headers(301, &[("x-amz-bucket-region", "eu-west-2")], b""),
+        ok(200, b"x"),
+    ]);
+    let store: Arc<dyn Store> = Arc::new(aws("us-east-1", &fake));
+    assert_eq!(store.bucket_region("mail-inbound"), None);
+    store.get("mail-inbound", "k").unwrap();
+    assert_eq!(
+        store.bucket_region("mail-inbound").as_deref(),
+        Some("eu-west-2")
+    );
+    assert_eq!(store.bucket_region("other"), None);
+}
+
+#[test]
+fn memory_store_has_no_learned_region() {
+    let m = reses::s3::MemoryStore::new();
+    m.put("bk", "k", b"x");
+    let store: &dyn Store = &m;
+    assert_eq!(store.bucket_region("bk"), None);
+}

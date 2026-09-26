@@ -317,6 +317,10 @@ fn service_error(resp: &HttpResponse) -> S3Error {
 }
 
 impl Store for S3Client {
+    fn bucket_region(&self, bucket: &str) -> Option<String> {
+        S3Client::bucket_region(self, bucket)
+    }
+
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         let call = Call::new("GET", None, None);
         self.guard(
