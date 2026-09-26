@@ -97,11 +97,21 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: cargo build --release --locked --target "$TARGET"
+      # Static means no program interpreter. x86_64 musl builds come out static-pie, which `file`
+      # words differently from aarch64's "statically linked", so ask the ELF header instead.
       - name: Check the Linux binary is static
         if: contains(matrix.target, 'musl')
         run: |
-          file "target/$TARGET/release/reses"
-          file "target/$TARGET/release/reses" | grep -q 'statically linked'
+          bin="target/$TARGET/release/reses"
+          file "$bin"
+          if readelf -lW "$bin" | grep -q 'program interpreter'; then
+            echo "::error::$bin has a program interpreter, so it is dynamically linked"
+            exit 1
+          fi
+          if readelf -dW "$bin" 2>/dev/null | grep -q NEEDED; then
+            echo "::error::$bin needs shared libraries"
+            exit 1
+          fi
       - run: scripts/check-goldens.sh "target/$TARGET/release/reses"
       - name: The #15 replace test
         if: runner.os == 'macOS'
