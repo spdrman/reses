@@ -334,15 +334,15 @@ fn item(k: &str, v: &str) -> String {
 const CONTINUED: &str = "[a]\n\
 aws_access_key_id = AKIDOLD\n\
 aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEOLD\n\
-  continued-secret\n\
+\x20\x20continued-secret\n\
 aws_session_token = FAKETOKENOLD\n\
-    continued-token\n\
+\x20\x20\x20\x20continued-token\n\
 \n\
-    more-token\n\
+\x20\x20\x20\x20more-token\n\
 region = us-east-1\n\
-  continued-region\n\
+\x20\x20continued-region\n\
 note = keep\n\
-  continued-note\n\
+\x20\x20continued-note\n\
 [b]\n\
 aws_access_key_id = AKIDEXAMPLE2\n\
 aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY2\n";
