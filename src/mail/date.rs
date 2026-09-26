@@ -335,6 +335,18 @@ mod tests {
     }
 
     #[test]
+    fn huge_zone_offsets_are_invalid_not_wrapped() {
+        // Python raises ValueError for these, so the header prints as written.
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 +99999999"), None);
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 +999999999999"), None);
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 +9223372036854775807"), None);
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 -99999999999999999999"), None);
+        assert_eq!(fmt("Fri, 25 Sep 99999999999999999999 17:01:31 +0000"), None);
+        // A zone that isn't a number at all is still just unknown, so the date is naive.
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 +12ab").unwrap(), "Fri, 25 Sep 2026 17:01:31 -0000");
+    }
+
+    #[test]
     fn reses_format_drops_naive_zone() {
         let d = parsedate_to_datetime("Fri, 9 Oct 2026 07:07:07 -0000").unwrap();
         assert_eq!(d.format_reses(), "Fri, 09 Oct 2026 07:07:07 ");

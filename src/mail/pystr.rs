@@ -147,6 +147,9 @@ mod tests {
         assert_eq!(py_int(""), None);
         assert_eq!(py_int("+"), None);
         assert_eq!(py_int("12a"), None);
+        assert_eq!(py_int("9223372036854775807"), Some(i64::MAX));
+        assert_eq!(py_int("9223372036854775808"), None);
+        assert_eq!(py_int("-99999999999999999999"), None);
     }
 
     #[test]

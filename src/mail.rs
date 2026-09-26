@@ -430,6 +430,24 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_write_skips_that_attachment_only() {
+        let dir = tempfile::tempdir().unwrap();
+        // 300 bytes is past every filesystem's name limit, so this one write fails.
+        let items = vec![
+            ("first.txt".to_string(), b"1".to_vec()),
+            ("x".repeat(300), b"2".to_vec()),
+            ("third.txt".to_string(), b"3".to_vec()),
+        ];
+        let saved = save_named(dir.path(), items).unwrap();
+        assert_eq!(saved, [dir.path().join("first.txt"), dir.path().join("third.txt")]);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+
+        // When nothing could be written at all, the error comes back.
+        let err = save_named(dir.path(), vec![("y".repeat(300), b"4".to_vec())]).unwrap_err();
+        assert_ne!(err.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
     fn file_names() {
         assert_eq!(safe_file_name("../../etc/evil.bin"), "evil.bin");
         assert_eq!(safe_file_name("C:\\x\\y.doc"), "y.doc");
