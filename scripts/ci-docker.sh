@@ -25,6 +25,9 @@ fi
 PLATFORM="linux/arm64"
 TARGET_VOL="reses-target-${LANE}"
 REGISTRY_VOL="reses-cargo-registry"
+# In a git worktree, .git only points at the main repo's git directory, so that directory is
+# mounted too (read-only, at its own path) for anything that asks git, like tests/ci_parity.rs.
+GIT_COMMON="$(cd "$REPO_ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd)"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build --platform "$PLATFORM" -t "$IMAGE" -f "$REPO_ROOT/docker/ci.Dockerfile" "$REPO_ROOT/docker"
@@ -39,6 +42,8 @@ run() {
     ${EXTRA_DOCKER_ARGS[@]+"${EXTRA_DOCKER_ARGS[@]}"} \
     -v "$REGISTRY_VOL:/usr/local/cargo/registry" \
     -v "$TARGET_VOL:/target" \
+    -v "$GIT_COMMON:$GIT_COMMON:ro" \
+    -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
     -v "$REPO_ROOT:$REPO_ROOT" -w "$REPO_ROOT" \
     "$IMAGE" bash -c "$1"
 }
