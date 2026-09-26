@@ -614,3 +614,25 @@ fn path_expands_a_leading_tilde_like_the_sdk() {
     );
     assert_eq!(p, PathBuf::from("/home/u/creds"));
 }
+
+/// aws-config hands profiles back in hash order, so with a dozen of them out of alphabetical
+/// order a missing sort can't pass by luck the way it could with three.
+#[test]
+fn many_profiles_come_back_in_file_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        "p07", "p02", "p11", "p04", "p09", "p01", "p12", "p05", "p10", "p03", "p08", "p06",
+    ];
+    let text: String = names
+        .iter()
+        .map(|n| {
+            format!(
+                "[{n}]\naws_access_key_id = AKIDEXAMPLE\n\
+                 aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\n"
+            )
+        })
+        .collect();
+    let file = CredentialsFile::load(&write(dir.path(), &text)).unwrap();
+    let got: Vec<String> = file.profiles().into_iter().map(|p| p.name).collect();
+    assert_eq!(got, names);
+}

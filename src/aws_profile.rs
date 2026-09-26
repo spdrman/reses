@@ -207,20 +207,14 @@ impl CredentialsFile {
     }
 
     /// Write atomically with mode 0600. I refuse to write anything configparser would reject (a
-    /// repeated section, say), since the AWS CLI would then refuse the whole file, or anything
-    /// aws-config couldn't read back.
+    /// repeated section, say), since the AWS CLI would then refuse the whole file. aws-config needs
+    /// no check here: load already refused any file it can't read, and `validate` only lets
+    /// through names and values it accepts.
     pub fn save(&self) -> Result<(), ProfileError> {
         let text = self.text();
-        // Check the result the way the AWS CLI will read it...
+        // The AWS CLI reads this file through configparser, so its verdict decides.
         if let Some((err, line)) = parse(&self.lines).strict_error {
             return Err(ProfileError::Invalid(refusal(&self.path, &err, line)));
-        }
-        // ...and the way reses itself will.
-        if let Err(e) = sdk_credentials(&text) {
-            return Err(ProfileError::Invalid(format!(
-                "{} can't be saved: aws-config couldn't read the result ({e})",
-                self.path.display()
-            )));
         }
         write_atomic(&self.path, text.as_bytes(), Some(0o600), Some(0o700)).map_err(|source| {
             ProfileError::Write {
