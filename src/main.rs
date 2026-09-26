@@ -24,15 +24,22 @@ struct Cli {
     /// Write attachments into this directory.
     #[arg(long, value_name = "DIR")]
     save_attachments: Option<PathBuf>,
-    /// Stub for the red tests.
+    /// Print control characters as they are, even to a terminal. Without it, a terminal gets
+    /// them written out visibly (`\x1b`), so a message can't send escape sequences to it.
     #[arg(long)]
     raw: bool,
 }
 
-/// Stub for the red tests: everything goes out as it is.
+/// The decoded text as it should reach stdout. A message is untrusted: its subject, names and
+/// body can carry escape sequences, and a terminal acts on those (retitling the window,
+/// writing the clipboard, redrawing the screen). So when stdout is a terminal I write every
+/// control character out visibly, unless --raw asks for the bytes. A pipe or `-o` file gets
+/// them untouched, since nothing there interprets them.
 fn for_stdout(text: String, stdout_tty: bool, cli: &Cli) -> String {
-    let _ = (stdout_tty, cli.raw);
-    text
+    if !stdout_tty || cli.raw || cli.output.is_some() {
+        return text;
+    }
+    reses::tui::text::escape_text(&text).into_owned()
 }
 
 /// What a run does, from the arguments and whether stdin and stdout are terminals.
@@ -114,7 +121,10 @@ fn main() -> anyhow::Result<()> {
         Some(path) => {
             std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))?
         }
-        None => std::io::stdout().write_all(out.as_bytes())?,
+        None => {
+            let out = for_stdout(out, std::io::stdout().is_terminal(), &cli);
+            std::io::stdout().write_all(out.as_bytes())?
+        }
     }
     Ok(())
 }
