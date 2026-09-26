@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -11,7 +11,7 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 use super::inbox::InboxScreen;
 use super::jobs::{Done, Generation, Job, JobId, Outcome};
-use super::text::{SIZE_WIDTH, fit, human_size, width};
+use super::text::{SIZE_WIDTH, escape, fit, human_size, width};
 use super::{Ctx, Session, Transition, View};
 use crate::config::Inbox;
 use crate::mail;
@@ -385,6 +385,14 @@ impl BrowserScreen {
 
     fn filter_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            // A ctrl or alt chord is a command, not text for the filter.
+            KeyCode::Char(_)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                return true;
+            }
             KeyCode::Char(c) => self.filter.push(c),
             KeyCode::Backspace => {
                 if self.filter.pop().is_none() {
@@ -597,14 +605,16 @@ impl BrowserScreen {
     fn render_folder(&mut self, frame: &mut Frame, area: Rect) {
         let [head, body] =
             Layout::vertical([Constraint::Length(HEADER_LINES), Constraint::Min(1)]).areas(area);
-        let dim = Style::default().fg(Color::DarkGray);
+        // DIM and BOLD rather than grey, yellow, green or blue, which vanished on one theme or
+        // another (dark grey was 1.0:1 on Solarized Dark).
+        let dim = Style::default().add_modifier(Modifier::DIM);
         let path = match &self.location {
             Location::Buckets => Span::styled(
                 " All buckets",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Location::Folder { .. } => Span::styled(
-                format!(" {}", self.path()),
+                format!(" {}", escape(&self.path())),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         };
@@ -613,10 +623,10 @@ impl BrowserScreen {
             second.push(Span::styled(
                 format!(
                     "   /{}{}",
-                    self.filter,
+                    escape(&self.filter),
                     if self.editing_filter { "_" } else { "" }
                 ),
-                Style::default().fg(Color::Yellow),
+                Style::default().add_modifier(Modifier::BOLD),
             ));
         }
         frame.render_widget(
@@ -629,12 +639,15 @@ impl BrowserScreen {
 
         if self.rows.is_empty() {
             let (msg, style) = if let Some(e) = &self.list_error {
-                (format!(" {e}"), Style::default().fg(Color::Red))
+                (format!(" {}", escape(e)), Style::default().fg(Color::Red))
             } else if self.loading {
                 (" Loading...".to_string(), dim)
             } else if !self.filter.is_empty() {
                 (
-                    format!(" nothing matches /{} (esc clears the filter)", self.filter),
+                    format!(
+                        " nothing matches /{} (esc clears the filter)",
+                        escape(&self.filter)
+                    ),
                     dim,
                 )
             } else if self.location == Location::Buckets {
@@ -655,7 +668,7 @@ impl BrowserScreen {
         // Name column: as wide as the longest visible name, leaving room for size and mark.
         let name_w = window
             .iter()
-            .map(|&r| width(self.row_name(r)))
+            .map(|&r| width(&escape(self.row_name(r))))
             .max()
             .unwrap_or(0)
             .min(cols.saturating_sub(22).max(10));
@@ -663,21 +676,20 @@ impl BrowserScreen {
             .iter()
             .map(|&row| {
                 // Cut and padded by display width, so wide characters keep the columns lined up.
-                let name = fit(self.row_name(row), name_w);
+                let name = fit(&escape(self.row_name(row)), name_w);
                 match row {
-                    Row::Bucket(_) => {
-                        ListItem::new(Line::styled(name, Style::default().fg(Color::Cyan)))
-                    }
+                    Row::Bucket(_) => ListItem::new(Line::styled(
+                        name,
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
                     Row::Folder(_) => ListItem::new(Line::styled(
                         name,
-                        Style::default()
-                            .fg(Color::Blue)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().add_modifier(Modifier::BOLD),
                     )),
                     Row::Object(i) => {
                         let obj = &self.objects[i];
                         let (mark, style) = match obj.mark {
-                            Mark::Email => ("email", Style::default().fg(Color::Green)),
+                            Mark::Email => ("email", Style::default().add_modifier(Modifier::BOLD)),
                             Mark::Checking | Mark::Unchecked => ("...", dim),
                             Mark::Failed => ("?", Style::default().fg(Color::Red)),
                             Mark::NotEmail => ("", dim),
@@ -751,6 +763,17 @@ impl View for BrowserScreen {
         } else {
             self.folder_key(key, ctx)
         }
+    }
+
+    /// A paste goes into the filter while it's being typed, flattened to one line.
+    fn on_paste(&mut self, text: &str, _ctx: &mut Ctx) -> Transition {
+        if self.search.is_none() && self.editing_filter {
+            self.filter.extend(text.chars().filter(|c| !c.is_control()));
+            self.selected = 0;
+            self.offset = 0;
+            self.rebuild_rows();
+        }
+        Transition::None
     }
 
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
@@ -987,20 +1010,25 @@ impl Search {
             Constraint::Min(1),
         ])
         .areas(area);
-        let dim = Style::default().fg(Color::DarkGray);
+        // DIM and BOLD rather than grey, yellow, green or blue, which vanished on one theme or
+        // another (dark grey was 1.0:1 on Solarized Dark).
+        let dim = Style::default().add_modifier(Modifier::DIM);
         let state = if let Some(e) = &self.error {
-            Span::styled(format!("failed: {e}"), Style::default().fg(Color::Red))
+            Span::styled(
+                format!("failed: {}", escape(e)),
+                Style::default().fg(Color::Red),
+            )
         } else if self.stopped {
-            Span::styled("stopped", Style::default().fg(Color::Yellow))
+            Span::styled("stopped", Style::default().add_modifier(Modifier::BOLD))
         } else if self.running() {
-            Span::styled("searching...", Style::default().fg(Color::Cyan))
+            Span::raw("searching...")
         } else if self.note.is_some() {
             Span::styled(
                 "done, but only partly (see below)".to_string(),
-                Style::default().fg(Color::Yellow),
+                Style::default().add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled("done", Style::default().fg(Color::Green))
+            Span::raw("done")
         };
         let listed = if self.listing_done {
             format!("{}", self.listed)
@@ -1011,7 +1039,10 @@ impl Search {
             Paragraph::new(
                 vec![
                     Line::from(Span::styled(
-                        format!(" Email under {}/{}", self.bucket, self.prefix),
+                        format!(
+                            " Email under {}",
+                            escape(&format!("{}/{}", self.bucket, self.prefix))
+                        ),
                         Style::default().add_modifier(Modifier::BOLD),
                     )),
                     Line::from(vec![
@@ -1028,11 +1059,12 @@ impl Search {
                     ]),
                 ]
                 .into_iter()
-                .chain(
-                    self.note
-                        .iter()
-                        .map(|n| Line::styled(format!(" {n}"), Style::default().fg(Color::Yellow))),
-                )
+                .chain(self.note.iter().map(|n| {
+                    Line::styled(
+                        format!(" {}", escape(n)),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )
+                }))
                 .collect::<Vec<_>>(),
             ),
             head,
@@ -1061,7 +1093,7 @@ impl Search {
             .iter()
             .skip(self.offset)
             .take(visible)
-            .map(|(f, n)| (format!("{}/{f}", self.bucket), *n))
+            .map(|(f, n)| (escape(&format!("{}/{f}", self.bucket)).into_owned(), *n))
             .collect();
         let name_w = rows
             .iter()
@@ -1075,11 +1107,9 @@ impl Search {
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("{}  ", fit(f, name_w)),
-                        Style::default()
-                            .fg(Color::Blue)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(plural(*n, "email"), Style::default().fg(Color::Green)),
+                    Span::raw(plural(*n, "email")),
                 ]))
             })
             .collect();

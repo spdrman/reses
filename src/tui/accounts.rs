@@ -3,7 +3,7 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
@@ -178,7 +178,10 @@ impl AccountsScreen {
             Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(" AWS profiles in ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    " AWS profiles in ",
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
                 Span::raw(ctx.creds_path.display().to_string()),
             ])),
             head,
@@ -198,7 +201,7 @@ impl AccountsScreen {
             };
             frame.render_widget(
                 Paragraph::new(msg)
-                    .style(Style::default().fg(Color::Yellow))
+                    .style(Style::default().add_modifier(Modifier::BOLD))
                     .wrap(Wrap { trim: false }),
                 body,
             );
@@ -227,19 +230,19 @@ impl AccountsScreen {
             .map(|(p, region)| {
                 let mut spans = vec![
                     Span::styled(
-                        format!("{:<name_w$}  ", p.name),
+                        format!("{:<name_w$}  ", super::text::escape(&p.name)),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(format!("{:<region_w$}  ", region.as_deref().unwrap_or("-"))),
                     Span::styled(
-                        format!("{:<20}", p.access_key_id),
-                        Style::default().fg(Color::DarkGray),
+                        format!("{:<20}", super::text::escape(&p.access_key_id)),
+                        Style::default().add_modifier(Modifier::DIM),
                     ),
                 ];
                 if Some(p.name.as_str()) == default {
                     spans.push(Span::styled(
                         "  (default)",
-                        Style::default().fg(Color::Green),
+                        Style::default().add_modifier(Modifier::BOLD),
                     ));
                 }
                 ListItem::new(Line::from(spans))
@@ -282,6 +285,17 @@ impl View for AccountsScreen {
 
     fn on_focus(&mut self, ctx: &mut Ctx) {
         self.reload(ctx);
+    }
+
+    /// A pasted key goes into the field being edited, flattened to one line: copied keys often
+    /// bring a newline, and a paste must never press Enter or Tab. Outside the form it's ignored.
+    fn on_paste(&mut self, text: &str, _ctx: &mut Ctx) -> Transition {
+        if let Some(form) = self.form.as_mut()
+            && !form.confirm_overwrite
+        {
+            form.values[form.focus].extend(text.chars().filter(|c| !c.is_control()));
+        }
+        Transition::None
     }
 
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
@@ -357,7 +371,8 @@ impl AccountForm {
             KeyCode::Esc => return FormAction::Cancel,
             KeyCode::Char('s') if ctrl => return FormAction::Save { overwrite: false },
             KeyCode::Char('r') if ctrl => self.reveal = !self.reveal,
-            KeyCode::Char(_) if ctrl => {}
+            // Any other ctrl or alt chord is a command, not text for the field.
+            KeyCode::Char(_) if ctrl || key.modifiers.contains(KeyModifiers::ALT) => {}
             KeyCode::Char(c) => self.values[self.focus].push(c),
             KeyCode::Backspace => {
                 self.values[self.focus].pop();
@@ -426,7 +441,8 @@ impl AccountForm {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &Ctx) {
-        let dim = Style::default().fg(Color::DarkGray);
+        // DIM rather than dark grey, which vanished on Solarized Dark.
+        let dim = Style::default().add_modifier(Modifier::DIM);
         let mut lines = vec![
             Line::styled(
                 format!(" New profile for {}", ctx.creds_path.display()),
@@ -451,9 +467,7 @@ impl AccountForm {
             };
             let marker = if focused { "> " } else { "  " };
             let label_style = if focused {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -490,7 +504,7 @@ impl AccountForm {
                     " Profile '{name}' already exists in {}. Overwrite its keys? Press y to overwrite, any other key to go back.",
                     ctx.creds_path.display()
                 ),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default().add_modifier(Modifier::BOLD),
             ));
         } else {
             lines.push(Line::styled(

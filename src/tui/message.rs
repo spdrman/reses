@@ -6,7 +6,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
@@ -14,7 +14,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use super::inbox::{Handoff, display_from, render_confirm};
 use super::jobs::{Decoded, Done, Generation, Job, JobId, Outcome};
-use super::text::{char_width, clean, human_size};
+use super::text::{clean, escape, human_size, width as text_width};
 use super::{Ctx, Session, Transition, View};
 use crate::mail;
 use crate::s3::S3Error;
@@ -193,14 +193,14 @@ impl View for MessageScreen {
     fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         if let Some(err) = &self.error {
             frame.render_widget(
-                Paragraph::new(format!(" {err}"))
+                Paragraph::new(format!(" {}", escape(err)))
                     .style(Style::default().fg(Color::Red))
                     .wrap(Wrap { trim: false }),
                 area,
             );
         } else if self.message.is_none() {
             frame.render_widget(
-                Paragraph::new(format!(" Fetching {} …", self.location())),
+                Paragraph::new(format!(" Fetching {} …", escape(&self.location()))),
                 area,
             );
         } else {
@@ -229,7 +229,8 @@ impl View for MessageScreen {
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.confirm {
             self.confirm = false;
-            if key.code == KeyCode::Char('y') {
+            // Only a bare y deletes; ctrl-y and everything else cancel.
+            if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
                 let job = Job::Delete {
                     bucket: self.bucket.clone(),
                     key: self.key.clone(),
@@ -262,9 +263,18 @@ impl View for MessageScreen {
             }
             KeyCode::Char('w') => self.write_text(ctx),
             KeyCode::Char('a') => self.save_attachments(ctx),
-            KeyCode::Char('d') => self.confirm = true,
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => self.confirm = true,
             KeyCode::Esc | KeyCode::Char('q') => return self.close(),
             _ => {}
+        }
+        Transition::None
+    }
+
+    /// Nothing here takes text, so a paste only matters as a no to an open confirmation.
+    fn on_paste(&mut self, _text: &str, ctx: &mut Ctx) -> Transition {
+        if self.confirm {
+            self.confirm = false;
+            ctx.info("Delete cancelled.");
         }
         Transition::None
     }
@@ -388,31 +398,32 @@ fn write_new(dir: &Path, stem: &str, ext: &str, data: &[u8]) -> std::io::Result<
 /// Wrap one source line to `width` columns, breaking after a space where there is one. Always
 /// at least one row, so an empty line still takes its row.
 fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    #[cfg(test)]
+    WRAPPED_LINES.with(|c| c.set(c.get() + 1));
     let width = width.max(1);
     let mut out = Vec::new();
-    {
-        #[cfg(test)]
-        WRAPPED_LINES.with(|c| c.set(c.get() + 1));
-        let line = clean(&line.replace('\t', "    "));
-        let mut cur = String::new();
-        let mut used = 0;
-        for c in line.chars() {
-            let w = char_width(c);
-            if used + w > width && !cur.is_empty() {
-                // Carry the unfinished word over when the line has a space to break at.
-                let carry = match cur.rfind(' ') {
-                    Some(i) if i + 1 < cur.len() => cur.split_off(i + 1),
-                    _ => String::new(),
-                };
-                out.push(cur.trim_end().to_string());
-                used = carry.chars().map(char_width).sum();
-                cur = carry;
-            }
-            cur.push(c);
-            used += w;
+    let line = clean(&line.replace('\t', "    "));
+    let mut cur = String::new();
+    let mut used = 0;
+    // Grapheme by grapheme, measured the way the terminal draws them, so an emoji with a
+    // variation selector takes its two columns here too.
+    for g in line.graphemes(true) {
+        let w = text_width(g);
+        if used + w > width && !cur.is_empty() {
+            // Carry the unfinished word over when the line has a space to break at.
+            let carry = match cur.rfind(' ') {
+                Some(i) if i + 1 < cur.len() => cur.split_off(i + 1),
+                _ => String::new(),
+            };
+            out.push(cur.trim_end().to_string());
+            used = text_width(&carry);
+            cur = carry;
         }
-        out.push(cur);
+        cur.push_str(g);
+        used += w;
     }
+    out.push(cur);
     out
 }
 

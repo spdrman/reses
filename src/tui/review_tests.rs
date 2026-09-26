@@ -48,8 +48,7 @@ fn bytes(app: &mut App, width: u16, height: u16) -> Vec<u8> {
     .unwrap();
     term.draw(|f| app.render(f)).unwrap();
     drop(term);
-    let v = out.0.lock().unwrap().clone();
-    v
+    out.0.lock().unwrap().clone()
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -354,7 +353,8 @@ fn the_confirmation_keeps_its_prompt_whatever_the_key() {
                 .filter_map(|l| l.split('│').nth(1))
                 .collect::<Vec<_>>()
                 .join("");
-            let words = inside.matches("word").count();
+            // Rows are cut by width, so a word can straddle two; count with the spaces out.
+            let words = inside.replace(' ', "").matches("word").count();
             assert_eq!(words, 30, "{w}x{h}: {words} of 30 words:\n{scr}");
         }
     }

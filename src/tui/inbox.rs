@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -20,7 +20,7 @@ use time::{OffsetDateTime, UtcOffset};
 use super::accounts::AccountsScreen;
 use super::jobs::{Done, Generation, Job, JobId, Outcome};
 use super::message::MessageScreen;
-use super::text::{SIZE_WIDTH, clean, fit, human_size, width};
+use super::text::{SIZE_WIDTH, clean, escape, fit, human_size, width};
 use super::{Ctx, Session, Transition, View};
 use crate::config::Inbox;
 use crate::mail::Summary;
@@ -31,6 +31,8 @@ use crate::s3::{ObjectInfo, S3Error};
 pub(super) const MAX_PAGES: usize = 1000;
 /// Rows peeked before the first render says how tall the screen is.
 const DEFAULT_PAGE: usize = 24;
+/// Header peeks a filter keeps in flight while it checks rows nobody has scrolled to.
+const FILTER_BATCH: usize = 32;
 
 const DATE_W: usize = 10;
 const GAP: usize = 2;
@@ -100,6 +102,10 @@ pub struct InboxScreen {
     view: Vec<usize>,
     dirty: bool,
     not_email: usize,
+    /// Rows whose headers have been read (or failed to be), for the filter's "n of m checked".
+    checked: usize,
+    /// Peeks a filter asked for, beyond the window. Kept apart so scrolling doesn't cancel them.
+    filter_peeks: HashSet<JobId>,
     /// Listing and peek jobs of the current load.
     jobs: HashSet<JobId>,
     /// Deletes this screen asked for, so it knows whose result to report.
@@ -141,6 +147,8 @@ impl InboxScreen {
             view: Vec::new(),
             dirty: false,
             not_email: 0,
+            checked: 0,
+            filter_peeks: HashSet::new(),
             jobs: HashSet::new(),
             deletes: HashSet::new(),
             handoff: Handoff::default(),
@@ -190,6 +198,8 @@ impl InboxScreen {
         self.order.clear();
         self.view.clear();
         self.not_email = 0;
+        self.checked = 0;
+        self.filter_peeks.clear();
         self.dirty = true;
         self.jobs.clear();
         // A listing started from here on can't see anything deleted before now.
@@ -278,6 +288,46 @@ impl InboxScreen {
             };
             if let Some(id) = self.submit(job, &window_gen, ctx) {
                 self.jobs.insert(id);
+                if let Some(row) = self.rows[slot].as_mut() {
+                    row.head = Head::Pending(Some(id));
+                }
+            }
+        }
+        self.request_filter_batch(ctx);
+    }
+
+    /// While a filter is on, rows nobody has peeked can't match it yet, so I peek them too, a
+    /// bounded batch at a time, newest first. These use the load's generation rather than the
+    /// window's, so scrolling doesn't cancel them; a refresh still does.
+    fn request_filter_batch(&mut self, ctx: &mut Ctx) {
+        if self.filter.is_empty() || self.checked == self.index.len() {
+            return;
+        }
+        let room = FILTER_BATCH.saturating_sub(self.filter_peeks.len());
+        let wanted: Vec<usize> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|&slot| {
+                matches!(
+                    self.rows[slot].as_ref().map(|r| &r.head),
+                    Some(Head::Pending(None))
+                )
+            })
+            .take(room)
+            .collect();
+        let generation = self.generation.clone();
+        for slot in wanted {
+            let Some(key) = self.rows[slot].as_ref().map(|r| r.info.key.clone()) else {
+                continue;
+            };
+            let job = Job::PeekHead {
+                bucket: self.inbox.bucket.clone(),
+                key,
+            };
+            if let Some(id) = self.submit(job, &generation, ctx) {
+                self.jobs.insert(id);
+                self.filter_peeks.insert(id);
                 if let Some(row) = self.rows[slot].as_mut() {
                     row.head = Head::Pending(Some(id));
                 }
@@ -409,10 +459,15 @@ impl InboxScreen {
                 .or_else(|| pos.checked_sub(1).and_then(|p| self.view.get(p)))
                 .copied();
         }
-        if let Some(row) = self.rows[slot].take()
-            && matches!(row.head, Head::NotEmail)
-        {
-            self.not_email -= 1;
+        if let Some(row) = self.rows[slot].take() {
+            match row.head {
+                Head::NotEmail => {
+                    self.not_email -= 1;
+                    self.checked -= 1;
+                }
+                Head::Pending(_) => {}
+                _ => self.checked -= 1,
+            }
         }
         self.order.retain(|&s| s != slot);
         self.dirty = true;
@@ -420,6 +475,14 @@ impl InboxScreen {
 
     fn on_filter_key(&mut self, key: KeyEvent) {
         match key.code {
+            // A ctrl or alt chord is a command, not text: ctrl-a shouldn't type an a.
+            KeyCode::Char(_)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                return;
+            }
             KeyCode::Char(c) => self.filter.push(c),
             KeyCode::Backspace => {
                 self.filter.pop();
@@ -507,8 +570,9 @@ impl InboxScreen {
                     _ => (line("…", "loading…", "", &size), true),
                 };
                 let mut style = Style::default();
+                // DIM rather than a fixed grey: dark grey vanished on Solarized Dark.
                 if dim {
-                    style = style.fg(Color::DarkGray);
+                    style = style.add_modifier(Modifier::DIM);
                 }
                 if pos == sel {
                     style = style.add_modifier(Modifier::REVERSED);
@@ -545,7 +609,7 @@ impl View for InboxScreen {
 
         if let Some(err) = &self.error {
             frame.render_widget(
-                Paragraph::new(format!(" {err}"))
+                Paragraph::new(format!(" {}", escape(err)))
                     .style(Style::default().fg(Color::Red))
                     .wrap(Wrap { trim: false }),
                 main,
@@ -556,12 +620,22 @@ impl View for InboxScreen {
                 .iter()
                 .flatten()
                 .any(|r| matches!(r.head, Head::Pending(_)));
-            let msg = if !self.listing_done || pending {
-                format!(" Loading {} …", self.location())
-            } else if !self.filter.is_empty() {
-                format!(" Nothing matches /{}", self.filter)
+            let location = escape(&self.location()).into_owned();
+            let filter = escape(&self.filter).into_owned();
+            let total = self.index.len();
+            let msg = if !self.filter.is_empty() && self.listing_done {
+                if self.checked < total {
+                    format!(
+                        " Nothing matches /{filter} yet · {} of {total} checked",
+                        self.checked
+                    )
+                } else {
+                    format!(" Nothing matches /{filter}")
+                }
+            } else if !self.listing_done || pending {
+                format!(" Loading {location} …")
             } else {
-                let mut m = format!(" No messages in {}.", self.location());
+                let mut m = format!(" No messages in {location}.");
                 if self.not_email > 0 {
                     let noun = if self.not_email == 1 {
                         "object"
@@ -582,13 +656,20 @@ impl View for InboxScreen {
 
         if show_filter {
             let cursor = if self.typing { "_" } else { "" };
+            let total = self.index.len();
+            let progress = if self.checked < total {
+                format!(" · {} of {total} checked", self.checked)
+            } else {
+                String::new()
+            };
+            // Bold in the terminal's own colour: yellow was 1.7:1 on a light theme.
             frame.render_widget(
                 Paragraph::new(format!(
-                    " /{}{cursor}   {} shown",
-                    self.filter,
+                    " /{}{cursor}   {} shown{progress}",
+                    escape(&self.filter),
                     self.view.len()
                 ))
-                .style(Style::default().fg(Color::Yellow)),
+                .style(Style::default().add_modifier(Modifier::BOLD)),
                 filter_area,
             );
         }
@@ -619,6 +700,19 @@ impl View for InboxScreen {
             self.request_window(ctx);
         }
         t
+    }
+
+    /// A paste goes into the filter while it's being typed, flattened to one line. Anywhere
+    /// else it's ignored, and an open delete confirmation takes it as a no.
+    fn on_paste(&mut self, text: &str, ctx: &mut Ctx) -> Transition {
+        if self.confirm.take().is_some() {
+            ctx.info("Delete cancelled.");
+        } else if self.typing {
+            self.filter.extend(text.chars().filter(|c| !c.is_control()));
+            self.dirty = true;
+            self.request_window(ctx);
+        }
+        Transition::None
     }
 
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
@@ -652,6 +746,7 @@ impl View for InboxScreen {
         }
         match (&done.job, &done.result) {
             (Job::PeekHead { key, .. }, Ok(Outcome::Skipped)) => {
+                self.filter_peeks.remove(&done.id);
                 // Skipped because the window moved on: ask again if it comes back into view,
                 // unless a newer peek for it is already queued.
                 if let Some(row) = self.index.get(key).and_then(|&s| self.rows[s].as_mut())
@@ -696,6 +791,7 @@ impl View for InboxScreen {
                 }
             }
             (Job::PeekHead { key, .. }, result) => {
+                self.filter_peeks.remove(&done.id);
                 let head = match result {
                     Ok(Outcome::Head(h)) => match &h.summary {
                         Some(s) if h.is_email => Head::Mail(s.clone()),
@@ -707,6 +803,9 @@ impl View for InboxScreen {
                 if let Some(row) = self.index.get(key).and_then(|&s| self.rows[s].as_mut()) {
                     if matches!(head, Head::NotEmail) && !matches!(row.head, Head::NotEmail) {
                         self.not_email += 1;
+                    }
+                    if matches!(row.head, Head::Pending(_)) {
+                        self.checked += 1;
                     }
                     row.head = head;
                     self.dirty = true;
@@ -756,7 +855,8 @@ impl View for InboxScreen {
 impl InboxScreen {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if let Some(target) = self.confirm.take() {
-            if key.code == KeyCode::Char('y') {
+            // Only a bare y: ctrl-y, or a y that came in as part of something else, cancels.
+            if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
                 let job = Job::Delete {
                     bucket: self.inbox.bucket.clone(),
                     key: target,
@@ -801,7 +901,7 @@ impl InboxScreen {
                     return Transition::Push(Box::new(screen));
                 }
             }
-            KeyCode::Char('d') => {
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => {
                 self.confirm = self.current().map(|r| r.info.key.clone());
             }
             KeyCode::Char('r') => {
@@ -822,8 +922,14 @@ impl InboxScreen {
     }
 }
 
-/// The delete confirmation both screens show. The full `s3://` location and the "y" line always
-/// show in full (wrapped if they must); the sender-controlled subject and From are what get cut.
+/// The delete confirmation both screens show.
+///
+/// The prompt comes first, so however short the screen, "Press y" is the line that survives.
+/// Then the full `s3://` location, escaped so a key's control characters show as text and two
+/// different keys can't look alike, and cut into rows by display width myself rather than
+/// word-wrapped: word wrap took more rows than I'd counted and pushed the last one out of the
+/// box. The sender-controlled subject and From get one row each and are what go when there
+/// isn't room.
 pub(super) fn render_confirm(
     frame: &mut Frame,
     area: Rect,
@@ -832,18 +938,19 @@ pub(super) fn render_confirm(
     location: &str,
 ) {
     let prompt = "Press y to delete, any other key to cancel.";
-    let object = format!("Object:  {location}");
+    let object = format!("Object:  {}", escape(location));
     let aw = area.width as usize;
-    // The box is as wide as its fixed lines need, within the screen, 2 of border and 2 of pad.
+    let ah = area.height as usize;
+    // As wide as the location needs, within the screen: 2 columns of border and 2 of padding.
     let widest = width(&object).max(width(prompt)).max(40);
     let inner = widest.min(aw.saturating_sub(4)).max(1);
-    let rows_for = |s: &str| width(s).div_ceil(inner).max(1);
+    let prompt_rows = chunk(prompt, inner);
+    let object_rows = chunk(&object, inner);
 
-    // Rows inside the box: the subject, location and prompt always; the rest if they fit.
-    let ah = area.height as usize;
+    // The prompt and the location always; the subject, From and a spacer only if they fit.
     let mut spare = ah
         .saturating_sub(2)
-        .saturating_sub(1 + rows_for(&object) + rows_for(prompt));
+        .saturating_sub(prompt_rows.len() + object_rows.len());
     let mut take = |wanted: bool| {
         let yes = wanted && spare > 0;
         if yes {
@@ -851,41 +958,31 @@ pub(super) fn render_confirm(
         }
         yes
     };
-    let title = take(true);
+    let subject_line = take(true);
     let from_line = take(!from.is_empty());
-    let gap_before_prompt = take(true);
-    let gap_after_title = take(title);
+    let gap = take(true);
 
-    let mut lines = Vec::new();
-    if title {
-        lines.push(Line::styled(
-            "Delete this message from S3?",
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-    }
-    if gap_after_title {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line> = prompt_rows
+        .into_iter()
+        .map(|r| Line::styled(r, bold))
+        .collect();
+    if gap {
         lines.push(Line::raw(""));
     }
-    lines.push(Line::raw(fit(
-        &format!("Subject: {}", clean(subject)),
-        inner,
-    )));
+    if subject_line {
+        lines.push(Line::raw(fit(
+            &format!("Subject: {}", clean(subject)),
+            inner,
+        )));
+    }
     if from_line {
         lines.push(Line::raw(fit(&format!("From:    {}", clean(from)), inner)));
     }
-    let mut text_rows = lines.len() + rows_for(&object) + rows_for(prompt);
-    lines.push(Line::raw(object));
-    if gap_before_prompt {
-        lines.push(Line::raw(""));
-        text_rows += 1;
-    }
-    lines.push(Line::styled(
-        prompt,
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
+    lines.extend(object_rows.into_iter().map(Line::raw));
 
     let w = (inner + 4).min(aw);
-    let h = (text_rows + 2).min(ah);
+    let h = (lines.len() + 2).min(ah);
     let rect = Rect {
         x: area.x.saturating_add(((aw - w) / 2) as u16),
         y: area.y.saturating_add(((ah - h) / 2) as u16),
@@ -894,14 +991,35 @@ pub(super) fn render_confirm(
     };
     frame.render_widget(Clear, rect);
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Red))
+                .title(" Delete this message from S3? ")
                 .padding(ratatui::widgets::Padding::horizontal(1)),
         ),
         rect,
     );
+}
+
+/// `s` cut into rows of at most `cols` columns, between graphemes, so the row count is exact.
+fn chunk(s: &str, cols: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let cols = cols.max(1);
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for g in s.graphemes(true) {
+        let w = width(g);
+        if used + w > cols && used > 0 {
+            rows.push(String::new());
+            used = 0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push_str(g);
+        }
+        used += w;
+    }
+    rows
 }
 
 fn default_downloads() -> PathBuf {
