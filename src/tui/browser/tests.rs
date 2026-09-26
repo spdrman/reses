@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ratatui::crossterm::event::KeyCode;
 
 use super::BrowserScreen;
 use crate::config::{AppConfig, Inbox};
-use crate::s3::{Bucket, Listing, MemoryStore, S3Error, Store};
+use crate::s3::{Bucket, Listing, MemoryStore, ObjectInfo, S3Error, Store};
 use crate::tui::testing::{self, chars, key, screen, settle};
 use crate::tui::{App, Status};
 
@@ -32,6 +32,9 @@ struct Spy {
     peeks: Mutex<Vec<(String, u64, u64)>>,
     lists: Mutex<Vec<(String, Option<String>)>>,
     fail_list: AtomicBool,
+    /// How listings of the "loop" bucket answer: 0 normally, 1 the same token forever,
+    /// 2 a fresh token forever.
+    endless: AtomicUsize,
 }
 
 impl Spy {
@@ -41,6 +44,7 @@ impl Spy {
             peeks: Mutex::new(Vec::new()),
             lists: Mutex::new(Vec::new()),
             fail_list: AtomicBool::new(false),
+            endless: AtomicUsize::new(0),
         })
     }
 
@@ -77,6 +81,19 @@ impl Store for Spy {
                 status: 403,
                 code: "AccessDenied".into(),
                 message: "Access Denied".into(),
+            });
+        }
+        let mode = self.endless.load(Ordering::SeqCst);
+        if bucket == "loop" && mode != 0 {
+            let n = self.lists.lock().unwrap().len();
+            return Ok(Listing {
+                prefixes: Vec::new(),
+                objects: vec![ObjectInfo {
+                    key: format!("{prefix}obj-{n:05}"),
+                    size: TEXT.len() as u64,
+                    last_modified: None,
+                }],
+                next_token: Some(if mode == 1 { "same".into() } else { format!("t{n}") }),
             });
         }
         self.inner.list(bucket, prefix, delimiter, token)
@@ -267,15 +284,28 @@ fn enter_goes_into_a_folder_and_backspace_goes_up() {
 }
 
 #[test]
-fn esc_on_the_browser_goes_back() {
+fn esc_goes_up_one_level_and_pops_only_at_the_bucket_list() {
     let dir = tempfile::tempdir().unwrap();
     let spy = Spy::new(mail_store());
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    open(&mut app, "2025/");
+    press(&mut app, KeyCode::Esc);
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("mail/inbound/"), "{s}");
+    assert!(!s.contains("mail/inbound/2025"), "{s}");
+    assert!(selected_row(&s).contains("2025/"), "back on the folder it came out of: {s}");
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.quit, "still at the bucket list");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("archive"), "{s}");
+    assert!(selected_row(&s).contains("mail"), "{s}");
     press(&mut app, KeyCode::Esc);
     assert!(
         app.quit,
-        "the browser was the only view, so going back quits"
+        "the browser was the only view, so going back from the bucket list quits"
     );
 }
 
@@ -602,4 +632,84 @@ fn i_on_the_bucket_list_is_refused() {
     assert_eq!(app.ctx.config.inbox, None);
     assert!(!dir.path().join("config.toml").exists());
     assert_eq!(app.stack[0].title(), "Browse S3");
+}
+
+// ---- runaway paging ----
+
+fn loop_app(dir: &Path, spy: &Arc<Spy>, mode: usize, max_pages: usize) -> App {
+    spy.inner.create_bucket("loop");
+    let ctx = testing::ctx(dir, Some(Arc::clone(spy) as Arc<dyn Store>));
+    let screen = BrowserScreen::new().with_max_pages(max_pages);
+    let mut app = App::with_view(ctx, Box::new(screen));
+    settle(&mut app);
+    spy.endless.store(mode, Ordering::SeqCst);
+    app
+}
+
+fn loop_lists(spy: &Spy, delimiter: Option<&str>) -> usize {
+    spy.lists
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, d)| d.as_deref() == delimiter)
+        .count()
+}
+
+#[test]
+fn a_repeated_continuation_token_stops_the_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = loop_app(dir.path(), &spy, 1, 50);
+    open(&mut app, "loop");
+    assert_eq!(loop_lists(&spy, Some("/")), 2, "the repeat is not followed");
+    assert!(
+        status_error(&app).contains("continuation token"),
+        "{:?}",
+        app.ctx.status
+    );
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("2 objects"), "what did arrive stays: {s}");
+    assert!(!s.contains("loading"), "{s}");
+}
+
+#[test]
+fn a_listing_stops_at_the_page_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = loop_app(dir.path(), &spy, 2, 7);
+    open(&mut app, "loop");
+    assert_eq!(loop_lists(&spy, Some("/")), 7);
+    assert!(status_error(&app).contains("7 pages"), "{:?}", app.ctx.status);
+    let s = screen(&mut app, 100, 20);
+    assert!(!s.contains("loading"), "{s}");
+}
+
+#[test]
+fn search_stops_on_a_repeated_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = loop_app(dir.path(), &spy, 1, 50);
+    spy.endless.store(0, Ordering::SeqCst);
+    open(&mut app, "loop");
+    spy.endless.store(1, Ordering::SeqCst);
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(loop_lists(&spy, None), 2, "the repeat is not followed");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("continuation token"), "{s}");
+    assert!(!s.contains("searching"), "{s}");
+}
+
+#[test]
+fn search_stops_at_the_page_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = loop_app(dir.path(), &spy, 2, 7);
+    spy.endless.store(0, Ordering::SeqCst);
+    open(&mut app, "loop");
+    spy.endless.store(2, Ordering::SeqCst);
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(loop_lists(&spy, None), 7);
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("7 pages"), "{s}");
+    assert!(!s.contains("searching"), "{s}");
 }

@@ -488,3 +488,59 @@ fn pasted_values_are_trimmed_before_saving() {
     assert_eq!(p.secret_access_key, SECRET);
     assert_eq!(p.region.as_deref(), Some("us-west-2"));
 }
+
+#[test]
+fn the_mask_does_not_give_away_the_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut masks = Vec::new();
+    for secret in ["FAKEx", "FAKEsecretQZX9fakeFAKE0000FAKEsecretQZX9fakeFAKE0000"] {
+        let mut app = app(dir.path(), None, None);
+        press(&mut app, KeyCode::Char('a'));
+        fill_form(&mut app, "fake", "AKIAFAKEFAKE00000003", secret, secret, "");
+        // Move off the masked fields so only the mask itself differs.
+        press(&mut app, KeyCode::Tab);
+        let s = screen(&mut app, 120, 20);
+        let secret_line = line_with(&s, "Secret access key").to_string();
+        let token_line = line_with(&s, "Session token").to_string();
+        assert!(secret_line.contains('*'), "{s}");
+        masks.push((secret_line, token_line));
+    }
+    assert_eq!(masks[0], masks[1], "a 5 and a 52 character secret look the same");
+}
+
+#[test]
+fn an_empty_masked_field_shows_no_mask() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path(), None, None);
+    press(&mut app, KeyCode::Char('a'));
+    let s = screen(&mut app, 120, 20);
+    assert!(!line_with(&s, "Secret access key").contains('*'), "{s}");
+}
+
+#[test]
+fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    // As the first screen there is no session yet, and q quits.
+    let mut root = app(dir.path(), Some(TWO_PROFILES), None);
+    let s = screen(&mut root, 100, 12);
+    let footer = s.lines().last().unwrap();
+    assert!(footer.contains("quit") && !footer.contains("back"), "{footer}");
+
+    // Pushed from the inbox with `u`, a session is already open and q goes back.
+    fs::write(dir.path().join("credentials"), TWO_PROFILES).unwrap();
+    let mut ctx = testing::ctx(dir.path(), Some(store() as Arc<dyn Store>));
+    let screen_view = AccountsScreen::new(&mut ctx);
+    let mut pushed = App::with_view(ctx, Box::new(screen_view));
+    let s = screen(&mut pushed, 100, 12);
+    let footer = s.lines().last().unwrap();
+    assert!(footer.contains("back") && !footer.contains("quit"), "{footer}");
+
+    // The empty-file hint follows the same rule.
+    let empty = tempfile::tempdir().unwrap();
+    let mut ctx = testing::ctx(empty.path(), Some(store() as Arc<dyn Store>));
+    let screen_view = AccountsScreen::new(&mut ctx);
+    let mut pushed = App::with_view(ctx, Box::new(screen_view));
+    let s = screen(&mut pushed, 100, 12);
+    let footer = s.lines().last().unwrap();
+    assert!(footer.contains("back") && !footer.contains("quit"), "{footer}");
+}

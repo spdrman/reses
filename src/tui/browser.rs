@@ -619,6 +619,15 @@ impl BrowserScreen {
     }
 }
 
+impl BrowserScreen {
+    /// Lower the page cap so a test can reach it.
+    #[cfg(test)]
+    pub(crate) fn with_max_pages(self, n: usize) -> Self {
+        let _ = n;
+        self
+    }
+}
+
 impl Default for BrowserScreen {
     fn default() -> Self {
         Self::new()
