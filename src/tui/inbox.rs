@@ -897,6 +897,8 @@ mod tests {
         let alice = line_with(&scr, "Lunch today");
         assert!(alice.contains("Alice Example"), "{scr}");
         assert!(!alice.contains("alice@example.com"), "{scr}");
+        // Only the name: no quotes and no start of the address, however wide the cell is.
+        assert!(!alice.contains('"') && !alice.contains('<'), "{scr}");
         assert!(alice.contains("09:30"), "{scr}");
         // No display name falls back to the address; older messages show a date.
         let bob = line_with(&scr, "Invoice for September");
@@ -1219,6 +1221,25 @@ mod tests {
         let status = scr.lines().last().unwrap();
         assert!(status.contains("mail/bbb"), "{scr}");
         assert!(status.contains("AccessDenied"), "{scr}");
+        assert!(
+            matches!(app.ctx.status, Some(crate::tui::Status::Error(_))),
+            "{:?}",
+            app.ctx.status
+        );
+    }
+
+    #[test]
+    fn a_folder_marker_object_is_not_a_row() {
+        // The S3 console creates a zero-byte object named after the folder itself.
+        let s = three();
+        s.put(BUCKET, "mail/", b"");
+        let (mut app, _d) = app_with(s);
+        let scr = screen(&mut app, 100, 12);
+        assert!(scr.contains("3 messages"), "{scr}");
+        assert!(!scr.contains("loading"), "{scr}");
+        assert!(!scr.contains("could not read"), "{scr}");
+        // Not an object in the folder at all, so it is not counted as a non-email one either.
+        assert!(!scr.contains("not email"), "{scr}");
     }
 
     #[test]
@@ -1249,6 +1270,18 @@ mod tests {
         // Esc in the filter prompt clears it.
         app.key(key(KeyCode::Char('/')));
         app.key(key(KeyCode::Esc));
+        let scr = screen(&mut app, 100, 12);
+        assert!(
+            scr.contains("Lunch today") && scr.contains("Old news"),
+            "{scr}"
+        );
+        // Esc on the list with a filter applied clears it rather than leaving the inbox.
+        app.key(key(KeyCode::Char('/')));
+        chars(&mut app, "carol");
+        app.key(key(KeyCode::Enter));
+        assert!(!screen(&mut app, 100, 12).contains("Lunch today"));
+        app.key(key(KeyCode::Esc));
+        assert!(!app.quit);
         let scr = screen(&mut app, 100, 12);
         assert!(
             scr.contains("Lunch today") && scr.contains("Old news"),

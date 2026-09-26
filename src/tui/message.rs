@@ -634,6 +634,11 @@ attached words\r\n\
             scr.lines().last().unwrap().contains("AccessDenied"),
             "{scr}"
         );
+        assert!(
+            matches!(app.ctx.status, Some(crate::tui::Status::Error(_))),
+            "{:?}",
+            app.ctx.status
+        );
     }
 
     #[test]
