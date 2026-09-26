@@ -1477,6 +1477,34 @@ mod tests {
     }
 
     #[test]
+    fn later_pages_merge_into_the_newest_first_order() {
+        // MemoryStore pages three keys at a time, in key order; the received times are
+        // shuffled across pages, so only a correct merge gets the order right.
+        let s = Timed::new();
+        let minutes = [7, 2, 9, 4, 11, 1, 8, 5, 10, 3, 6, 0];
+        for (i, m) in minutes.iter().enumerate() {
+            s.put_received(
+                BUCKET,
+                &format!("mail/k{i:02}"),
+                &email(
+                    "a@example.com",
+                    &format!("Minute {m:02}"),
+                    "25 Sep 2026 10:00:00 +0000",
+                ),
+                time::OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(*m),
+            );
+        }
+        let (mut app, _d) = app_with(s);
+        let scr = screen(&mut app, 100, 20);
+        let shown: Vec<usize> = scr
+            .lines()
+            .filter_map(|l| l.split("Minute ").nth(1))
+            .map(|rest| rest[..2].parse().unwrap())
+            .collect();
+        assert_eq!(shown, (0..12).rev().collect::<Vec<_>>(), "{scr}");
+    }
+
+    #[test]
     fn lists_every_page_but_only_direct_children() {
         // MemoryStore pages three keys at a time, so this needs several pages.
         let s = Timed::new();

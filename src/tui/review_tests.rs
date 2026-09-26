@@ -397,7 +397,18 @@ fn assert_no_fragile_colours(app: &mut App, what: &str) {
 
 #[test]
 fn no_screen_uses_a_colour_that_vanishes_on_some_theme() {
-    // The inbox with placeholder rows and a filter line.
+    // The inbox with its placeholder rows, before any header has come back: one pump
+    // handles the listing and leaves the peeks queued.
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = testing::ctx(dir.path(), Some(haystack() as Arc<dyn Store>));
+    let mut app = App::with_view(ctx, Box::new(InboxScreen::new(inbox())));
+    app.pump();
+    assert!(
+        screen(&mut app, 100, 20).contains("loading"),
+        "no placeholder rows to check"
+    );
+    assert_no_fragile_colours(&mut app, "inbox placeholders");
+    // And once the rows are in, with the filter line.
     let (mut app, _d) = inbox_app(haystack());
     assert_no_fragile_colours(&mut app, "inbox");
     app.key(key(KeyCode::Char('/')));
