@@ -78,26 +78,13 @@ pub fn format_message(raw: &[u8], prefer_html: bool) -> String {
     lines.join("\n") + "\n"
 }
 
-/// Whether the header block ends inside `raw`, that is, whether a blank line follows the
-/// headers. A prefix fetched for the inbox list often stops before that.
-fn header_block_complete(raw: &[u8]) -> bool {
-    let mut at_line_start = true;
-    for (i, &b) in raw.iter().enumerate() {
-        if at_line_start && (b == b'\n' || b == b'\r') {
-            return true;
-        }
-        at_line_start = b == b'\n' || (b == b'\r' && raw.get(i + 1) != Some(&b'\n'));
-    }
-    false
-}
-
 /// Header summary for the inbox list. Works on a prefix that stops anywhere, including inside
 /// the headers.
 pub fn summarize(raw: &[u8]) -> Summary {
     // A prefix that stops partway through a header line has that line cut short, so I leave it
     // out rather than show half a value.
     let mut data = raw;
-    if !header_block_complete(raw) && !matches!(raw.last(), Some(b'\n' | b'\r') | None) {
+    if !parts::header_block_complete(raw) && !matches!(raw.last(), Some(b'\n' | b'\r') | None) {
         let cut = raw
             .iter()
             .rposition(|&b| b == b'\n' || b == b'\r')
@@ -143,19 +130,4 @@ pub fn save_attachments_report(raw: &[u8], dir: &Path) -> io::Result<SaveReport>
         .map(|a| (a.name, a.bytes))
         .collect();
     save::save_all(dir, items)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A header block is complete once a blank line follows it, whatever the line endings.
-    #[test]
-    fn header_block_end() {
-        assert!(header_block_complete(b"A: b\r\n\r\nbody"));
-        assert!(header_block_complete(b"A: b\n\nbody"));
-        assert!(header_block_complete(b"A: b\r\rbody"));
-        assert!(!header_block_complete(b"A: b\r\nC: d"));
-        assert!(!header_block_complete(b"A: b\r\n"));
-    }
 }

@@ -46,6 +46,19 @@ fn extension(ctype: &str) -> &'static str {
     }
 }
 
+/// Whether the header block ends inside `raw`, that is, whether a blank line follows the
+/// headers. A prefix fetched for the inbox list often stops before that.
+pub(super) fn header_block_complete(raw: &[u8]) -> bool {
+    let mut at_line_start = true;
+    for (i, &b) in raw.iter().enumerate() {
+        if at_line_start && (b == b'\n' || b == b'\r') {
+            return true;
+        }
+        at_line_start = b == b'\n' || (b == b'\r' && raw.get(i + 1) != Some(&b'\n'));
+    }
+    false
+}
+
 /// Charset labels mail clients use that mail-parser's table doesn't know, and the name it does.
 const CHARSET_ALIASES: &[(&str, &str)] = &[("cp932", "shift_jis"), ("cp949", "euc-kr")];
 
@@ -113,6 +126,11 @@ pub(super) fn prepare(raw: &[u8]) -> Cow<'_, [u8]> {
         }
         data = Cow::Owned(fixed);
     } else if data.ends_with(b"\r") {
+        data.to_mut().push(b'\n');
+    }
+    // A message that's all headers and stops without a line ending would lose its last header,
+    // since mail-parser only takes a header once its line ends.
+    if !data.is_empty() && !data.ends_with(b"\n") && !header_block_complete(&data) {
         data.to_mut().push(b'\n');
     }
     // Only header blocks get charset labels renamed, so no body or attachment changes.
@@ -600,14 +618,19 @@ mod tests {
     /// line endings the parser knows, and unknown charset labels are renamed in headers only.
     #[test]
     fn preparing_the_input() {
-        assert_eq!(&*prepare(b"\xef\xbb\xbfFrom: a"), b"From: a");
-        assert_eq!(&*prepare(b"\r\n\n\rFrom: a"), b"From: a");
+        assert_eq!(
+            &*prepare(b"\xef\xbb\xbfFrom: a\r\n\r\nx"),
+            b"From: a\r\n\r\nx"
+        );
+        assert_eq!(&*prepare(b"\r\n\n\rFrom: a\n\nx"), b"From: a\n\nx");
         assert_eq!(&*prepare(b"From: a\r\n"), b"From: a\r\n");
         assert_eq!(
             &*prepare(b"From: a\rTo: b\r\rx\r"),
             b"From: a\r\nTo: b\r\n\r\nx\r\n"
         );
         assert_eq!(&*prepare(b"From: a\r\nTo: b\r"), b"From: a\r\nTo: b\r\n");
+        assert_eq!(&*prepare(b"From: a\r\nTo: b"), b"From: a\r\nTo: b\n");
+        assert_eq!(&*prepare(b"From: a\r\n\r\nbody"), b"From: a\r\n\r\nbody");
         let raw = b"Subject: =?CP932?B?gqA=?=\r\n\r\nbody keeps =?cp932?B?gqA=?=\r\n";
         assert_eq!(
             &*prepare(raw),
@@ -636,6 +659,16 @@ mod tests {
         assert!(flat.contains("text"));
         let script = format!("<script>{}</script>{}", "<div>".repeat(600), "<b>x</b>");
         assert!(matches!(flatten_deep_html(&script), Cow::Borrowed(_)));
+    }
+
+    /// A header block is complete once a blank line follows it, whatever the line endings.
+    #[test]
+    fn header_block_end() {
+        assert!(header_block_complete(b"A: b\r\n\r\nbody"));
+        assert!(header_block_complete(b"A: b\n\nbody"));
+        assert!(header_block_complete(b"A: b\r\rbody"));
+        assert!(!header_block_complete(b"A: b\r\nC: d"));
+        assert!(!header_block_complete(b"A: b\r\n"));
     }
 
     /// Made-up names count attachments and take their extension from the type.
