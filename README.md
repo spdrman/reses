@@ -109,10 +109,12 @@ Everything runs in Docker on a remote x86_64 host through `scripts/ci-docker.sh`
 ```
 make gate          fmt, clippy, check, docs, tests, cargo deny and a static musl build
 make integration   the S3 tests, against a throwaway MinIO
-make darwin        cross-build the macOS binary into dist/ and check it against the goldens
+make darwin        fetch the macOS binary CI built for this commit into dist/ and check it against the goldens
 make install       make darwin, then link ~/.local/bin/reses to dist/reses
 make demo          re-record docs/demo.gif against a throwaway MinIO, failing unless the checked snapshots show the inbox
 ```
+
+There's no local macOS build. The AWS SDK links Apple's Security framework, which can't be linked from the Linux container, so `make darwin` downloads the binary the macOS job in CI built, tested and uploaded for the commit you're on. That needs `gh` logged in, a clean tree, and the commit pushed with CI green on it.
 
 `~/.local/bin` has to be on your PATH. If something is already there under that name, `make install` leaves it alone and tells you to move it aside first.
 

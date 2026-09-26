@@ -1,4 +1,5 @@
-# Every target runs in Docker on the host RESES_NAS names. See CONTRIBUTING.md.
+# gate, integration and demo run in Docker on the host RESES_NAS names; darwin fetches the macOS
+# binary CI built. See CONTRIBUTING.md.
 .PHONY: ci gate integration darwin install demo
 
 ci: gate integration darwin
@@ -11,12 +12,13 @@ gate:
 integration:
 	scripts/ci-docker.sh --integration
 
-# The binary is cross-built in the container; checking it against the goldens runs the real
-# macOS binary, which is the product under test rather than a toolchain. The replace test is
+# The binary is the one CI built natively on macOS for this commit (the SDK can't be cross-linked
+# for macOS from Linux). Checking it against the goldens runs the real macOS binary, which is the
+# product under test rather than a toolchain. The replace test is
 # #15: a rebuilt binary must still run after it has replaced one that already ran. Both run
 # before dist/reses is replaced, so a build that fails either never becomes the installed one.
 darwin:
-	scripts/ci-docker.sh --darwin
+	scripts/fetch-darwin.sh
 	scripts/check-goldens.sh dist/reses-aarch64-apple-darwin
 	tests/macos-replace-binary.sh dist/reses-aarch64-apple-darwin
 	scripts/place-binary.sh dist/reses-aarch64-apple-darwin dist/reses

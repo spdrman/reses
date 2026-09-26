@@ -55,12 +55,11 @@ fn every_ci_command_runs_locally_and_back() {
         "found too few commands in ci-docker.sh: {local:?}"
     );
 
-    // The deliberate differences: CI builds the macOS binary natively on a macOS runner, and
-    // the local mirror cross-builds it from Linux with zigbuild. Both run
-    // tests/macos-replace-binary.sh (#15) with that one release binary on both sides.
+    // The one deliberate difference: CI builds the macOS binary natively on a macOS runner, and
+    // the local mirror never builds it (the SDK can't be cross-linked for macOS), so `make
+    // darwin` fetches CI's build instead. Both run tests/macos-replace-binary.sh (#15) on it.
     const CI_ONLY: &[&str] = &["cargo build --release --locked"];
-    const LOCAL_ONLY: &[&str] =
-        &["cargo zigbuild --release --locked --target aarch64-apple-darwin"];
+    const LOCAL_ONLY: &[&str] = &[];
     for c in CI_ONLY {
         assert!(
             ci.contains(*c),
@@ -196,7 +195,7 @@ fn every_write_into_dist_goes_through_place_binary() {
     // #15: an in-place overwrite of a binary that has run, while anything holds it open, leaves
     // it dead for exec. scripts/place-binary.sh puts each build on a new inode; nothing else may
     // write a binary into dist/.
-    for file in ["Makefile", "scripts/ci-docker.sh"] {
+    for file in ["Makefile", "scripts/fetch-darwin.sh"] {
         let writes = dist_writes(&read(file));
         // Positive control: each file does place a binary, so an empty list means the
         // parsing broke, not that everything is fine.
