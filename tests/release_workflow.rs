@@ -84,6 +84,8 @@ fn it_runs_on_a_push_to_release_and_on_prs_that_touch_what_it_depends_on() {
         "scripts/check-goldens.sh",
         "scripts/place-binary.sh",
         "tests/macos-replace-binary.sh",
+        "install.sh",
+        "tests/install_script.rs",
         "Cargo.toml",
     ] {
         assert!(
@@ -152,7 +154,7 @@ fn every_check_is_real_and_runs_where_it_should() {
         "no test run: {test:#?}"
     );
 
-    let goldens = step_with(&build, "scripts/check-goldens.sh");
+    let goldens = step_with(&build, "scripts/check-goldens.sh \"target/");
     assert!(
         !has(&goldens, "if:"),
         "the golden check must run for every target: {goldens:#?}"
@@ -224,7 +226,6 @@ fn publish_checks_the_set_and_never_leaves_a_half_release() {
     assert!(has(&publish, "--verify-tag"), "{publish:#?}");
     // Draft first, check all four assets arrived, then publish; clean up a failed run's draft.
     assert!(has(&publish, "--draft "), "{publish:#?}");
-    assert!(has(&publish, "expected 4 assets"), "{publish:#?}");
     assert!(has(&publish, "--draft=false"), "{publish:#?}");
     let cleanup = step_with(&publish, "gh release delete");
     assert!(has(&cleanup, "if: failure()"), "{cleanup:#?}");
@@ -315,4 +316,74 @@ fn releases_and_ci_build_with_the_pinned_rust() {
             "CI must build with the same pinned Rust as releases: {l}"
         );
     }
+}
+
+#[test]
+fn the_linux_builds_ship_a_deb_that_apt_installs_before_publishing() {
+    let text = workflow();
+    let build = job(&text, "build");
+    let package = step_with(&build, "dpkg-deb");
+    assert!(
+        has_line(&package, "if: contains(matrix.target, 'musl')"),
+        "{package:#?}"
+    );
+    assert!(has(&package, "--root-owner-group --build"), "{package:#?}");
+    assert!(has(&package, "Package: reses"), "{package:#?}");
+    // The .deb is installed with apt on its own runner and the installed binary is checked
+    // against the goldens, so a broken package can't be published.
+    let install = step_with(&build, "\"$PWD/reses_");
+    assert!(
+        has_line(&install, "if: contains(matrix.target, 'musl')"),
+        "{install:#?}"
+    );
+    assert!(
+        has(&install, "scripts/check-goldens.sh /usr/bin/reses"),
+        "{install:#?}"
+    );
+    let upload = step_with(&build, "actions/upload-artifact");
+    assert!(
+        has(&upload, ".deb"),
+        "the .deb must be uploaded with the archive: {upload:#?}"
+    );
+
+    let publish = job(&text, "publish");
+    assert!(has(&publish, "expected 2 debs"), "{publish:#?}");
+    assert!(
+        has(&publish, "sha256sum *.tar.gz *.deb > SHA256SUMS"),
+        "the checksums must cover the debs: {publish:#?}"
+    );
+    assert!(
+        has(&publish, "expected 6 assets"),
+        "3 archives, 2 debs and SHA256SUMS: {publish:#?}"
+    );
+    assert!(
+        has(&publish, "dist/*.deb"),
+        "the debs must be attached: {publish:#?}"
+    );
+}
+
+#[test]
+fn the_debs_install_on_older_debian_and_order_prereleases_right() {
+    let text = workflow();
+    let build = job(&text, "build");
+    let package = step_with(&build, "dpkg-deb -Zxz");
+    // Newer dpkg-deb defaults to zstd, which dpkg on Debian 11 can't read.
+    assert!(
+        has(&package, "-Zxz"),
+        "the .deb must be xz-compressed: {package:#?}"
+    );
+    // A semver prerelease like 1.0.0-rc.1 becomes 1.0.0~rc.1, which dpkg sorts before 1.0.0.
+    assert!(
+        has(&package, "${VERSION/-/~}"),
+        "prereleases must map - to ~: {package:#?}"
+    );
+    let bullseye = step_with(&build, "debian:bullseye");
+    assert!(
+        has_line(&bullseye, "if: contains(matrix.target, 'musl')"),
+        "{bullseye:#?}"
+    );
+    assert!(
+        has(&bullseye, "reses --version"),
+        "the Debian 11 install must run the binary: {bullseye:#?}"
+    );
 }

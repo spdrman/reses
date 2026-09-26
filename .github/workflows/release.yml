@@ -23,6 +23,8 @@ on:
       - scripts/check-goldens.sh
       - scripts/place-binary.sh
       - tests/macos-replace-binary.sh
+      - install.sh
+      - tests/install_script.rs
       - Cargo.toml
 
 permissions:
@@ -130,10 +132,54 @@ jobs:
           cp "target/$TARGET/release/reses" README.md LICENSE "stage/$name/"
           tar -C stage -czf "$name.tar.gz" "$name"
           tar -tzvf "$name.tar.gz"
+      # Debian and Ubuntu get a .deb of the same static binary, so apt can install, upgrade and
+      # remove it. dpkg-deb is all that takes; the package has no dependencies.
+      - name: Package as .deb
+        if: contains(matrix.target, 'musl')
+        run: |
+          case "$TARGET" in x86_64-*) arch=amd64 ;; aarch64-*) arch=arm64 ;; esac
+          # A semver prerelease (1.0.0-rc.1) becomes 1.0.0~rc.1, which dpkg sorts before 1.0.0.
+          debver="${VERSION/-/~}"
+          pkg="reses_${VERSION}_$arch"
+          mkdir -p "debroot/$pkg/DEBIAN" "debroot/$pkg/usr/bin" "debroot/$pkg/usr/share/doc/reses"
+          install -m 0755 "target/$TARGET/release/reses" "debroot/$pkg/usr/bin/reses"
+          install -m 0644 LICENSE "debroot/$pkg/usr/share/doc/reses/copyright"
+          printf '%s\n' \
+            "Package: reses" \
+            "Version: $debver" \
+            "Architecture: $arch" \
+            "Maintainer: Roman Goldmann <roman@devshell.org>" \
+            "Section: mail" \
+            "Priority: optional" \
+            "Homepage: https://github.com/spdrman/reses" \
+            "Description: terminal inbox for raw SES email stored in S3" \
+            " re:SES opens an inbox over the S3 bucket where Amazon SES stores incoming" \
+            " mail, and decodes stored messages into a readable form." \
+            > "debroot/$pkg/DEBIAN/control"
+          # xz rather than the zstd newer dpkg-deb defaults to, so Debian 11 can install it too.
+          dpkg-deb -Zxz --root-owner-group --build "debroot/$pkg" "$pkg.deb"
+          dpkg-deb --info "$pkg.deb"
+      # Install the package the way a user would, then check the installed binary, so a broken
+      # package can never be published.
+      - name: Install the .deb with apt and check it
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get install -y "$PWD/reses_${VERSION}_$(dpkg --print-architecture).deb"
+          reses --version
+          scripts/check-goldens.sh /usr/bin/reses
+      # The runner's own dpkg is new; install on Debian 11 too, the oldest dpkg the package
+      # has to work with.
+      - name: Install the .deb on Debian 11
+        if: contains(matrix.target, 'musl')
+        run: |
+          docker run --rm -v "$PWD:/pkg:ro" debian:bullseye sh -c \
+            "dpkg -i /pkg/reses_${VERSION}_$(dpkg --print-architecture).deb && reses --version"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: reses-${{ matrix.target }}
-          path: reses-v${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+          path: |
+            reses-v${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+            reses_${{ needs.version.outputs.version }}_*.deb
           if-no-files-found: error
 
   publish:
@@ -158,7 +204,8 @@ jobs:
           cd dist
           ls -l
           [ "$(ls *.tar.gz | wc -l)" -eq 3 ] || { echo "::error::expected 3 archives"; exit 1; }
-          sha256sum *.tar.gz > SHA256SUMS
+          [ "$(ls *.deb | wc -l)" -eq 2 ] || { echo "::error::expected 2 debs"; exit 1; }
+          sha256sum *.tar.gz *.deb > SHA256SUMS
           cat SHA256SUMS
       - name: Release notes
         run: |
@@ -171,7 +218,17 @@ jobs:
           | \`reses-v$VERSION-aarch64-unknown-linux-musl.tar.gz\` | Linux arm64, static |
           | \`reses-v$VERSION-aarch64-apple-darwin.tar.gz\` | macOS, Apple Silicon |
 
-          **Linux**
+          **Debian and Ubuntu** (amd64, arm64)
+
+          \`\`\`
+          curl -fsSL https://raw.githubusercontent.com/spdrman/reses/main/install.sh | sh
+          \`\`\`
+
+          The installer checks the \`.deb\` against \`SHA256SUMS\` and installs it with apt, so \`apt remove reses\` uninstalls it. There's no apt repository, so to upgrade, run the same command again. You can also install a downloaded \`reses_${VERSION}_amd64.deb\` or \`reses_${VERSION}_arm64.deb\` directly with \`sudo apt install ./reses_${VERSION}_<arch>.deb\`.
+
+          **macOS**: \`brew install spdrman/reses/reses\`
+
+          **Other Linux**
 
           \`\`\`
           tar -xzf reses-v$VERSION-x86_64-unknown-linux-musl.tar.gz
@@ -205,12 +262,12 @@ jobs:
       # as a release with pieces missing.
       - name: Create the release as a draft
         run: |
-          gh release create "v$VERSION" dist/*.tar.gz dist/SHA256SUMS \
+          gh release create "v$VERSION" dist/*.tar.gz dist/*.deb dist/SHA256SUMS \
             --verify-tag --draft --title "reses v$VERSION" --notes-file notes.md
       - name: Check the assets and publish
         run: |
           n=$(gh release view "v$VERSION" --json assets --jq '.assets | length')
-          [ "$n" -eq 4 ] || { echo "::error::expected 4 assets on the draft, found $n"; exit 1; }
+          [ "$n" -eq 6 ] || { echo "::error::expected 6 assets on the draft, found $n"; exit 1; }
           gh release edit "v$VERSION" --draft=false
       # Only what this run created is removed, so a rerun after fixing the cause starts clean.
       - name: Clean up after a failed publish

@@ -4,6 +4,31 @@
 
 <sub>Enter connects and opens, `i` saves the inbox, Enter opens a message, `q` goes back. All the mail is synthetic.</sub>
 
+## Install
+
+**macOS** (Apple Silicon), with Homebrew:
+
+```
+brew install spdrman/reses/reses
+```
+
+**Debian and Ubuntu** (amd64 and arm64), with apt:
+
+```
+curl -fsSL https://raw.githubusercontent.com/spdrman/reses/main/install.sh | sh
+```
+
+The installer fetches the latest release's `.deb`, checks it against the release's `SHA256SUMS`, and installs it with apt.
+
+| | Homebrew | apt |
+|---|---|---|
+| Upgrade | `brew upgrade reses` | run the install command again (there's no apt repository, so `apt upgrade` won't update it) |
+| Uninstall | `brew uninstall reses` | `sudo apt remove reses` |
+
+Homebrew works on Linux too, with the same `brew install` command. Uninstalling leaves your settings (`~/.config/reses`) and your AWS credentials alone.
+
+Binaries for other Linux systems (static, x86_64 and arm64) are on the [releases page](https://github.com/spdrman/reses/releases).
+
 A terminal inbox for the raw email that Amazon SES stores in S3.
 
 SES can drop every incoming message into an S3 bucket, but what lands there is the raw RFC 5322 text: pages of `Received:`, DKIM and ARC headers, MIME boundaries and base64. Run `reses` and it opens an inbox over the bucket, so you can read and delete that mail without downloading anything by hand... and if you do have a stored message on disk, it can decode that too.
@@ -62,10 +87,6 @@ plain body
 Bcc never survives delivery as a header, so I work it out from the envelope recipients (`Delivered-To`, `X-Original-To`, and the `for <addr>` in `Received`) that aren't already in To or Cc.
 
 The expected output for each test message lives in `tests/fixtures/mail/` next to it.
-
-## Download
-
-Ready-to-run binaries for Linux (x86_64 and arm64, static) and macOS (Apple Silicon) are on the [releases page](https://github.com/spdrman/reses/releases), with install steps and checksums in each release's notes.
 
 ## Build and install
 
