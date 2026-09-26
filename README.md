@@ -107,7 +107,7 @@ The expected output for each test message lives in `tests/fixtures/mail/` next t
 Everything runs in Docker through `scripts/ci-docker.sh`, and the Makefile wraps it:
 
 ```
-make gate          fmt, clippy, check, docs and tests
+make gate          fmt, clippy, check, docs, tests, cargo deny and a static musl build
 make integration   the S3 tests, against a throwaway MinIO
 make darwin        cross-build the macOS binary into dist/ and check it against the goldens
 make install       make darwin, then link ~/.local/bin/reses to dist/reses

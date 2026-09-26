@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Decode every mail fixture with a built reses binary and compare against the goldens that
-# are committed in tests/fixtures/mail. Used by the macOS CI job and by `make darwin`, on the real binary.
+# are committed in tests/fixtures/mail. The macOS and musl CI jobs, the release, the local gate
+# and `make darwin` all run it on the real binary.
 #
 #   scripts/check-goldens.sh path/to/reses
 set -euo pipefail
