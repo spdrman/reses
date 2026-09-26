@@ -1,5 +1,7 @@
 # Build and test image for reses. Every build, test and gate runs in here, never on the host.
-FROM rust:1.98.1-bookworm
+# Pinned by digest (the multi-arch index, so arm64 and amd64 both resolve), so the image a
+# build starts from can never change under the tag.
+FROM rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-pip ca-certificates \

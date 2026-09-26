@@ -50,3 +50,4 @@ CLAUDE.md
 
 # Scratch space demo/record.sh builds each run and removes afterwards.
 /demo/.work/
+/docs/.demo.gif.*

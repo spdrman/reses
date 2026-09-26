@@ -8,9 +8,10 @@
 #   S3_ENDPOINT   e.g. http://minio:9000
 #   S3_KEY        access key
 #   S3_SECRET     secret key
+#   MESSAGES      the message list, demo/messages.tsv
 set -euo pipefail
 
-: "${S3_ENDPOINT:?}" "${S3_KEY:?}" "${S3_SECRET:?}"
+: "${S3_ENDPOINT:?}" "${S3_KEY:?}" "${S3_SECRET:?}" "${MESSAGES:?}"
 BUCKET=mail-inbound
 PREFIX=inbound/
 TO=mail@example.org
@@ -38,77 +39,20 @@ put() { # put KEY FILE
   s3 -T "$2" "$S3_ENDPOINT/$BUCKET/$1" -o /dev/null
 }
 
-# msg ID AGE FROM SUBJECT, with the body on stdin. AGE is anything `date -d` takes, so the
-# inbox shows a spread of recent dates whenever the demo is recorded. SES keys each object by
-# its message id, and the inbox lists newest upload first, so callers go oldest first.
-msg() {
-  local id=$1 age=$2 from=$3 subject=$4 date domain
-  date=$(date -u -R -d "$age")
-  domain=${from##*@}
-  domain=${domain%>}
-  {
-    printf 'Return-Path: <bounce-%s@%s>\n' "$id" "$domain"
-    printf 'Received: from mail.%s (mail.%s [192.0.2.25])\n' "$domain" "$domain"
-    printf ' by inbound-smtp.us-east-1.example.net with SMTP id %s\n' "$id"
-    printf ' for %s;\n %s\n' "$TO" "$date"
-    printf 'X-SES-Spam-Verdict: PASS\nX-SES-Virus-Verdict: PASS\n'
-    printf 'Received-SPF: pass (spfCheck: domain of %s designates 192.0.2.25 as permitted sender)\n' "$domain"
-    printf 'Authentication-Results: amazonses.example.net;\n spf=pass;\n dkim=pass header.i=@%s;\n dmarc=pass header.from=%s;\n' "$domain" "$domain"
-    printf 'X-SES-RECEIPT: AEFBQUFBQUFBQUFFexampleexampleexampleexample\n'
-    printf 'MIME-Version: 1.0\n'
-    printf 'From: %s\n' "$from"
-    printf 'To: %s\n' "$TO"
-    printf 'Date: %s\n' "$date"
-    printf 'Subject: %s\n' "$subject"
-    printf 'Message-ID: <%s@%s>\n' "$id" "$domain"
-    printf 'Content-Type: text/plain; charset="UTF-8"\n\n'
-    cat
-  } | sed 's/$/\r/' >"$tmp/$id"
-  put "$PREFIX$id" "$tmp/$id"
-}
-
-msg 3k8vq2m1n7c0b5x9w4z6h2j8l1p0r3t5u7y9a2d4 "5 days ago" \
-  "The Weekly Tinkerer <news@example.com>" "Issue 118: a soldering station roundup" <<'EOF'
-This week: six soldering stations under the bench light, and the one we kept.
-EOF
-
-msg 7d2f9h4k6m8p1r3t5v7x9z0b2c4e6g8i1j3l5n7q "4 days ago" \
-  "Dana Whitfield <dana@example.org>" "Lease renewal for unit 4B" <<'EOF'
-Hi, the renewal paperwork for 4B is attached to the portal. Could you sign by Friday?
-EOF
-
-msg 1a3c5e7g9i2k4m6o8q0s2u4w6y8b1d3f5h7j9l0n "3 days ago" \
-  "Olu Adeyemi <olu@example.org>" "Photos from the workshop" <<'EOF'
-Uploaded the photos from Saturday. The one of the lathe demo came out great.
-EOF
-
-msg 9z7x5v3t1r8p6n4l2j0h9f7d5b3a1c2e4g6i8k0m "2 days ago" \
-  "Harbour Coffee <receipts@example.net>" "Your receipt from Harbour Coffee" <<'EOF'
-Thanks for stopping by. 2 x flat white, 1 x almond croissant. Total 14.50.
-EOF
-
-msg 4b6d8f0h2j4l6n8p0r2t4v6x8z1a3c5e7g9i2k4m "36 hours ago" \
-  "Security Alerts <alerts@example.net>" "New sign-in from Firefox on Linux" <<'EOF'
-We noticed a new sign-in to your account. If this was you, there's nothing to do.
-EOF
-
-msg 6m4k2i0g8e6c4a2y0w8u6s4q2o0m8k6i4g2e0c8a "30 hours ago" \
-  "Tomasz Nowak <tomasz.nowak@example.org>" "Re: Saturday hike, trail options" <<'EOF'
-The ridge loop is 14 km with one steep bit. The lake trail is flatter. Your call!
-EOF
-
-msg 2p4r6t8v0x2z4b6d8f0h2j4l6n8p0r2t4v6x8z0b "20 hours ago" \
-  "Build Bot <ci@example.net>" "Build 812 passed on main" <<'EOF'
-All 1,204 tests passed in 6m 12s.
-EOF
-
-msg 8q6o4m2k0i8g6e4c2a0y8w6u4s2q0o8m6k4i2g0e "9 hours ago" \
-  "Priya Raman <priya.raman@example.com>" "Invoice 4471 for September is ready" <<'EOF'
-Hi, invoice 4471 for September is ready. Net 30 as usual. Thanks!
-EOF
-
-msg 5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o "3 hours ago" \
-  "Mei Chen <mei.chen@example.com>" "Draft agenda for Thursday's planning call" <<'EOF'
+# The body of each message in demo/messages.tsv, by its id.
+body() {
+  case $1 in
+    3k8v*) echo "This week: six soldering stations under the bench light, and the one we kept." ;;
+    7d2f*) echo "Hi, the renewal paperwork for 4B is on the portal. Could you sign by Friday?" ;;
+    1a3c*) echo "Uploaded the photos from Saturday. The one of the lathe demo came out great." ;;
+    9z7x*) echo "Thanks for stopping by. 2 x flat white, 1 x almond croissant. Total 14.50." ;;
+    4b6d*) echo "We noticed a new sign-in to your account. If this was you, there's nothing to do." ;;
+    6m4k*) echo "The ridge loop is 14 km with one steep bit. The lake trail is flatter. Your call!" ;;
+    2p4r*) echo "All 1,204 tests passed in 6m 12s." ;;
+    8q6o*) echo "Hi, invoice 4471 for September is ready. Net 30 as usual. Thanks!" ;;
+    0e2g*) echo "Welcome! Here are a few notes to get you going in your first week." ;;
+    # The one the demo opens and scrolls, so it's long enough to scroll.
+    5c7e*) cat <<'EOF' ;;
 Hi all,
 
 Here's a draft agenda for Thursday's planning call. Shout if I missed anything
@@ -139,11 +83,41 @@ I've booked the big room from 10 to 11, and there'll be coffee.
 Cheers,
 Mei
 EOF
+    *) echo "no body for $1" >&2; exit 1 ;;
+  esac
+}
 
-msg 0e2g4i6k8m0o2q4s6u8w0y2a4c6e8g0i2k4m6o8q "25 minutes ago" \
-  "Sam Ortiz <sam.ortiz@example.com>" "Welcome aboard! Notes for your first week" <<'EOF'
-Welcome! Here are a few notes to get you going in your first week.
-EOF
+# msg ID AGE NAME ADDRESS SUBJECT. AGE is anything `date -d` takes, so the inbox shows a spread
+# of recent dates whenever the demo is recorded. SES keys each object by its message id.
+msg() {
+  local id=$1 age=$2 from="$3 <$4>" subject=$5 domain=${4##*@} date
+  date=$(date -u -R -d "$age")
+  {
+    printf 'Return-Path: <bounce-%s@%s>\n' "$id" "$domain"
+    printf 'Received: from mail.%s (mail.%s [192.0.2.25])\n' "$domain" "$domain"
+    printf ' by inbound-smtp.us-east-1.example.net with SMTP id %s\n' "$id"
+    printf ' for %s;\n %s\n' "$TO" "$date"
+    printf 'X-SES-Spam-Verdict: PASS\nX-SES-Virus-Verdict: PASS\n'
+    printf 'Received-SPF: pass (spfCheck: domain of %s designates 192.0.2.25 as permitted sender)\n' "$domain"
+    printf 'Authentication-Results: amazonses.example.net;\n spf=pass;\n dkim=pass header.i=@%s;\n dmarc=pass header.from=%s;\n' "$domain" "$domain"
+    printf 'X-SES-RECEIPT: AEFBQUFBQUFBQUFFexampleexampleexampleexample\n'
+    printf 'MIME-Version: 1.0\n'
+    printf 'From: %s\n' "$from"
+    printf 'To: %s\n' "$TO"
+    printf 'Date: %s\n' "$date"
+    printf 'Subject: %s\n' "$subject"
+    printf 'Message-ID: <%s@%s>\n' "$id" "$domain"
+    printf 'Content-Type: text/plain; charset="UTF-8"\n\n'
+    body "$id"
+  } | sed 's/$/\r/' >"$tmp/$id"
+  put "$PREFIX$id" "$tmp/$id"
+}
+
+# The inbox lists newest upload first, and the table is oldest first, so upload in its order.
+while IFS=$'\t' read -r id age name address subject; do
+  case $id in '#'* | '') continue ;; esac
+  msg "$id" "$age" "$name" "$address" "$subject"
+done <"$MESSAGES"
 
 # Not every object in a mail folder is mail, so the browser's marks have something to tell apart.
 printf 'bucket,messages\nmail-inbound,10\n' >"$tmp/export.csv"

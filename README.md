@@ -1,6 +1,8 @@
 # reses
 
-![reses browsing an inbox](docs/demo.gif)
+![reses in a terminal: picking an AWS profile, browsing into the mail-inbound bucket where stored emails are marked, saving the folder as the inbox, then opening and scrolling a message from the From, Subject, Date and Size list](docs/demo.gif)
+
+<sub>Enter connects and opens, `i` saves the inbox, Enter opens a message, `q` goes back. All the mail is synthetic.</sub>
 
 Read the raw email that Amazon SES stores in S3, either one file at a time or as a terminal inbox.
 
@@ -61,7 +63,7 @@ make gate          fmt, clippy, check, docs, tests, python oracle tests
 make integration   the S3 tests, against a throwaway MinIO
 make darwin        cross-build the macOS binary into dist/ and check it against the goldens
 make install       make darwin, then link ~/.local/bin/reses to dist/reses
-make demo          re-record docs/demo.gif against a throwaway MinIO (see demo/record.sh)
+make demo          re-record docs/demo.gif against a throwaway MinIO, failing unless the checked snapshots show the inbox
 ```
 
 `~/.local/bin` has to be on your PATH. If something is already there under that name, `make install` leaves it alone and tells you to move it aside first.
