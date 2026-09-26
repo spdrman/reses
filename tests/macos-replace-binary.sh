@@ -14,11 +14,11 @@
 #   tests/macos-replace-binary.sh FIRST [SECOND]
 #
 # SECOND defaults to FIRST: that is `make darwin` twice on an unchanged tree, which is exactly
-# how the bug first showed up. CI passes a debug and a release build for the rebuilt-tree case.
+# how the bug first showed up. Identical bytes are killed too, so FIRST alone is a full test.
 set -euo pipefail
 [ "$(uname -s)" = Darwin ] || { echo "skipped: macOS only" >&2; exit 0; }
 abs() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
-repo="$(git rev-parse --show-toplevel)"
+repo="$(cd "$(dirname "$0")/.." && pwd)"
 first="$(abs "$1")"
 second="$(abs "${2:-$1}")"
 mkdir -p "$repo/dist"
@@ -49,15 +49,21 @@ fi
 echo "a binary placed over one that already ran, while it was held open, still runs"
 
 # Positive control, so a macOS that stops killing in-place overwrites is noticed rather than
-# silently making this test unable to fail. It is a notice, not a failure: the kernel's
-# behaviour is not what this repository tests.
+# silently making this test unable to fail. Locally it is a notice. In CI it fails, because a
+# step that cannot fail is worth knowing about there, and the message says the kernel changed,
+# not reses.
 cp "$first" "$dir/control"
 run "$dir/control" >/dev/null
 exec 8<"$dir/control"
 cp "$second" "$dir/control"
 rc="$(run "$dir/control")"
 if [ "$rc" -eq 0 ]; then
-  echo "note: a plain in-place cp under a holder now runs on this macOS, so this test can no longer catch #15"
+  msg="a plain in-place cp under a holder now runs on this macOS: the kernel behaviour behind #15 has changed, so this test can no longer catch it (reses itself is fine)"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    echo "::error::$msg" >&2
+    exit 1
+  fi
+  echo "note: $msg"
 else
   echo "control: a plain in-place cp under a holder is still killed (exit $rc), so this test can catch #15"
 fi

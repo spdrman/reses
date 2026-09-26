@@ -57,7 +57,9 @@ make darwin        cross-build the macOS binary into dist/ and check it against 
 make install       make darwin, then link ~/.local/bin/reses to dist/reses
 ```
 
-`~/.local/bin` has to be on your PATH.
+`~/.local/bin` has to be on your PATH. If something is already there under that name, `make install` leaves it alone and tells you to move it aside first.
+
+On macOS, never install a new build by `cp` over an existing copy. Once a binary has run, overwriting its file in place while any process holds it open (a `reses` that is still running, or Docker Desktop, which holds everything under a mounted folder) makes macOS kill it on every later launch, silently, with exit 137. `make install` links to `dist/reses`, and every build is renamed into place on a new file, so it never hits this. If you copy a binary somewhere yourself, copy to a new name and `mv` it over the old one. See #15.
 
 ## License
 
