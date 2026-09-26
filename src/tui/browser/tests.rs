@@ -225,6 +225,8 @@ fn status_error(app: &App) -> String {
 
 // ---- buckets and folders ----
 
+/// I check the browser opens on the bucket list with the first bucket selected, and that search and
+/// inbox hints only show once I'm inside a bucket.
 #[test]
 fn starts_at_the_bucket_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -248,6 +250,8 @@ fn starts_at_the_bucket_list() {
     }
 }
 
+/// Opening a bucket shows its top-level folders and files, listed with the / delimiter so folders
+/// stay folded.
 #[test]
 fn enter_opens_a_bucket_with_its_folders_and_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -266,6 +270,8 @@ fn enter_opens_a_bucket_with_its_folders_and_files() {
     );
 }
 
+/// With a two-object page size I check all nine objects arrive over five pages, so a big folder
+/// isn't silently cut short.
 #[test]
 fn every_page_of_a_listing_is_fetched() {
     let dir = tempfile::tempdir().unwrap();
@@ -295,6 +301,8 @@ fn every_page_of_a_listing_is_fetched() {
     assert_eq!(f_pages, 5, "9 objects at 2 a page");
 }
 
+/// I walk down into nested folders with Enter and back up with Backspace, checking the path and
+/// contents at each step.
 #[test]
 fn enter_goes_into_a_folder_and_backspace_goes_up() {
     let dir = tempfile::tempdir().unwrap();
@@ -328,6 +336,8 @@ fn enter_goes_into_a_folder_and_backspace_goes_up() {
     assert!(!s.contains("inbound"), "{s}");
 }
 
+/// Esc climbs one level at a time, keeps the folder I came out of selected, and only quits from the
+/// bucket list.
 #[test]
 fn esc_goes_up_one_level_and_pops_only_at_the_bucket_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -357,6 +367,7 @@ fn esc_goes_up_one_level_and_pops_only_at_the_bucket_list() {
     );
 }
 
+/// An empty bucket says it is empty rather than showing nothing.
 #[test]
 fn an_empty_folder_says_so() {
     let dir = tempfile::tempdir().unwrap();
@@ -367,6 +378,8 @@ fn an_empty_folder_says_so() {
     assert!(s.contains("empty"), "{s}");
 }
 
+/// A denied listing puts the S3 error on the status line and the screen, so the reason isn't
+/// swallowed.
 #[test]
 fn a_listing_error_shows_on_the_status_line() {
     let dir = tempfile::tempdir().unwrap();
@@ -383,6 +396,8 @@ fn a_listing_error_shows_on_the_status_line() {
     assert!(s.contains("AccessDenied"), "{s}");
 }
 
+/// In a 5000 object folder I check only about a screenful gets peeked, even after jumping to the
+/// end, since each peek is an S3 request.
 #[test]
 fn a_huge_folder_peeks_only_what_is_visible() {
     let dir = tempfile::tempdir().unwrap();
@@ -416,6 +431,8 @@ fn a_huge_folder_peeks_only_what_is_visible() {
 
 // ---- email marks ----
 
+/// Moving around a folder peeks each visible object exactly once with a 4 KiB range and marks only
+/// the real email.
 #[test]
 fn visible_objects_are_peeked_once_and_email_is_marked() {
     let dir = tempfile::tempdir().unwrap();
@@ -454,6 +471,8 @@ fn visible_objects_are_peeked_once_and_email_is_marked() {
     }
 }
 
+/// Going from a folder with no email to one with two keeps the counts apart, so one folder's marks
+/// don't bleed into the next.
 #[test]
 fn coming_back_to_a_folder_does_not_mix_up_marks() {
     let dir = tempfile::tempdir().unwrap();
@@ -471,6 +490,8 @@ fn coming_back_to_a_folder_does_not_mix_up_marks() {
 
 // ---- filter ----
 
+/// I filter with / and check it matches names case-blind, Enter hands the keys back to the list,
+/// and Esc clears it without going back.
 #[test]
 fn slash_filters_the_listing_by_name() {
     let dir = tempfile::tempdir().unwrap();
@@ -504,6 +525,7 @@ fn slash_filters_the_listing_by_name() {
     );
 }
 
+/// A filter with no matches says nothing matches, rather than looking like an empty folder.
 #[test]
 fn a_filter_that_matches_nothing_says_so() {
     let dir = tempfile::tempdir().unwrap();
@@ -518,6 +540,8 @@ fn a_filter_that_matches_nothing_says_so() {
 
 // ---- search ----
 
+/// Search from the bucket root walks everything flat and lists only the folders holding email, with
+/// their counts and progress.
 #[test]
 fn s_searches_down_from_the_folder_and_lists_folders_holding_email() {
     let dir = tempfile::tempdir().unwrap();
@@ -551,6 +575,8 @@ fn s_searches_down_from_the_folder_and_lists_folders_holding_email() {
     assert!(!footer.contains("stop"), "nothing left to stop: {footer}");
 }
 
+/// A search started inside a folder peeks only what is under it, so it doesn't wander over the rest
+/// of the bucket.
 #[test]
 fn search_from_a_folder_stays_inside_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -570,6 +596,7 @@ fn search_from_a_folder_stays_inside_it() {
     assert!(!per_key.contains_key("AMAZON_SES_SETUP_NOTIFICATION"));
 }
 
+/// Enter on a search result opens that folder and closes the results.
 #[test]
 fn enter_on_a_search_result_jumps_to_that_folder() {
     let dir = tempfile::tempdir().unwrap();
@@ -584,6 +611,8 @@ fn enter_on_a_search_result_jumps_to_that_folder() {
     assert!(!s.contains("done"), "the search view is gone: {s}");
 }
 
+/// I stop a search midway with x and check no more peeks happen, then Esc returns to the folder it
+/// started from.
 #[test]
 fn a_search_can_be_stopped() {
     let dir = tempfile::tempdir().unwrap();
@@ -616,6 +645,7 @@ fn a_search_can_be_stopped() {
     assert_eq!(app.stack.len(), 1);
 }
 
+/// Pressing s on the bucket list is refused, since there is nothing to search yet.
 #[test]
 fn search_needs_a_bucket() {
     let dir = tempfile::tempdir().unwrap();
@@ -631,6 +661,8 @@ fn search_needs_a_bucket() {
 
 // ---- save as inbox ----
 
+/// Pressing i inside a folder saves it as the inbox in the config and resets the stack onto the
+/// inbox screen.
 #[test]
 fn i_saves_the_folder_as_the_inbox_and_opens_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -654,6 +686,7 @@ fn i_saves_the_folder_as_the_inbox_and_opens_it() {
     assert!(title.starts_with("Inbox"), "top view is {title:?}");
 }
 
+/// Saving the inbox at a bucket's root stores an empty prefix, not a stray slash.
 #[test]
 fn i_at_the_bucket_root_saves_an_empty_prefix() {
     let dir = tempfile::tempdir().unwrap();
@@ -666,6 +699,7 @@ fn i_at_the_bucket_root_saves_an_empty_prefix() {
     assert_eq!((inbox.bucket.as_str(), inbox.prefix.as_str()), ("mail", ""));
 }
 
+/// Pressing i on the bucket list is refused and writes no config, since there is no folder to save.
 #[test]
 fn i_on_the_bucket_list_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -706,6 +740,8 @@ fn loop_lists(spy: &Spy, delimiter: Option<&str>) -> usize {
         .count()
 }
 
+/// A listing that hands back the same continuation token twice stops there with an error, keeping
+/// what already arrived.
 #[test]
 fn a_repeated_continuation_token_stops_the_listing() {
     let dir = tempfile::tempdir().unwrap();
@@ -723,6 +759,7 @@ fn a_repeated_continuation_token_stops_the_listing() {
     assert!(!s.contains("loading"), "{s}");
 }
 
+/// A listing that never ends stops at the page cap and says so, rather than paging forever.
 #[test]
 fn a_listing_stops_at_the_page_cap() {
     let dir = tempfile::tempdir().unwrap();
@@ -739,6 +776,7 @@ fn a_listing_stops_at_the_page_cap() {
     assert!(!s.contains("loading"), "{s}");
 }
 
+/// Search stops on a repeated continuation token too, instead of looping.
 #[test]
 fn search_stops_on_a_repeated_token() {
     let dir = tempfile::tempdir().unwrap();
@@ -754,6 +792,7 @@ fn search_stops_on_a_repeated_token() {
     assert!(!s.contains("searching"), "{s}");
 }
 
+/// Search stops at the page cap as well, so a runaway bucket can't keep it going.
 #[test]
 fn search_stops_at_the_page_cap() {
     let dir = tempfile::tempdir().unwrap();
@@ -780,6 +819,8 @@ fn cell_col(line: &str, needle: &str) -> usize {
     line[..byte].chars().count()
 }
 
+/// A long CJK name gets cut by display width so its size stays on the row and lines up with an
+/// ASCII row.
 #[test]
 fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
     let dir = tempfile::tempdir().unwrap();
@@ -806,6 +847,8 @@ fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
     assert!(cjk.chars().count() <= width as usize, "{screen_text}");
 }
 
+/// A long CJK folder in the search results keeps its email count on screen, lined up with a plain
+/// folder's.
 #[test]
 fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
     let dir = tempfile::tempdir().unwrap();
@@ -848,6 +891,8 @@ fn session_on(name: &str, store: Arc<dyn Store>) -> Session {
     }
 }
 
+/// A browser opened with its own session keeps using it even after the shared session changes
+/// underneath.
 #[test]
 fn the_browser_keeps_talking_to_the_session_it_was_opened_with() {
     let dir = tempfile::tempdir().unwrap();
@@ -872,6 +917,8 @@ fn the_browser_keeps_talking_to_the_session_it_was_opened_with() {
     assert!(!mine.lists.lock().unwrap().is_empty());
 }
 
+/// Saving the inbox from such a browser records its profile and region and hands its session on to
+/// the inbox.
 #[test]
 fn saving_the_inbox_hands_the_browsers_session_to_the_inbox() {
     let dir = tempfile::tempdir().unwrap();
@@ -924,6 +971,8 @@ fn release(spy: &Spy) {
     spy.released.notify_all();
 }
 
+/// On a one-thread pool I leave a folder while its peeks are queued and check they get skipped, so
+/// stale work doesn't hit S3.
 #[test]
 fn leaving_a_folder_drops_its_queued_peeks() {
     let dir = tempfile::tempdir().unwrap();
@@ -956,6 +1005,7 @@ fn leaving_a_folder_drops_its_queued_peeks() {
     assert_eq!(inbound, 1, "the queued peeks were skipped");
 }
 
+/// Stopping a search skips the peeks it had already queued, not only the ones it hasn't made yet.
 #[test]
 fn stopping_a_search_drops_its_queued_peeks() {
     let dir = tempfile::tempdir().unwrap();
@@ -1005,6 +1055,8 @@ fn open_pooled(app: &mut App, name: &str) {
     panic!("never selected {name}");
 }
 
+/// A wide name that does fit shows whole in both the listing and search results, so the column is
+/// sized in cells, not chars.
 #[test]
 fn a_wide_name_that_fits_is_shown_whole() {
     let dir = tempfile::tempdir().unwrap();
@@ -1026,6 +1078,8 @@ fn a_wide_name_that_fits_is_shown_whole() {
     assert!(s.contains(spaced), "cut in the search results:\n{s}");
 }
 
+/// Once the client has learned a bucket's real region, saving the inbox stores that instead of the
+/// session's region.
 #[test]
 fn the_inbox_gets_the_buckets_own_region_once_the_client_has_learned_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -1045,6 +1099,8 @@ fn the_inbox_gets_the_buckets_own_region_once_the_client_has_learned_it() {
     assert_eq!(inbox.profile, "test");
 }
 
+/// The header names the browser's own account rather than the shared one, and the body doesn't
+/// repeat it.
 #[test]
 fn the_header_bar_names_the_browsers_own_account() {
     let dir = tempfile::tempdir().unwrap();

@@ -82,12 +82,14 @@ pub fn names(paths: &[PathBuf]) -> String {
 mod tests {
     use super::*;
 
+    /// The quarantine value comes out in the flags;time;agent; shape LaunchServices reads.
     #[test]
     fn the_quarantine_value_has_the_launchservices_shape() {
         assert_eq!(quarantine_value(0), "0081;00000000;reses;");
         assert_eq!(quarantine_value(0x66f4_1c00), "0081;66f41c00;reses;");
     }
 
+    /// A file quarantine can't mark becomes a note, never a failed save, and the saved file stays.
     #[test]
     fn quarantining_never_fails_a_save_it_cannot_mark() {
         let dir = tempfile::tempdir().unwrap();
@@ -105,6 +107,7 @@ mod tests {
         assert!(file.exists());
     }
 
+    /// Saved names are the file names on disk, with any escapes spelled out.
     #[test]
     fn names_are_the_ones_on_disk_escaped() {
         let paths = [

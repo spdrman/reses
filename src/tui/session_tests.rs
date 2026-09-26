@@ -5,6 +5,7 @@
 
 use super::*;
 
+/// Connecting by a bare profile name uses the region hint and makes no network call.
 #[test]
 fn connect_takes_a_profile_name() {
     let s = Session::connect("work", Some("eu-west-2"));
@@ -13,6 +14,7 @@ fn connect_takes_a_profile_name() {
     assert_eq!(s.store.bucket_region("anything"), None);
 }
 
+/// A whole `Profile` from the credentials file still connects the same way.
 #[test]
 fn connect_still_takes_a_profile_read_from_the_credentials_file() {
     let p = Profile {
@@ -24,6 +26,7 @@ fn connect_still_takes_a_profile_read_from_the_credentials_file() {
     assert_eq!(s.region, "ca-central-1");
 }
 
+/// A region hint that isn't a real region name is thrown away rather than put into an endpoint.
 #[test]
 fn a_bad_region_hint_is_not_used() {
     let s = Session::connect("work", Some("evil.example/#"));

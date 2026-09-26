@@ -716,6 +716,8 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod shell_tests {
+    /// The line for a delete that didn't finish before quitting names the key with its escapes
+    /// spelled out.
     #[test]
     fn a_delete_that_missed_the_quit_is_named_escaped() {
         let line = super::dropped_delete_line("bk", "mail/a\u{1b}]52;c;eA==\u{7}");
@@ -765,6 +767,8 @@ mod shell_tests {
         }
     }
 
+    /// A worker panic leaves the terminal alone while a UI thread panic restores it, so a job
+    /// blowing up doesn't tear the screen down under the user.
     #[test]
     fn only_a_panic_on_the_ui_thread_restores_the_terminal() {
         let restores = Arc::new(AtomicUsize::new(0));
@@ -808,6 +812,7 @@ mod shell_tests {
         assert_eq!(ui_restores, 1);
     }
 
+    /// `submit_to` runs the job against the session it's handed, not whichever one is current.
     #[test]
     fn submit_to_uses_the_session_it_is_given() {
         let dir = tempfile::tempdir().unwrap();
@@ -832,6 +837,7 @@ mod shell_tests {
         assert!(!mine.contains("b", "k"));
     }
 
+    /// The local offset starts at UTC and `with_local_offset` changes it.
     #[test]
     fn the_local_offset_defaults_to_utc_and_can_be_set() {
         let dir = tempfile::tempdir().unwrap();
@@ -841,6 +847,8 @@ mod shell_tests {
         assert_eq!(ctx.with_local_offset(east).local_offset, east);
     }
 
+    /// The header names the account of whichever view is on top, even after another account
+    /// connects.
     #[test]
     fn the_header_names_the_top_views_own_account() {
         let dir = tempfile::tempdir().unwrap();

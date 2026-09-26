@@ -164,6 +164,8 @@ fn pump_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> bool)
     }
 }
 
+/// I count sorted rows over a 50-page listing and check each row gets sorted about once,
+/// because re-sorting everything after every page is quadratic.
 #[test]
 fn a_long_listing_sorts_each_row_about_once() {
     let pages = 50;
@@ -189,6 +191,8 @@ fn a_long_listing_sorts_each_row_about_once() {
     assert!(screen(&mut app, 100, 30).contains(&format!("{rows} messages")));
 }
 
+/// I hold PageDown with the only worker busy and check the rows now on screen get peeked
+/// first, not after forty pages of stale peeks.
 #[test]
 fn after_a_fast_scroll_the_rows_on_screen_are_peeked_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -220,6 +224,8 @@ fn after_a_fast_scroll_the_rows_on_screen_are_peeked_first() {
     );
 }
 
+/// I open and close ten messages quickly and check the one left open gets fetched almost
+/// straight away, not behind the ones I already closed.
 #[test]
 fn opens_from_closed_message_screens_never_run_ahead_of_the_open_one() {
     let dir = tempfile::tempdir().unwrap();
@@ -303,6 +309,8 @@ impl Store for Race {
     }
 }
 
+/// I finish a delete while a refresh listing that still saw the object is in flight, and check
+/// the stale listing doesn't bring the deleted row back.
 #[test]
 fn a_delete_that_finishes_during_a_refresh_does_not_bring_the_row_back() {
     let inner = Timed::new();
@@ -403,6 +411,8 @@ fn render_dated(date: &str, offset: time::UtcOffset) -> String {
     screen(&mut app, 100, 10)
 }
 
+/// I check dates at the very ends of the calendar render a row rather than overflowing when I
+/// shift them into the local offset.
 #[test]
 fn dates_at_the_edge_of_the_calendar_render_instead_of_crashing() {
     let hours = |h| time::UtcOffset::from_hms(h, 0, 0).unwrap();
@@ -422,6 +432,8 @@ fn dates_at_the_edge_of_the_calendar_render_instead_of_crashing() {
     }
 }
 
+/// I set "now" to the last minute of the calendar in a zone ahead of UTC and check the inbox
+/// still renders, since the clock goes through the same conversion.
 #[test]
 fn the_clock_itself_converts_safely_too() {
     // "Now" at the very end of the calendar, in a terminal ahead of UTC.

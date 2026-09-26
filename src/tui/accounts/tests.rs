@@ -108,6 +108,8 @@ fn save(app: &mut App) {
 
 // ---- the list ----
 
+/// I check every profile shows with its region and only the configured default gets the mark, since
+/// the mark is how you tell which one opens next time.
 #[test]
 fn lists_every_profile_with_region_and_marks_the_default() {
     let dir = tempfile::tempdir().unwrap();
@@ -125,6 +127,7 @@ fn lists_every_profile_with_region_and_marks_the_default() {
     );
 }
 
+/// With no credentials file at all I expect a hint to press a, so a first run isn't a blank screen.
 #[test]
 fn a_missing_credentials_file_shows_a_hint() {
     let dir = tempfile::tempdir().unwrap();
@@ -134,6 +137,8 @@ fn a_missing_credentials_file_shows_a_hint() {
     assert!(s.contains("press a"), "{s}");
 }
 
+/// A file with no profiles in it gets the same press-a hint, rather than an empty list that looks
+/// broken.
 #[test]
 fn an_empty_credentials_file_shows_a_hint() {
     let dir = tempfile::tempdir().unwrap();
@@ -143,6 +148,7 @@ fn an_empty_credentials_file_shows_a_hint() {
     assert!(s.contains("press a"), "{s}");
 }
 
+/// I check the footer lists connect, add and default, so the keys are findable without the docs.
 #[test]
 fn footer_shows_the_key_hints() {
     let dir = tempfile::tempdir().unwrap();
@@ -154,6 +160,8 @@ fn footer_shows_the_key_hints() {
     }
 }
 
+/// I pick the second profile and press Enter, and check the session uses its keys and the browser
+/// opens on its buckets.
 #[test]
 fn enter_connects_the_selected_profile_and_opens_the_browser() {
     let dir = tempfile::tempdir().unwrap();
@@ -170,6 +178,8 @@ fn enter_connects_the_selected_profile_and_opens_the_browser() {
     assert!(s.contains("mail-archive"), "the browser lists buckets: {s}");
 }
 
+/// I walk the selection with the arrows and k, including past both ends, and check it clamps
+/// instead of wrapping.
 #[test]
 fn arrows_and_k_move_the_selection() {
     let dir = tempfile::tempdir().unwrap();
@@ -183,6 +193,8 @@ fn arrows_and_k_move_the_selection() {
     assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "work");
 }
 
+/// Pressing d moves the default mark and writes it to the config file, so the choice survives a
+/// restart.
 #[test]
 fn d_makes_the_selected_profile_the_default_and_saves_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -197,6 +209,7 @@ fn d_makes_the_selected_profile_the_default_and_saves_it() {
     assert!(!line_with(&s, "eu-west-1").contains("(default)"), "{s}");
 }
 
+/// Esc out of the browser lands back on the accounts list, not out of the app.
 #[test]
 fn going_back_from_the_browser_returns_to_the_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -210,6 +223,7 @@ fn going_back_from_the_browser_returns_to_the_list() {
 
 // ---- the add form ----
 
+/// Pressing a opens the form with all five fields and an esc-to-cancel hint.
 #[test]
 fn a_opens_the_add_form_with_every_field() {
     let dir = tempfile::tempdir().unwrap();
@@ -232,6 +246,8 @@ fn a_opens_the_add_form_with_every_field() {
     );
 }
 
+/// I fill the form and render it at several sizes, checking no piece of the secret or token ever
+/// shows while the mask is on.
 #[test]
 fn the_secret_never_renders_while_masked() {
     let dir = tempfile::tempdir().unwrap();
@@ -261,6 +277,8 @@ fn the_secret_never_renders_while_masked() {
     assert!(line_with(&s, "Secret access key").contains("****"), "{s}");
 }
 
+/// Ctrl-r toggles the secret into view and back out, so checking a paste doesn't leave it on
+/// screen.
 #[test]
 fn ctrl_r_reveals_the_secret_and_hides_it_again() {
     let dir = tempfile::tempdir().unwrap();
@@ -278,6 +296,8 @@ fn ctrl_r_reveals_the_secret_and_hides_it_again() {
     );
 }
 
+/// I type across fields with Tab and Shift-Tab and check each keystroke and Backspace lands in the
+/// field that has focus.
 #[test]
 fn tab_and_shift_tab_move_between_fields() {
     let dir = tempfile::tempdir().unwrap();
@@ -298,6 +318,7 @@ fn tab_and_shift_tab_move_between_fields() {
     assert!(!line_with(&s, "Profile name").contains("abcdef"), "{s}");
 }
 
+/// Saving a blank form complains about the name, writes no file and keeps the form open.
 #[test]
 fn saving_an_empty_form_is_refused_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -311,6 +332,8 @@ fn saving_an_empty_form_is_refused_and_writes_nothing() {
     assert!(s.contains("Profile name"), "the form stays open: {s}");
 }
 
+/// I feed the form a bad name, key id, secret and region in turn and check each is refused by name
+/// with nothing written.
 #[test]
 fn validation_rejects_bad_fields() {
     let cases: [(&str, &str, &str, &str, &str, &str); 5] = [
@@ -346,6 +369,7 @@ fn validation_rejects_bad_fields() {
     assert!(!dir.path().join("credentials").exists());
 }
 
+/// A secret with spaces in it is refused without the error or the screen quoting it back.
 #[test]
 fn a_validation_error_does_not_echo_the_secret() {
     let dir = tempfile::tempdir().unwrap();
@@ -366,6 +390,8 @@ fn a_validation_error_does_not_echo_the_secret() {
     assert!(!s.contains("QZX9"), "{s}");
 }
 
+/// A good save writes the whole profile, makes it the default when there wasn't one, and connects
+/// straight away.
 #[test]
 fn saving_writes_the_profile_makes_it_default_and_connects() {
     let dir = tempfile::tempdir().unwrap();
@@ -406,6 +432,8 @@ fn saving_writes_the_profile_makes_it_default_and_connects() {
     assert!(line_with(&s, "newacct").contains("us-west-2"), "{s}");
 }
 
+/// Adding a third profile keeps the existing default and the other profiles, and leaves out an
+/// empty token or region.
 #[test]
 fn saving_keeps_an_existing_default_and_the_other_profiles() {
     let dir = tempfile::tempdir().unwrap();
@@ -422,6 +450,8 @@ fn saving_keeps_an_existing_default_and_the_other_profiles() {
     assert_eq!(third.region, None, "an empty region is not written");
 }
 
+/// Saving over an existing name asks first, n goes back untouched and y overwrites, so nobody loses
+/// keys by accident.
 #[test]
 fn a_duplicate_name_asks_before_overwriting() {
     let dir = tempfile::tempdir().unwrap();
@@ -453,6 +483,8 @@ fn a_duplicate_name_asks_before_overwriting() {
     assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "work");
 }
 
+/// Esc on a filled form drops it without writing credentials or config, and I land back on the
+/// list.
 #[test]
 fn esc_cancels_the_form_without_writing() {
     let dir = tempfile::tempdir().unwrap();
@@ -469,6 +501,8 @@ fn esc_cancels_the_form_without_writing() {
     assert!(!s.contains("Profile name"), "{s}");
 }
 
+/// Typing q into a form field puts a q in it rather than quitting, since profile names can have
+/// one.
 #[test]
 fn q_on_the_form_is_typed_not_quit() {
     let dir = tempfile::tempdir().unwrap();
@@ -480,6 +514,7 @@ fn q_on_the_form_is_typed_not_quit() {
     assert!(line_with(&s, "Profile name").contains("qd"), "{s}");
 }
 
+/// Values pasted with stray spaces get trimmed before they are saved, so the keys actually work.
 #[test]
 fn pasted_values_are_trimmed_before_saving() {
     let dir = tempfile::tempdir().unwrap();
@@ -502,6 +537,7 @@ fn pasted_values_are_trimmed_before_saving() {
     assert_eq!(p.region.as_deref(), Some("us-west-2"));
 }
 
+/// A 5 and a 52 character secret render the same mask, so the screen doesn't leak how long it is.
 #[test]
 fn the_mask_does_not_give_away_the_length() {
     let dir = tempfile::tempdir().unwrap();
@@ -527,6 +563,7 @@ fn the_mask_does_not_give_away_the_length() {
     );
 }
 
+/// An empty secret field shows no stars, so it doesn't look filled in when it isn't.
 #[test]
 fn an_empty_masked_field_shows_no_mask() {
     let dir = tempfile::tempdir().unwrap();
@@ -536,6 +573,8 @@ fn an_empty_masked_field_shows_no_mask() {
     assert!(!line_with(&s, "Secret access key").contains('*'), "{s}");
 }
 
+/// The footer says quit when accounts is the first screen and back when it was opened over the
+/// inbox, matching what q really does.
 #[test]
 fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
     let dir = tempfile::tempdir().unwrap();
@@ -573,6 +612,8 @@ fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
     );
 }
 
+/// A section that exists but holds no keys still triggers the overwrite question, since writing
+/// into it changes something the user already has.
 #[test]
 fn a_section_without_keys_still_asks_before_keys_go_into_it() {
     // Neither section is a complete profile, so get() finds nothing, but writing keys into
@@ -601,6 +642,8 @@ source_profile = work
     }
 }
 
+/// Connecting from accounts opened over the inbox gives the new browser its own session and leaves
+/// the inbox's one alone.
 #[test]
 fn connecting_from_a_pushed_accounts_screen_leaves_the_shared_session_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -634,6 +677,8 @@ fn connecting_from_a_pushed_accounts_screen_leaves_the_shared_session_alone() {
     assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "test");
 }
 
+/// When the credentials file can't be written safely, the save shows why and leaves the file,
+/// config and session untouched.
 #[test]
 fn a_refused_save_shows_why_and_changes_nothing() {
     // The AWS CLI refuses a file with a section twice, so the save refuses to write it.
@@ -661,6 +706,8 @@ region = eu-west-1
     assert!(s.contains("Profile name"), "the form stays open: {s}");
 }
 
+/// I check DEFAULT in capitals is refused, since it would sit confusingly next to the real default
+/// profile.
 #[test]
 fn a_profile_named_default_in_capitals_is_refused() {
     let dir = tempfile::tempdir().unwrap();

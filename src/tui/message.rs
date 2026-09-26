@@ -548,6 +548,8 @@ attached words\r\n\
         s
     }
 
+    /// I check the decoded headers and body show up and that End, Home, the page keys and the
+    /// arrows all scroll the way they should.
     #[test]
     fn shows_the_decoded_message_and_scrolls() {
         let out = tempfile::tempdir().unwrap();
@@ -580,6 +582,8 @@ attached words\r\n\
         assert_eq!(screen(&mut app, 80, 20).lines().nth(1).unwrap(), first);
     }
 
+    /// I check scrolling past either end stops there, and that the last page stays full rather
+    /// than scrolling into blank space.
     #[test]
     fn scrolling_stops_at_the_ends() {
         let out = tempfile::tempdir().unwrap();
@@ -598,6 +602,7 @@ attached words\r\n\
         assert!(scr.contains("report line 085"), "{scr}");
     }
 
+    /// I check a line wider than the screen wraps so its end is still readable.
     #[test]
     fn long_lines_wrap_to_the_width() {
         let raw = email("a@example.com", "Wide", "Fri, 25 Sep 2026 09:30:00 +0000");
@@ -609,6 +614,7 @@ attached words\r\n\
         assert!(scr.contains("END"), "{scr}");
     }
 
+    /// I check `h` switches between the plain and HTML parts and back again.
     #[test]
     fn h_toggles_the_html_view() {
         let out = tempfile::tempdir().unwrap();
@@ -623,6 +629,8 @@ attached words\r\n\
         assert!(screen(&mut app, 80, 20).contains("the plain version"));
     }
 
+    /// I check `w` writes exactly the decoded text, names the file on the status line, and never
+    /// overwrites an earlier save.
     #[test]
     fn w_writes_the_decoded_text_and_says_where() {
         let out = tempfile::tempdir().unwrap();
@@ -647,6 +655,7 @@ attached words\r\n\
         assert!(out.path().join("msg1-1.txt").exists());
     }
 
+    /// I check `a` saves the attachments and says how many went into which folder.
     #[test]
     fn a_saves_the_attachments_and_says_where() {
         let out = tempfile::tempdir().unwrap();
@@ -663,6 +672,8 @@ attached words\r\n\
         assert!(status.contains(&out.path().display().to_string()), "{scr}");
     }
 
+    /// I check the status line names the file as it actually landed on disk, so a renamed
+    /// note-1.txt isn't reported as note.txt.
     #[test]
     fn the_status_line_names_the_files_as_they_were_saved() {
         let out = tempfile::tempdir().unwrap();
@@ -677,6 +688,7 @@ attached words\r\n\
         assert!(!status.contains("error"), "{scr}");
     }
 
+    /// I check `a` on a message with nothing attached says so instead of doing nothing.
     #[test]
     fn a_with_no_attachments_says_so() {
         let out = tempfile::tempdir().unwrap();
@@ -689,6 +701,8 @@ attached words\r\n\
         );
     }
 
+    /// I check `d` on the message asks first with subject and key, and that `n` leaves the object
+    /// and me on the message.
     #[test]
     fn delete_confirms_with_subject_and_key_and_only_y_deletes() {
         let out = tempfile::tempdir().unwrap();
@@ -706,6 +720,7 @@ attached words\r\n\
         assert!(!screen(&mut app, 100, 20).contains("y to delete"));
     }
 
+    /// I check deleting from the message screen drops me back in the inbox with that row gone.
     #[test]
     fn deleting_from_the_message_returns_to_the_inbox_without_the_row() {
         let store = Timed::new();
@@ -739,6 +754,7 @@ attached words\r\n\
         assert!(scr.contains("1 message"), "{scr}");
     }
 
+    /// I check a delete S3 refuses keeps me on the message and shows the error on the status line.
     #[test]
     fn a_failed_delete_stays_on_the_message_and_says_why() {
         let inner = store_with(&long_message());
@@ -766,6 +782,7 @@ attached words\r\n\
         );
     }
 
+    /// I check a message deleted since the listing says it no longer exists and names its key.
     #[test]
     fn a_missing_object_says_so() {
         let s = Timed::new();
@@ -777,6 +794,7 @@ attached words\r\n\
         assert!(scr.contains("s3://inbox-bucket/mail/msg1"), "{scr}");
     }
 
+    /// I check `q` leaves the message screen, which quits when it's the only screen.
     #[test]
     fn q_goes_back() {
         let out = tempfile::tempdir().unwrap();
@@ -820,6 +838,8 @@ attached words\r\n\
         }
     }
 
+    /// I check a message over the size cap says how big it is, or that it's over the cap when S3
+    /// didn't send a length.
     #[test]
     fn a_message_over_the_size_cap_says_how_big_it_is() {
         let out = tempfile::tempdir().unwrap();
@@ -832,6 +852,8 @@ attached words\r\n\
         assert!(screen(&mut app, 100, 10).contains("too large to open (over 41.0 MiB)"));
     }
 
+    /// I check a failed delete is reported exactly once: by the message while it's open, or by
+    /// the inbox when I closed the message before the answer came back.
     #[test]
     fn a_failed_delete_after_closing_the_message_is_still_reported_once() {
         let inner = Timed::new();
@@ -878,6 +900,7 @@ attached words\r\n\
         assert!(screen(&mut app, 100, 12).contains("Quarterly report"));
     }
 
+    /// I check a delete that finishes after I closed the message still drops the row from the inbox.
     #[test]
     fn a_successful_delete_after_closing_still_drops_the_row() {
         let store = Timed::new();
@@ -899,6 +922,8 @@ attached words\r\n\
         assert!(scr.lines().last().unwrap().contains("Deleted"), "{scr}");
     }
 
+    /// I switch the session's account under an open message and check its delete still goes to the
+    /// account it was opened with.
     #[test]
     fn the_message_keeps_its_own_account() {
         let mine = store_with(&long_message());
@@ -920,6 +945,8 @@ attached words\r\n\
         assert!(theirs.contains(BUCKET, KEY));
     }
 
+    /// I check the prompt flattens tabs in the subject and cuts it with an ellipsis, so a crafted
+    /// subject can't push the key or the `y` line out of view.
     #[test]
     fn the_confirmation_flattens_and_cuts_a_hostile_subject() {
         let raw = email(
@@ -982,6 +1009,8 @@ attached words\r\n\
         (screen, ctx, dir)
     }
 
+    /// I check the screen keeps the same `Arc` it was handed, so a big message is never copied on
+    /// the UI thread.
     #[test]
     fn opening_a_message_shares_the_decoded_text_instead_of_copying_it() {
         let message = huge(10);
@@ -993,6 +1022,8 @@ attached words\r\n\
         assert!(Arc::ptr_eq(kept, &message), "the screen copied the message");
     }
 
+    /// I count wrapped lines over open, resize and End/Home on a 100,000-line message and check only
+    /// about a screenful gets wrapped each time.
     #[test]
     fn a_huge_message_only_wraps_what_is_on_screen() {
         let message = huge(100_000);
@@ -1015,6 +1046,8 @@ attached words\r\n\
         );
     }
 
+    /// I check End on a huge message puts its last line on the last body row, and that Down then
+    /// does nothing and Up moves by exactly one row.
     #[test]
     fn scrolling_a_huge_message_lands_exactly_at_the_end() {
         let message = huge(5_000);

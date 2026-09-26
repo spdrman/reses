@@ -1430,6 +1430,8 @@ mod tests {
         app.stack.last().unwrap().title()
     }
 
+    /// I check the header row and cells read like a mail client: a display name over the address,
+    /// a time for today's mail and a date for older mail, plus the message count.
     #[test]
     fn columns_render_like_a_mail_client_at_full_width() {
         let (mut app, _d) = app_with(three());
@@ -1453,6 +1455,7 @@ mod tests {
         assert!(scr.contains("3 messages"), "{scr}");
     }
 
+    /// I check sizes show as KiB once they're big enough and as plain bytes below that.
     #[test]
     fn size_column_is_human_readable() {
         let s = Timed::new();
@@ -1471,6 +1474,8 @@ mod tests {
         );
     }
 
+    /// I check long From and Subject cells get cut with an ellipsis so Date and Size still fit,
+    /// and that below the minimum width those two columns give their room away.
     #[test]
     fn columns_truncate_cleanly_at_narrow_width() {
         let s = Timed::new();
@@ -1513,6 +1518,7 @@ mod tests {
         }
     }
 
+    /// I check the list is sorted newest first, since that's where new mail should show up.
     #[test]
     fn newest_message_comes_first() {
         let (mut app, _d) = app_with(three());
@@ -1522,6 +1528,8 @@ mod tests {
         assert!(pos("Invoice for September") < pos("Old news"), "{scr}");
     }
 
+    /// I check objects that aren't mail (the SES setup PNG, a binary) stay off the list but still
+    /// show up in the "not email" count, so nothing vanishes silently.
     #[test]
     fn non_email_objects_are_hidden_and_counted() {
         let s = three();
@@ -1539,6 +1547,8 @@ mod tests {
         assert!(scr.contains("2 not email"), "{scr}");
     }
 
+    /// I shuffle received times across listing pages, so only a real merge of each new page
+    /// gets the whole list newest first.
     #[test]
     fn later_pages_merge_into_the_newest_first_order() {
         // MemoryStore pages three keys at a time, in key order; the received times are
@@ -1567,6 +1577,8 @@ mod tests {
         assert_eq!(shown, (0..12).rev().collect::<Vec<_>>(), "{scr}");
     }
 
+    /// I check every page of the listing arrives, and that keys in subfolders or other prefixes
+    /// never leak into the inbox.
     #[test]
     fn lists_every_page_but_only_direct_children() {
         // MemoryStore pages three keys at a time, so this needs several pages.
@@ -1606,6 +1618,8 @@ mod tests {
         assert!(scr.contains("8 messages"), "{scr}");
     }
 
+    /// I check a row says "loading" until its header peek lands, so the list can show up before
+    /// every message has been read.
     #[test]
     fn rows_show_a_placeholder_until_their_headers_arrive() {
         let dir = tempfile::tempdir().unwrap();
@@ -1623,6 +1637,8 @@ mod tests {
         assert!(!scr.contains("loading"), "{scr}");
     }
 
+    /// I deliver the header peeks in reverse and check the order still comes out right, because
+    /// a pool doesn't promise they finish in the order I asked.
     #[test]
     fn header_peeks_can_finish_in_any_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -1675,6 +1691,8 @@ mod tests {
         app.apply(top);
     }
 
+    /// I bury From and Subject under 40 KiB of Received lines and check I still find them, so a
+    /// chatty relay chain can't blank a row.
     #[test]
     fn a_header_block_longer_than_the_first_peek_is_fetched_in_full() {
         let s = Timed::new();
@@ -1701,6 +1719,7 @@ mod tests {
         assert!(scr.contains("Dana"), "{scr}");
     }
 
+    /// I check a listing the inbox never asked for can't add rows, even for the same folder.
     #[test]
     fn results_for_jobs_it_did_not_submit_are_ignored() {
         let (mut app, _d) = app_with(three());
@@ -1728,6 +1747,7 @@ mod tests {
         assert!(scr.contains("3 messages"), "{scr}");
     }
 
+    /// I check Enter opens the selected row, and that coming back keeps the rows without a reload.
     #[test]
     fn enter_opens_the_selected_message() {
         let (mut app, _d) = app_with(three());
@@ -1745,6 +1765,8 @@ mod tests {
         assert!(screen(&mut app, 100, 12).contains("3 messages"));
     }
 
+    /// I check `d` asks first and names both the subject and the full S3 key, so you know
+    /// exactly what's about to go.
     #[test]
     fn delete_asks_for_confirmation_naming_subject_and_key() {
         let (mut app, _d) = app_with(three());
@@ -1755,6 +1777,8 @@ mod tests {
         assert!(scr.contains("y to delete"), "{scr}");
     }
 
+    /// I check every key but a lowercase `y` cancels the delete, including Enter and a capital Y,
+    /// since a delete can't be undone.
     #[test]
     fn any_key_but_y_cancels_the_delete() {
         let store = three();
@@ -1778,6 +1802,7 @@ mod tests {
         }
     }
 
+    /// I check `y` removes the object from the bucket and the row from the list, and says so.
     #[test]
     fn y_deletes_the_object_and_the_row() {
         let store = three();
@@ -1794,6 +1819,8 @@ mod tests {
         assert!(line_with(&scr, "Deleted").contains("mail/bbb"), "{scr}");
     }
 
+    /// I check a delete S3 refuses leaves the row in place and puts the key and the error on the
+    /// status line as an error.
     #[test]
     fn a_failed_delete_keeps_the_row_and_says_why() {
         let inner = three();
@@ -1820,6 +1847,7 @@ mod tests {
         );
     }
 
+    /// I check the zero-byte folder marker the S3 console creates isn't shown or counted as a message.
     #[test]
     fn a_folder_marker_object_is_not_a_row() {
         // The S3 console creates a zero-byte object named after the folder itself.
@@ -1834,6 +1862,8 @@ mod tests {
         assert!(!scr.contains("not email"), "{scr}");
     }
 
+    /// I walk through the `/` filter: it matches From and Subject case-insensitively, Enter opens
+    /// a filtered row, and Esc clears the filter rather than leaving the inbox.
     #[test]
     fn slash_filters_on_from_and_subject() {
         let (mut app, _d) = app_with(three());
@@ -1881,6 +1911,7 @@ mod tests {
         );
     }
 
+    /// I check `r` lists the folder again and picks up mail that arrived after the first listing.
     #[test]
     fn r_refreshes_the_listing() {
         let store = three();
@@ -1902,6 +1933,7 @@ mod tests {
         assert!(scr.contains("4 messages"), "{scr}");
     }
 
+    /// I check `u` takes me to the accounts screen.
     #[test]
     fn u_goes_to_the_accounts_screen() {
         let (mut app, _d) = app_with(three());
@@ -1909,6 +1941,7 @@ mod tests {
         assert!(top_title(&app).contains("Accounts"), "{}", top_title(&app));
     }
 
+    /// I check an empty folder says there are no messages instead of drawing an empty table.
     #[test]
     fn an_empty_inbox_says_so() {
         let s = Timed::new();
@@ -1922,6 +1955,8 @@ mod tests {
         assert!(!scr.contains("Subject"), "{scr}");
     }
 
+    /// I check a folder holding only non-email objects still says there are no messages, and how
+    /// many objects it skipped.
     #[test]
     fn a_folder_with_only_non_email_says_so() {
         let s = Timed::new();
@@ -1935,6 +1970,7 @@ mod tests {
         assert!(scr.contains("1 not email"), "{scr}");
     }
 
+    /// I check a bucket that doesn't exist gets named in plain words rather than an empty table.
     #[test]
     fn a_missing_bucket_says_so() {
         let s = Timed::new();
@@ -1944,6 +1980,8 @@ mod tests {
         assert!(!scr.contains("Subject"), "{scr}");
     }
 
+    /// I check an access-denied listing says so and names the folder and profile, so you know which
+    /// credentials to go and fix.
     #[test]
     fn access_denied_says_so() {
         let store = Arc::new(Failing {
@@ -1959,6 +1997,7 @@ mod tests {
         assert!(!scr.contains("Subject"), "{scr}");
     }
 
+    /// I check the inbox says "Not connected" when there's no session, rather than failing quietly.
     #[test]
     fn no_connected_account_says_so() {
         let dir = tempfile::tempdir().unwrap();
@@ -1969,6 +2008,7 @@ mod tests {
         assert!(scr.contains("Not connected"), "{scr}");
     }
 
+    /// I check End and Home scroll a list longer than the screen, so the selection never goes off-screen.
     #[test]
     fn selection_scrolls_with_a_long_list() {
         let s = Timed::new();
@@ -2004,6 +2044,7 @@ mod tests {
         scr.lines().find(|l| l.contains(needle))
     }
 
+    /// I check Esc on the root inbox doesn't quit and only `q` does, so a stray Esc can't close the app.
     #[test]
     fn esc_at_the_root_inbox_does_not_quit_but_q_does() {
         let (mut app, _d) = app_with(three());
@@ -2014,6 +2055,8 @@ mod tests {
         assert!(app.quit);
     }
 
+    /// I connect a second account behind the inbox's back and check refresh, open and delete
+    /// all still go to the inbox's own account, never the new one.
     #[test]
     fn the_inbox_keeps_its_own_account_after_another_one_connects() {
         let mine = three();
@@ -2048,6 +2091,7 @@ mod tests {
         assert!(theirs.contains(BUCKET, "mail/bbb"));
     }
 
+    /// I check dates show in the terminal's local offset, which can push late UTC mail onto the day before.
     #[test]
     fn dates_show_in_the_local_offset() {
         let s = Timed::new();
@@ -2080,6 +2124,8 @@ mod tests {
         assert!(line_with(&scr, "This morning").contains("09:15"), "{scr}");
     }
 
+    /// I check I sort on when S3 received the object, not the Date header, so spam dated 2030
+    /// can't sit at the top forever.
     #[test]
     fn a_forged_future_date_cannot_pin_a_message_to_the_top() {
         let s = Timed::new();
@@ -2113,6 +2159,8 @@ mod tests {
         );
     }
 
+    /// I check only the rows on screen and a page ahead get their headers peeked, so a huge folder
+    /// doesn't cost one request per message up front.
     #[test]
     fn only_rows_on_screen_and_a_page_ahead_get_peeked() {
         let s = Timed::new();
@@ -2146,6 +2194,7 @@ mod tests {
         assert!(scr.contains("200 messages"), "{scr}");
     }
 
+    /// I check a taller screen gets its extra rows peeked on the next pump, without waiting for a key.
     #[test]
     fn a_taller_screen_gets_its_rows_peeked_without_a_key_press() {
         let s = Timed::new();
@@ -2171,6 +2220,8 @@ mod tests {
         assert!(s.peeks() > 2 * DEFAULT_PAGE, "{} peeks", s.peeks());
     }
 
+    /// I check the row below a deleted one takes the selection, or the one above when I delete the
+    /// last row, rather than jumping back to the top.
     #[test]
     fn after_a_delete_the_next_row_takes_the_selection() {
         let (mut app, _d) = app_with(three());
@@ -2194,6 +2245,8 @@ mod tests {
         assert!(screen(&mut app, 100, 20).contains("body of Invoice for September"));
     }
 
+    /// I check a store that hands back the same continuation token twice stops the listing and
+    /// says why, instead of looping forever.
     #[test]
     fn a_repeated_continuation_token_stops_the_listing() {
         let store = Arc::new(Endless {
@@ -2212,6 +2265,7 @@ mod tests {
         );
     }
 
+    /// I check a listing that never ends stops at the page cap and says so on the status line.
     #[test]
     fn the_listing_stops_at_the_page_cap() {
         let store = Arc::new(Endless {
@@ -2238,6 +2292,8 @@ mod tests {
         );
     }
 
+    /// I check the delete prompt keeps the key and the `y` line visible at every size with a
+    /// hostile long subject, and that tiny screens render without panicking.
     #[test]
     fn the_confirmation_always_shows_the_key_and_the_y_line() {
         let s = Timed::new();

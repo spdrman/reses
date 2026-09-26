@@ -179,6 +179,8 @@ fn collect(jobs: &mut Jobs, n: usize) -> Vec<Done> {
     out
 }
 
+/// A get, a delete or a listing jumps ahead of the peeks already queued, since someone is
+/// sitting there waiting on it and peeks only fill in rows.
 #[test]
 fn jobs_someone_is_waiting_on_run_before_queued_peeks() {
     let store = Gated::new();
@@ -205,6 +207,8 @@ fn jobs_someone_is_waiting_on_run_before_queued_peeks() {
     );
 }
 
+/// After a refresh the stale listings and peeks come back skipped, but a stale delete still runs,
+/// because the user asked for it and skipping it would leave the mail there.
 #[test]
 fn a_stale_generation_skips_listings_and_peeks_but_never_a_delete() {
     let store = Gated::new();
@@ -242,6 +246,7 @@ fn a_stale_generation_skips_listings_and_peeks_but_never_a_delete() {
     }
 }
 
+/// Jobs stamped with the generation that's still current all run.
 #[test]
 fn a_current_generation_runs_everything() {
     let store = Gated::new();
@@ -257,6 +262,7 @@ fn a_current_generation_runs_everything() {
     }
 }
 
+/// A job that panics comes back as an `Err`, and the one worker survives to run the next job.
 #[test]
 fn a_panicking_job_comes_back_as_an_err_and_the_worker_keeps_going() {
     let store = Gated::new();
@@ -275,6 +281,7 @@ fn a_panicking_job_comes_back_as_an_err_and_the_worker_keeps_going() {
     assert!(matches!(done[0].result, Ok(Outcome::Data(_))), "{done:?}");
 }
 
+/// Sixty mixed jobs over four workers give back exactly one result each, none lost or doubled.
 #[test]
 fn every_submitted_job_sends_exactly_one_done() {
     let store = Gated::new();
@@ -291,6 +298,8 @@ fn every_submitted_job_sends_exactly_one_done() {
     assert!(jobs.poll().is_empty());
 }
 
+/// A header peek decides whether the object is mail and summarizes it on the worker, so the
+/// UI thread never parses.
 #[test]
 fn peek_head_decides_and_summarizes_on_the_worker() {
     let store = MemoryStore::new();
@@ -321,6 +330,8 @@ fn peek_head_decides_and_summarizes_on_the_worker() {
     );
 }
 
+/// A header block longer than the first peek (a long relay chain) is read on until it ends,
+/// so the subject after it still turns up.
 #[test]
 fn peek_head_reads_past_a_long_header_block() {
     let mut raw = String::new();
@@ -346,6 +357,7 @@ fn peek_head_reads_past_a_long_header_block() {
     }
 }
 
+/// Opening a message decodes both the text and the HTML view on the worker.
 #[test]
 fn open_decodes_on_the_worker() {
     let store = MemoryStore::new();
@@ -393,6 +405,7 @@ fn eventually_logged(store: &Gated, what: &str) -> bool {
     }
 }
 
+/// Opens queued for a message screen that's since closed are skipped, while a fresh one runs.
 #[test]
 fn a_stale_open_is_skipped_like_a_peek() {
     let store = Gated::new();
@@ -416,6 +429,7 @@ fn a_stale_open_is_skipped_like_a_peek() {
     assert_eq!(skipped, [open("a"), open("b")]);
 }
 
+/// A delete still queued when quitting drops the pool reaches S3 anyway.
 #[test]
 fn a_delete_queued_when_the_pool_is_dropped_still_runs() {
     let store = Gated::new();
@@ -439,6 +453,8 @@ fn a_delete_queued_when_the_pool_is_dropped_still_runs() {
     }
 }
 
+/// At shutdown `finish` waits for the queued delete and drops the peek and listing nobody
+/// will read.
 #[test]
 fn finish_waits_for_queued_deletes_and_skips_everything_else() {
     let store = Gated::new();
@@ -472,6 +488,8 @@ fn finish_waits_for_queued_deletes_and_skips_everything_else() {
     assert_eq!(store.log(), ["get busy", "delete c"]);
 }
 
+/// When `finish` runs out of time it hands back every delete still queued, so I can tell
+/// the user which ones may not have happened.
 #[test]
 fn finish_names_the_deletes_it_could_not_wait_for() {
     let store = Gated::new();
@@ -492,6 +510,7 @@ fn finish_names_the_deletes_it_could_not_wait_for() {
     store.release();
 }
 
+/// Inline jobs have already run by the time `finish` is called, so it reports nothing dropped.
 #[test]
 fn finish_on_inline_jobs_has_nothing_to_wait_for() {
     let store = MemoryStore::new();
@@ -566,6 +585,7 @@ impl Store for Ranges {
     }
 }
 
+/// A CRLF header that ends inside the first peek costs exactly one range request.
 #[test]
 fn a_crlf_header_that_ends_in_the_first_peek_stops_there() {
     // SES stores mail with CRLF line endings. When the blank line ending the header block is in
@@ -583,6 +603,7 @@ fn a_crlf_header_that_ends_in_the_first_peek_stops_there() {
     );
 }
 
+/// An object shorter than the first peek, with no blank line, is read once and not asked for again.
 #[test]
 fn an_object_smaller_than_the_peek_is_read_once() {
     // A short object with no blank line (a header block on its own) came back whole in the

@@ -120,6 +120,8 @@ fn assert_escaped(out: &[u8], what: &str) {
     );
 }
 
+/// A key full of terminal escapes shows up spelled out in the delete confirmation, never as raw
+/// bytes the terminal would act on.
 #[test]
 fn a_hostile_key_in_the_delete_confirmation_is_written_out_not_sent() {
     let (mut app, _d) = inbox_app(hostile_store());
@@ -128,6 +130,7 @@ fn a_hostile_key_in_the_delete_confirmation_is_written_out_not_sent() {
     assert_escaped(&out, "confirmation");
 }
 
+/// The same hostile key is spelled out in a browser row too.
 #[test]
 fn a_hostile_key_in_the_browser_is_written_out_not_sent() {
     let store = Arc::new(MemoryStore::new());
@@ -145,6 +148,8 @@ fn a_hostile_key_in_the_browser_is_written_out_not_sent() {
     assert_escaped(&out, "browser row");
 }
 
+/// Escapes in a status line error or in the header title (from the inbox prefix) are spelled out
+/// as well.
 #[test]
 fn a_hostile_error_or_title_is_written_out_not_sent() {
     let (mut app, _d) = inbox_app(hostile_store());
@@ -165,6 +170,7 @@ fn a_hostile_error_or_title_is_written_out_not_sent() {
     assert_escaped(&out, "header title");
 }
 
+/// Pasting "dy" never deletes anything, and a pasted "y" doesn't confirm an open delete.
 #[test]
 fn a_paste_is_never_read_as_keys() {
     let store = hostile_store();
@@ -182,6 +188,8 @@ fn a_paste_is_never_read_as_keys() {
     assert!(!screen(&mut app, 100, 20).contains("Press y"));
 }
 
+/// Ctrl or Alt with `d` or `y` doesn't open or confirm a delete in the inbox; only the bare
+/// keys do.
 #[test]
 fn only_a_bare_d_and_a_bare_y_delete() {
     let store = hostile_store();
@@ -206,6 +214,7 @@ fn only_a_bare_d_and_a_bare_y_delete() {
     assert!(!store.contains(BUCKET, HOSTILE));
 }
 
+/// The message screen ignores chorded and pasted `d` and `y` the same way the inbox does.
 #[test]
 fn the_message_screen_takes_only_a_bare_d_and_y_too() {
     let store = hostile_store();
@@ -221,6 +230,7 @@ fn the_message_screen_takes_only_a_bare_d_and_y_too() {
     assert!(store.contains(BUCKET, HOSTILE));
 }
 
+/// A paste into the filter lands as text, with its line break dropped.
 #[test]
 fn a_paste_goes_into_the_filter_as_text() {
     let (mut app, _d) = inbox_app(three_senders());
@@ -231,6 +241,7 @@ fn a_paste_goes_into_the_filter_as_text() {
     assert!(scr.contains("/AliceExample"), "{scr}");
 }
 
+/// Ctrl and Alt chords aren't typed as letters into the inbox filter or the browser's.
 #[test]
 fn ctrl_and_alt_chords_are_not_typed_into_filters() {
     let (mut app, _d) = inbox_app(three_senders());
@@ -304,6 +315,7 @@ fn haystack() -> Arc<Timed> {
     s
 }
 
+/// The filter finds a match far down the list, in rows whose headers nobody scrolled in to load.
 #[test]
 fn the_filter_finds_rows_nobody_scrolled_to() {
     let (mut app, _d) = inbox_app(haystack());
@@ -316,6 +328,8 @@ fn the_filter_finds_rows_nobody_scrolled_to() {
     assert!(!scr.contains("Loading"), "{scr}");
 }
 
+/// While the filter is still peeking it shows how many rows it has checked, and the count goes
+/// once it has them all.
 #[test]
 fn the_filter_says_how_much_it_has_checked_so_far() {
     let (mut app, _d) = inbox_app(haystack());
@@ -333,6 +347,8 @@ fn the_filter_says_how_much_it_has_checked_so_far() {
     assert!(!scr.contains("checked"), "all checked, so no count:\n{scr}");
 }
 
+/// The delete confirmation keeps "Press y" on screen at every size, and shows the whole key
+/// when there's room, however long it wraps.
 #[test]
 fn the_confirmation_keeps_its_prompt_whatever_the_key() {
     // A key with spaces made word wrap take more rows than the box had.
@@ -403,6 +419,8 @@ fn assert_no_fragile_colours(app: &mut App, what: &str) {
     }
 }
 
+/// No screen draws with a fixed colour that measured unreadable on a common theme, so nothing
+/// disappears on someone's terminal.
 #[test]
 fn no_screen_uses_a_colour_that_vanishes_on_some_theme() {
     // The inbox with its placeholder rows, before any header has come back: one pump
@@ -463,6 +481,7 @@ fn no_screen_uses_a_colour_that_vanishes_on_some_theme() {
     assert_no_fragile_colours(&mut app, "add account");
 }
 
+/// An error on the status line starts with "error:", so it reads as one without colour.
 #[test]
 fn an_error_says_so_in_words_not_only_in_red() {
     let (mut app, _d) = inbox_app(three_senders());
@@ -480,6 +499,7 @@ fn an_error_says_so_in_words_not_only_in_red() {
     assert!(!scr.lines().last().unwrap().contains("error"), "{scr}");
 }
 
+/// A subject with a two-column emoji leaves the date column where it is on every other row.
 #[test]
 fn an_emoji_subject_keeps_the_columns_lined_up() {
     let s = Timed::new();
@@ -516,6 +536,7 @@ fn an_emoji_subject_keeps_the_columns_lined_up() {
     assert_eq!(date_col("this"), date_col("Plain"));
 }
 
+/// The quit or back hint stays in the footer down to 24 columns, and open survives at 80.
 #[test]
 fn quit_stays_in_the_hints_at_80_columns_and_less() {
     let (mut app, _d) = inbox_app(three_senders());
