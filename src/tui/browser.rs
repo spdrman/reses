@@ -41,3 +41,6 @@ impl View for BrowserScreen {
         vec![("q", "back")]
     }
 }
+
+#[cfg(test)]
+mod tests;

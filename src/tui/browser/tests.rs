@@ -1,0 +1,554 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use ratatui::crossterm::event::KeyCode;
+
+use super::BrowserScreen;
+use crate::config::{AppConfig, Inbox};
+use crate::s3::{Bucket, Listing, MemoryStore, S3Error, Store};
+use crate::tui::testing::{self, chars, key, screen, settle};
+use crate::tui::{App, Status};
+
+const EMAIL: &[u8] = b"Return-Path: <sender@example.com>\r\n\
+Received: from mail.example.com by inbound-smtp.us-east-1.amazonaws.com\r\n\
+From: Sender <sender@example.com>\r\n\
+To: me@example.org\r\n\
+Subject: Hello there\r\n\
+Date: Mon, 1 Sep 2025 10:00:00 +0000\r\n\
+Message-ID: <abc@example.com>\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+Hi.\r\n";
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0";
+const TEXT: &[u8] = b"just some notes, nothing to see here\n";
+
+/// A MemoryStore that records every call, and can be told to fail listings.
+struct Spy {
+    inner: MemoryStore,
+    peeks: Mutex<Vec<(String, u64, u64)>>,
+    lists: Mutex<Vec<(String, Option<String>)>>,
+    fail_list: AtomicBool,
+}
+
+impl Spy {
+    fn new(inner: MemoryStore) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            peeks: Mutex::new(Vec::new()),
+            lists: Mutex::new(Vec::new()),
+            fail_list: AtomicBool::new(false),
+        })
+    }
+
+    fn peek_count(&self) -> usize {
+        self.peeks.lock().unwrap().len()
+    }
+
+    fn peeks_per_key(&self) -> HashMap<String, usize> {
+        let mut m = HashMap::new();
+        for (k, _, _) in self.peeks.lock().unwrap().iter() {
+            *m.entry(k.clone()).or_insert(0) += 1;
+        }
+        m
+    }
+}
+
+impl Store for Spy {
+    fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
+        self.inner.list_buckets()
+    }
+    fn list(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        delimiter: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<Listing, S3Error> {
+        self.lists
+            .lock()
+            .unwrap()
+            .push((prefix.to_string(), delimiter.map(str::to_string)));
+        if self.fail_list.load(Ordering::SeqCst) {
+            return Err(S3Error::Service {
+                status: 403,
+                code: "AccessDenied".into(),
+                message: "Access Denied".into(),
+            });
+        }
+        self.inner.list(bucket, prefix, delimiter, token)
+    }
+    fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
+        self.peeks
+            .lock()
+            .unwrap()
+            .push((key.to_string(), start, end));
+        self.inner.get_range(bucket, key, start, end)
+    }
+    fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
+        self.inner.get(bucket, key)
+    }
+    fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
+        self.inner.delete(bucket, key)
+    }
+}
+
+/// Two buckets. `mail` holds an SES-like layout: an inbound folder with email and some other
+/// files, a nested folder of email, and a folder with no email at all.
+fn mail_store() -> MemoryStore {
+    let s = MemoryStore::new();
+    s.create_bucket("archive");
+    s.put("mail", "AMAZON_SES_SETUP_NOTIFICATION", TEXT);
+    s.put("mail", "inbound/msg-one", EMAIL);
+    s.put("mail", "inbound/msg-two", EMAIL);
+    s.put("mail", "inbound/logo.png", PNG);
+    s.put("mail", "inbound/notes.txt", TEXT);
+    s.put("mail", "inbound/2025/sep/msg-three", EMAIL);
+    s.put("mail", "inbound/2025/sep/msg-four", EMAIL);
+    s.put("mail", "inbound/2025/sep/msg-five", EMAIL);
+    s.put("mail", "pictures/cat.png", PNG);
+    s.put("mail", "pictures/dog.png", PNG);
+    s
+}
+
+fn app_on(dir: &Path, spy: &Arc<Spy>) -> App {
+    let ctx = testing::ctx(dir, Some(Arc::clone(spy) as Arc<dyn Store>));
+    let mut app = App::with_view(ctx, Box::new(BrowserScreen::new()));
+    settle(&mut app);
+    app
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    app.key(key(code));
+    settle(app);
+}
+
+/// Move the selection to the row showing `name` and press Enter.
+fn open(app: &mut App, name: &str) {
+    press(app, KeyCode::Home);
+    for _ in 0..200 {
+        let s = screen(app, 100, 40);
+        if selected_row(&s).contains(name) {
+            press(app, KeyCode::Enter);
+            return;
+        }
+        press(app, KeyCode::Down);
+    }
+    panic!("never selected {name}");
+}
+
+/// The highlighted row carries a "> " marker.
+fn selected_row(s: &str) -> String {
+    s.lines()
+        .find(|l| l.trim_start().starts_with("> "))
+        .unwrap_or_else(|| panic!("no selected row in:\n{s}"))
+        .to_string()
+}
+
+fn line_with<'a>(text: &'a str, needle: &str) -> &'a str {
+    text.lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no line with {needle:?} in:\n{text}"))
+}
+
+fn status_error(app: &App) -> String {
+    match &app.ctx.status {
+        Some(Status::Error(m)) => m.clone(),
+        other => panic!("expected an error on the status line, got {other:?}"),
+    }
+}
+
+// ---- buckets and folders ----
+
+#[test]
+fn starts_at_the_bucket_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    let s = screen(&mut app, 80, 12);
+    assert!(s.contains("Browse S3"), "{s}");
+    assert!(s.contains("archive"), "{s}");
+    assert!(s.contains("mail"), "{s}");
+    assert!(selected_row(&s).contains("archive"), "{s}");
+    let footer = s.lines().last().unwrap();
+    for hint in ["enter", "open", "search", "filter"] {
+        assert!(footer.contains(hint), "missing {hint}: {footer}");
+    }
+}
+
+#[test]
+fn enter_opens_a_bucket_with_its_folders_and_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("mail/"), "path shown: {s}");
+    assert!(s.contains("inbound/"), "{s}");
+    assert!(s.contains("pictures/"), "{s}");
+    assert!(s.contains("AMAZON_SES_SETUP_NOTIFICATION"), "{s}");
+    let lists = spy.lists.lock().unwrap().clone();
+    assert!(
+        lists.contains(&(String::new(), Some("/".into()))),
+        "folders use the delimiter: {lists:?}"
+    );
+}
+
+#[test]
+fn every_page_of_a_listing_is_fetched() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new().with_page_size(2);
+    for i in 0..9 {
+        s.put("bk", &format!("f/obj-{i:02}"), TEXT);
+    }
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    open(&mut app, "f/");
+    let s = screen(&mut app, 100, 30);
+    for i in 0..9 {
+        assert!(s.contains(&format!("obj-{i:02}")), "obj-{i:02} missing:\n{s}");
+    }
+    assert!(s.contains("9 objects"), "{s}");
+    let f_pages = spy
+        .lists
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(p, _)| p == "f/")
+        .count();
+    assert_eq!(f_pages, 5, "9 objects at 2 a page");
+}
+
+#[test]
+fn enter_goes_into_a_folder_and_backspace_goes_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("mail/inbound/"), "{s}");
+    assert!(s.contains("2025/"), "{s}");
+    assert!(s.contains("msg-one"), "{s}");
+    assert!(!s.contains("pictures/"), "{s}");
+
+    open(&mut app, "2025/");
+    open(&mut app, "sep/");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("mail/inbound/2025/sep/"), "{s}");
+    assert!(s.contains("msg-three"), "{s}");
+
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Backspace);
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("mail/inbound/"), "{s}");
+    assert!(!s.contains("mail/inbound/2025"), "{s}");
+    assert!(s.contains("msg-one"), "{s}");
+
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Backspace);
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("archive"), "back at the bucket list: {s}");
+    assert!(!s.contains("inbound"), "{s}");
+}
+
+#[test]
+fn esc_on_the_browser_goes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.quit, "the browser was the only view, so going back quits");
+}
+
+#[test]
+fn an_empty_folder_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "archive");
+    let s = screen(&mut app, 100, 12);
+    assert!(s.contains("empty"), "{s}");
+}
+
+#[test]
+fn a_listing_error_shows_on_the_status_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    spy.fail_list.store(true, Ordering::SeqCst);
+    open(&mut app, "mail");
+    assert!(status_error(&app).contains("AccessDenied"), "{:?}", app.ctx.status);
+    let s = screen(&mut app, 100, 12);
+    assert!(s.contains("AccessDenied"), "{s}");
+}
+
+#[test]
+fn a_huge_folder_peeks_only_what_is_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new().with_page_size(1000);
+    for i in 0..5000 {
+        s.put("bk", &format!("obj-{i:05}"), TEXT);
+    }
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    let s = screen(&mut app, 100, 30);
+    assert!(s.contains("5000 objects"), "{s}");
+    assert!(s.contains("obj-00000"), "{s}");
+    assert!(!s.contains("obj-04999"), "{s}");
+    let first = spy.peek_count();
+    assert!(first > 0 && first <= 60, "peeked {first} of 5000");
+
+    press(&mut app, KeyCode::End);
+    let s = screen(&mut app, 100, 30);
+    assert!(selected_row(&s).contains("obj-04999"), "{s}");
+    assert!(spy.peek_count() <= first + 60, "peeked {}", spy.peek_count());
+
+    press(&mut app, KeyCode::PageUp);
+    let s = screen(&mut app, 100, 30);
+    assert!(!selected_row(&s).contains("obj-04999"), "{s}");
+}
+
+// ---- email marks ----
+
+#[test]
+fn visible_objects_are_peeked_once_and_email_is_marked() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    // Moving around and re-rendering must not peek anything again.
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Up);
+        let _ = screen(&mut app, 100, 20);
+    }
+    let s = screen(&mut app, 100, 20);
+    assert!(line_with(&s, "msg-one").contains("email"), "{s}");
+    assert!(line_with(&s, "msg-two").contains("email"), "{s}");
+    assert!(!line_with(&s, "logo.png").contains("email"), "{s}");
+    assert!(!line_with(&s, "notes.txt").contains("email"), "{s}");
+    assert!(s.contains("2 emails"), "{s}");
+
+    let per_key = spy.peeks_per_key();
+    for k in [
+        "inbound/msg-one",
+        "inbound/msg-two",
+        "inbound/logo.png",
+        "inbound/notes.txt",
+    ] {
+        assert_eq!(per_key.get(k), Some(&1), "{k}: {per_key:?}");
+    }
+    assert!(
+        !per_key.keys().any(|k| k.starts_with("inbound/2025")),
+        "folders are not peeked: {per_key:?}"
+    );
+    for (_, start, end) in spy.peeks.lock().unwrap().iter() {
+        assert_eq!((*start, *end), (0, 4095), "a 4 KiB peek");
+    }
+}
+
+#[test]
+fn coming_back_to_a_folder_does_not_mix_up_marks() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    open(&mut app, "pictures/");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("0 emails"), "{s}");
+    press(&mut app, KeyCode::Backspace);
+    open(&mut app, "inbound/");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("2 emails"), "{s}");
+}
+
+// ---- filter ----
+
+#[test]
+fn slash_filters_the_listing_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    press(&mut app, KeyCode::Char('/'));
+    chars(&mut app, "MSG");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("msg-one") && s.contains("msg-two"), "{s}");
+    assert!(!s.contains("logo.png") && !s.contains("notes.txt"), "{s}");
+    assert!(!s.contains("2025/"), "{s}");
+    assert!(s.contains("/MSG"), "the filter text shows: {s}");
+
+    // Enter keeps the filter and gives the keys back to the list.
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('j'));
+    let s = screen(&mut app, 100, 20);
+    assert!(selected_row(&s).contains("msg-two"), "{s}");
+    assert!(!s.contains("logo.png"), "{s}");
+
+    // Esc clears it.
+    press(&mut app, KeyCode::Esc);
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("logo.png"), "{s}");
+    assert_eq!(app.stack.len(), 1, "esc cleared the filter, it did not go back");
+}
+
+#[test]
+fn a_filter_that_matches_nothing_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    press(&mut app, KeyCode::Char('/'));
+    chars(&mut app, "zzzz");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("nothing matches"), "{s}");
+}
+
+// ---- search ----
+
+#[test]
+fn s_searches_down_from_the_folder_and_lists_folders_holding_email() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    press(&mut app, KeyCode::Char('s'));
+    let s = screen(&mut app, 100, 20);
+    assert!(line_with(&s, "inbound/2025/sep/").contains("3 emails"), "{s}");
+    let inbound = s
+        .lines()
+        .find(|l| l.contains("inbound/") && !l.contains("2025"))
+        .unwrap_or_else(|| panic!("{s}"));
+    assert!(inbound.contains("2 emails"), "{s}");
+    assert!(!s.contains("pictures/"), "no email there: {s}");
+    assert!(s.contains("done"), "{s}");
+    assert!(s.contains("10 objects"), "progress counts what it checked: {s}");
+    let lists = spy.lists.lock().unwrap().clone();
+    assert!(
+        lists.contains(&(String::new(), None)),
+        "search lists without a delimiter: {lists:?}"
+    );
+    let footer = s.lines().last().unwrap();
+    assert!(footer.contains("stop"), "{footer}");
+}
+
+#[test]
+fn search_from_a_folder_stays_inside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    press(&mut app, KeyCode::Char('s'));
+    let per_key = spy.peeks_per_key();
+    assert!(!per_key.keys().any(|k| k.starts_with("pictures/")), "{per_key:?}");
+    assert!(!per_key.contains_key("AMAZON_SES_SETUP_NOTIFICATION"));
+}
+
+#[test]
+fn enter_on_a_search_result_jumps_to_that_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    press(&mut app, KeyCode::Char('s'));
+    open(&mut app, "inbound/2025/sep/");
+    let s = screen(&mut app, 100, 20);
+    assert!(s.contains("mail/inbound/2025/sep/"), "{s}");
+    assert!(line_with(&s, "msg-three").contains("email"), "{s}");
+    assert!(!s.contains("done"), "the search view is gone: {s}");
+}
+
+#[test]
+fn a_search_can_be_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new().with_page_size(50);
+    for i in 0..400 {
+        s.put("bk", &format!("deep/f{:02}/msg-{i:03}", i % 20), EMAIL);
+    }
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    // Start the search and let one round of work finish, then stop it.
+    app.key(key(KeyCode::Char('s')));
+    app.pump();
+    app.pump();
+    app.key(key(KeyCode::Char('x')));
+    let stopped_at = spy.peek_count();
+    settle(&mut app);
+    assert_eq!(spy.peek_count(), stopped_at, "no new peeks after stopping");
+    assert!(stopped_at < 400, "it stopped early: {stopped_at}");
+    let s = screen(&mut app, 100, 30);
+    assert!(s.contains("stopped"), "{s}");
+    // Esc leaves the results and goes back to the folder.
+    press(&mut app, KeyCode::Esc);
+    let s = screen(&mut app, 100, 30);
+    assert!(s.contains("deep/"), "{s}");
+    assert!(!s.contains("stopped"), "{s}");
+    assert_eq!(app.stack.len(), 1);
+}
+
+#[test]
+fn search_needs_a_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    press(&mut app, KeyCode::Char('s'));
+    assert!(status_error(&app).contains("bucket"), "{:?}", app.ctx.status);
+}
+
+// ---- save as inbox ----
+
+#[test]
+fn i_saves_the_folder_as_the_inbox_and_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    press(&mut app, KeyCode::Char('i'));
+    let want = Inbox {
+        profile: "test".into(),
+        bucket: "mail".into(),
+        prefix: "inbound/".into(),
+        region: Some("us-east-1".into()),
+    };
+    assert_eq!(app.ctx.config.inbox.as_ref(), Some(&want));
+    let saved = AppConfig::load(&dir.path().join("config.toml")).unwrap();
+    assert_eq!(saved.inbox, Some(want));
+    assert_eq!(app.stack.len(), 1, "the stack was reset");
+    assert_eq!(app.stack[0].title(), "Inbox");
+}
+
+#[test]
+fn i_at_the_bucket_root_saves_an_empty_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    press(&mut app, KeyCode::Char('i'));
+    let saved = AppConfig::load(&dir.path().join("config.toml")).unwrap();
+    let inbox = saved.inbox.expect("saved");
+    assert_eq!((inbox.bucket.as_str(), inbox.prefix.as_str()), ("mail", ""));
+}
+
+#[test]
+fn i_on_the_bucket_list_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    press(&mut app, KeyCode::Char('i'));
+    assert!(status_error(&app).contains("bucket"), "{:?}", app.ctx.status);
+    assert_eq!(app.ctx.config.inbox, None);
+    assert!(!dir.path().join("config.toml").exists());
+    assert_eq!(app.stack[0].title(), "Browse S3");
+}

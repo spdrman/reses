@@ -14,7 +14,16 @@ impl AccountsScreen {
         let _ = ctx;
         Self {}
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_connector(self, f: impl Fn(crate::aws_profile::Profile) -> super::Session + 'static) -> Self {
+        let _ = f;
+        self
+    }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl View for AccountsScreen {
     fn title(&self) -> String {
