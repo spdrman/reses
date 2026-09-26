@@ -93,6 +93,19 @@ pub struct Decoded {
     pub summary: Summary,
 }
 
+impl Decoded {
+    /// Put a decoded message together. I keep construction in one place so the fields can grow
+    /// without every caller having to change.
+    pub fn new(raw: Vec<u8>, text: String, html: String, summary: Summary) -> Self {
+        Self {
+            raw,
+            text,
+            html,
+            summary,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Buckets(Vec<Bucket>),
@@ -101,7 +114,9 @@ pub enum Outcome {
     Data(Vec<u8>),
     Deleted,
     Head(Head),
-    Message(Box<Decoded>),
+    /// Shared rather than boxed, so every view the result is offered to can keep it without
+    /// copying a message that may be tens of megabytes.
+    Message(Arc<Decoded>),
     /// The job's generation had moved on before a worker reached it, so it never ran.
     Skipped,
 }
@@ -179,13 +194,12 @@ fn run_job(store: &dyn Store, job: &Job) -> Result<Outcome, S3Error> {
         Job::PeekHead { bucket, key } => peek_head(store, bucket, key).map(Outcome::Head),
         Job::Open { bucket, key } => {
             let raw = store.get(bucket, key)?;
-            let decoded = Decoded {
-                text: mail::format_message(&raw, false),
-                html: mail::format_message(&raw, true),
-                summary: mail::summarize(&raw),
-                raw,
-            };
-            Ok(Outcome::Message(Box::new(decoded)))
+            let text = mail::format_message(&raw, false);
+            let html = mail::format_message(&raw, true);
+            let summary = mail::summarize(&raw);
+            Ok(Outcome::Message(Arc::new(Decoded::new(
+                raw, text, html, summary,
+            ))))
         }
     }
 }
@@ -338,6 +352,12 @@ impl Jobs {
             Mode::Inline(queue) => queue.drain(..).collect(),
             Mode::Pool { done, .. } => done.try_iter().collect(),
         }
+    }
+
+    /// Stub for the red tests.
+    pub fn finish(&mut self, limit: Duration) -> Vec<(String, String)> {
+        let _ = limit;
+        Vec::new()
     }
 
     /// Wait up to `timeout` for at least one result, then take everything that's finished.

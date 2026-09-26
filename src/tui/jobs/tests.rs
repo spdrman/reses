@@ -346,3 +346,117 @@ fn open_decodes_on_the_worker() {
         other => panic!("{other:?}"),
     }
 }
+
+fn open(key: &str) -> Job {
+    Job::Open {
+        bucket: B.into(),
+        key: key.into(),
+    }
+}
+
+/// Wait, bounded, until the store has seen `what`.
+fn eventually_logged(store: &Gated, what: &str) -> bool {
+    let deadline = Instant::now() + LIMIT;
+    let mut log = store.log.lock().unwrap();
+    loop {
+        if log.iter().any(|l| l == what) {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        log = store.logged.wait_timeout(log, left).unwrap().0;
+    }
+}
+
+#[test]
+fn a_stale_open_is_skipped_like_a_peek() {
+    let store = Gated::new();
+    let mut jobs = Jobs::pool(1);
+    let generation = Generation::new();
+    jobs.submit(store.clone(), get("busy"));
+    store.wait_for(1);
+    jobs.submit_stamped(store.clone(), open("a"), Some(generation.stamp()));
+    jobs.submit_stamped(store.clone(), open("b"), Some(generation.stamp()));
+    // The message screen that asked for them closed.
+    generation.bump();
+    jobs.submit_stamped(store.clone(), open("c"), Some(generation.stamp()));
+    store.release();
+    let done = collect(&mut jobs, 4);
+    assert_eq!(store.log(), ["get busy", "get c"]);
+    let skipped: Vec<_> = done
+        .iter()
+        .filter(|d| matches!(d.result, Ok(Outcome::Skipped)))
+        .map(|d| d.job.clone())
+        .collect();
+    assert_eq!(skipped, [open("a"), open("b")]);
+}
+
+#[test]
+fn a_delete_queued_when_the_pool_is_dropped_still_runs() {
+    let store = Gated::new();
+    let mut jobs = Jobs::pool(1);
+    jobs.submit(store.clone(), get("busy"));
+    store.wait_for(1);
+    jobs.submit(store.clone(), delete("c"));
+    // Quitting drops the pool, so nothing will ever read its results again.
+    drop(jobs);
+    store.release();
+    assert!(
+        eventually_logged(&store, "delete c"),
+        "the queued delete never reached S3: {:?}",
+        store.log()
+    );
+    assert!(!store.inner.contains(B, "c"));
+}
+
+#[test]
+fn finish_waits_for_queued_deletes_and_skips_everything_else() {
+    let store = Gated::new();
+    let mut jobs = Jobs::pool(1);
+    jobs.submit(store.clone(), get("busy"));
+    store.wait_for(1);
+    jobs.submit(store.clone(), peek("a"));
+    jobs.submit(store.clone(), list());
+    jobs.submit(store.clone(), delete("c"));
+    let opener = {
+        let store = store.clone();
+        std::thread::spawn(move || store.release())
+    };
+    let dropped = jobs.finish(LIMIT);
+    opener.join().unwrap();
+    assert!(dropped.is_empty(), "{dropped:?}");
+    assert!(!store.inner.contains(B, "c"));
+    // Nobody is waiting for the rest any more, so it never runs.
+    assert_eq!(store.log(), ["get busy", "delete c"]);
+}
+
+#[test]
+fn finish_names_the_deletes_it_could_not_wait_for() {
+    let store = Gated::new();
+    let mut jobs = Jobs::pool(1);
+    jobs.submit(store.clone(), get("busy"));
+    store.wait_for(1);
+    jobs.submit(store.clone(), delete("c"));
+    jobs.submit(store.clone(), delete("d"));
+    // The worker is stuck, so the deadline passes with both deletes still queued.
+    let dropped = jobs.finish(Duration::from_millis(200));
+    assert_eq!(
+        dropped,
+        [
+            (B.to_string(), "c".to_string()),
+            (B.to_string(), "d".to_string())
+        ]
+    );
+    store.release();
+}
+
+#[test]
+fn finish_on_inline_jobs_has_nothing_to_wait_for() {
+    let store = MemoryStore::new();
+    store.put(B, "k", b"x");
+    let mut jobs = Jobs::inline();
+    jobs.submit(Arc::new(store), delete("k"));
+    assert!(jobs.finish(Duration::ZERO).is_empty());
+}

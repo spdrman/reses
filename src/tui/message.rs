@@ -32,7 +32,7 @@ pub struct MessageScreen {
     started: bool,
     fetch: Option<JobId>,
     delete: Option<JobId>,
-    message: Option<Box<Decoded>>,
+    message: Option<std::sync::Arc<Decoded>>,
     html: bool,
     error: Option<String>,
     confirm: bool,
@@ -274,7 +274,7 @@ impl View for MessageScreen {
                         self.subject = Some(clean(subject));
                     }
                     self.from = display_from(&message.summary.from);
-                    self.message = Some(message.clone());
+                    self.message = Some(std::sync::Arc::new((**message).clone()));
                     self.wrapped_for = None;
                 }
                 Ok(_) => self.error = Some(format!("Unexpected reply for {}", self.location())),
@@ -375,6 +375,8 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for line in text.lines() {
+        #[cfg(test)]
+        WRAPPED_LINES.with(|c| c.set(c.get() + 1));
         let line = clean(&line.replace('\t', "    "));
         let mut cur = String::new();
         let mut used = 0;
@@ -396,6 +398,12 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         out.push(cur);
     }
     out
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Source lines this thread has wrapped, so a test can tell on-screen work from all of it.
+    static WRAPPED_LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -848,5 +856,95 @@ attached words\r\n\
         scr.lines()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("no line contains {needle:?} in:\n{scr}"))
+    }
+
+    /// A decoded message of `lines` lines, each longer than one screen row at 80 columns.
+    fn huge(lines: usize) -> Arc<Decoded> {
+        let mut text = String::new();
+        for i in 0..lines {
+            text.push_str(&format!(
+                "line {i:06} lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod\n"
+            ));
+        }
+        Arc::new(Decoded::new(
+            text.clone().into_bytes(),
+            text.clone(),
+            text,
+            Default::default(),
+        ))
+    }
+
+    /// A message screen that has just been handed `message` as its Open result.
+    fn opened(message: &Arc<Decoded>) -> (MessageScreen, crate::tui::Ctx, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = testing::ctx(dir.path(), None);
+        let mut screen = MessageScreen::new(BUCKET.into(), KEY.into());
+        // As if it had already asked for the message and this is the answer.
+        screen.started = true;
+        screen.fetch = Some(1);
+        let done = crate::tui::jobs::Done {
+            id: 1,
+            job: Job::Open {
+                bucket: BUCKET.into(),
+                key: KEY.into(),
+            },
+            result: Ok(Outcome::Message(Arc::clone(message))),
+        };
+        let _ = screen.on_done(&done, &mut ctx);
+        (screen, ctx, dir)
+    }
+
+    #[test]
+    fn opening_a_message_shares_the_decoded_text_instead_of_copying_it() {
+        let message = huge(10);
+        let (screen, _ctx, _d) = opened(&message);
+        let kept = screen
+            .message
+            .as_ref()
+            .expect("the screen kept the message");
+        assert!(Arc::ptr_eq(kept, &message), "the screen copied the message");
+    }
+
+    #[test]
+    fn a_huge_message_only_wraps_what_is_on_screen() {
+        let message = huge(100_000);
+        let (screen, ctx, _d) = opened(&message);
+        let mut app = App::with_view(ctx, Box::new(screen));
+        WRAPPED_LINES.with(|c| c.set(0));
+        // Open, resize by a column, and jump to the end and back: each only needs a screenful.
+        let scr = testing::screen(&mut app, 80, 24);
+        assert!(scr.contains("line 000000"), "{scr}");
+        let _ = testing::screen(&mut app, 81, 24);
+        app.key(key(KeyCode::End));
+        let scr = testing::screen(&mut app, 81, 24);
+        assert!(scr.contains("line 099999"), "{scr}");
+        app.key(key(KeyCode::Home));
+        assert!(testing::screen(&mut app, 81, 24).contains("line 000000"));
+        let wrapped = WRAPPED_LINES.with(std::cell::Cell::get);
+        assert!(
+            wrapped <= 10 * 24,
+            "{wrapped} of 100000 lines wrapped on the UI thread"
+        );
+    }
+
+    #[test]
+    fn scrolling_a_huge_message_lands_exactly_at_the_end() {
+        let message = huge(5_000);
+        let (screen, ctx, _d) = opened(&message);
+        let mut app = App::with_view(ctx, Box::new(screen));
+        let _ = testing::screen(&mut app, 80, 24);
+        app.key(key(KeyCode::End));
+        let scr = testing::screen(&mut app, 80, 24);
+        // The last line is on the last body row, not scrolled past it.
+        let body: Vec<&str> = scr.lines().skip(1).take(22).collect();
+        assert!(body.last().unwrap().contains("eiusmod"), "{scr}");
+        assert!(body.iter().any(|l| l.contains("line 004999")), "{scr}");
+        // Further down goes nowhere; one up moves by exactly one row.
+        app.key(key(KeyCode::Down));
+        assert_eq!(testing::screen(&mut app, 80, 24), scr);
+        app.key(key(KeyCode::Up));
+        let up = testing::screen(&mut app, 80, 24);
+        let up_body: Vec<&str> = up.lines().skip(1).take(22).collect();
+        assert_eq!(up_body[1..], body[..21], "{up}");
     }
 }

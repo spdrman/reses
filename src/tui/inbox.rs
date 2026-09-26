@@ -268,6 +268,8 @@ impl InboxScreen {
                 _ => needle.is_empty(),
             })
             .collect();
+        #[cfg(test)]
+        SORTED_ROWS.with(|c| c.set(c.get() + view.len()));
         view.sort_by_key(|r| (Reverse(r.info.last_modified), Reverse(r.info.key.as_str())));
         self.view = view.into_iter().map(|r| r.info.key.clone()).collect();
     }
@@ -829,6 +831,26 @@ fn format_date(date: Option<OffsetDateTime>, now: OffsetDateTime) -> String {
     } else {
         format!("{}-{:02}-{:02}", d.year(), u8::from(d.month()), d.day())
     }
+}
+
+#[cfg(test)]
+mod pool_tests;
+
+#[cfg(test)]
+thread_local! {
+    /// Rows that went through a sort, so a test can tell linear work from quadratic.
+    static SORTED_ROWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many rows this thread has sorted since the last reset.
+#[cfg(test)]
+fn sorted_rows() -> usize {
+    SORTED_ROWS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn sorted_rows_reset() {
+    SORTED_ROWS.with(|c| c.set(0));
 }
 
 /// Message builders and a store that fails on demand, shared with the message screen's tests.
