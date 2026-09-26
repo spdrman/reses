@@ -4,12 +4,13 @@
 //! the event loop; screens never touch either, which is what lets them be tested headless
 //! through `testing`.
 
-pub mod accounts;
-pub mod brand;
-pub mod browser;
-pub mod inbox;
-pub mod jobs;
-pub mod message;
+pub(crate) mod accounts;
+pub(crate) mod brand;
+pub(crate) mod browser;
+pub(crate) mod inbox;
+pub(crate) mod jobs;
+pub(crate) mod message;
+pub mod saved;
 pub mod text;
 
 use std::panic::PanicHookInfo;
@@ -32,16 +33,15 @@ use jobs::{Done, Generation, Job, JobId, Jobs};
 use time::UtcOffset;
 
 /// What a view asks the shell to do after handling a key or a job result.
-pub enum Transition {
+pub(crate) enum Transition {
     None,
     Push(Box<dyn View>),
     Pop,
     /// Replace the whole stack with this view (e.g. jumping to the inbox after saving it).
     Reset(Box<dyn View>),
-    Quit,
 }
 
-pub trait View {
+pub(crate) trait View {
     /// Shown in the header bar.
     fn title(&self) -> String;
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx);
@@ -78,7 +78,7 @@ pub trait View {
 
 /// A connected account.
 #[derive(Clone)]
-pub struct Session {
+pub(crate) struct Session {
     pub profile: Profile,
     pub region: String,
     pub store: Arc<dyn Store>,
@@ -111,13 +111,13 @@ impl Session {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
+pub(crate) enum Status {
     Info(String),
     Error(String),
 }
 
 /// Shared state every view can read and change.
-pub struct Ctx {
+pub(crate) struct Ctx {
     pub config: AppConfig,
     pub config_path: PathBuf,
     pub creds_path: PathBuf,
@@ -142,7 +142,7 @@ impl Ctx {
             session: None,
             status: None,
             local_offset: UtcOffset::UTC,
-            brand: brand::Brand::text(brand::Background::Dark),
+            brand: brand::Brand::text(),
             jobs,
         }
     }
@@ -158,6 +158,7 @@ impl Ctx {
     }
 
     /// Queue a job against the current session. None when no account is connected.
+    #[cfg(test)]
     pub fn submit(&mut self, job: Job) -> Option<JobId> {
         let store = Arc::clone(&self.session.as_ref()?.store);
         Some(self.jobs.submit(store, job))
@@ -210,7 +211,7 @@ impl Ctx {
 }
 
 /// The first screen: straight into the saved inbox when there is one, else account selection.
-pub fn initial_view(ctx: &mut Ctx) -> Box<dyn View> {
+pub(crate) fn initial_view(ctx: &mut Ctx) -> Box<dyn View> {
     if let Some(inbox) = ctx.config.inbox.clone() {
         let profile = ctx.credentials().and_then(|f| f.get(&inbox.profile));
         match profile {
@@ -229,7 +230,7 @@ pub fn initial_view(ctx: &mut Ctx) -> Box<dyn View> {
 }
 
 /// The view stack plus the job pump, independent of any terminal.
-pub struct App {
+pub(crate) struct App {
     pub ctx: Ctx,
     pub stack: Vec<Box<dyn View>>,
     pub quit: bool,
@@ -246,6 +247,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn with_view(ctx: Ctx, view: Box<dyn View>) -> Self {
         let mut app = Self {
             ctx,
@@ -276,10 +278,6 @@ impl App {
             Transition::Reset(v) => {
                 self.stack.clear();
                 self.stack.push(v);
-            }
-            Transition::Quit => {
-                self.quit = true;
-                return;
             }
         }
         self.focus_top();
@@ -674,6 +672,16 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod shell_tests {
+    #[test]
+    fn a_delete_that_missed_the_quit_is_named_escaped() {
+        let line = super::dropped_delete_line("bk", "mail/a\u{1b}]52;c;eA==\u{7}");
+        assert_eq!(
+            line,
+            "reses: quit before this delete finished, so it may not have happened: \
+             s3://bk/mail/a\\x1b]52;c;eA==\\x07"
+        );
+    }
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;

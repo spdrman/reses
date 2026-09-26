@@ -171,12 +171,14 @@ impl InboxScreen {
     }
 
     /// Fix "now" so today's-time versus older-date formatting is testable.
+    #[cfg(test)]
     pub fn with_now(mut self, now: OffsetDateTime) -> Self {
         self.now = Some(now);
         self
     }
 
     /// Where the message screen writes text and attachments (default `~/Downloads`).
+    #[cfg(test)]
     pub fn with_downloads_dir(mut self, dir: PathBuf) -> Self {
         self.downloads = dir;
         self

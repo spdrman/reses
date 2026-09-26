@@ -42,6 +42,12 @@ fn for_stdout(text: String, stdout_tty: bool, cli: &Cli) -> String {
     reses::tui::text::escape_text(&text).into_owned()
 }
 
+/// The line printed for each saved attachment. Its name came from the message, so it's
+/// escaped: stderr is usually the terminal.
+fn saved_line(path: &std::path::Path) -> String {
+    format!("saved {}", path.display())
+}
+
 /// What a run does, from the arguments and whether stdin and stdout are terminals.
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
@@ -111,8 +117,13 @@ fn main() -> anyhow::Result<()> {
             text
         });
         if let Some(dir) = &cli.save_attachments {
-            for path in mail::save_attachments(data, dir)? {
-                eprintln!("saved {}", path.display());
+            let paths = mail::save_attachments(data, dir)?;
+            for path in &paths {
+                eprintln!("{}", saved_line(path));
+            }
+            // Marked as downloaded on macOS; a failure there is a note, not a failed save.
+            if let Some(note) = reses::tui::saved::quarantine_all(&paths) {
+                eprintln!("reses: {note}");
             }
         }
     }
@@ -175,6 +186,12 @@ mod tests {
             for_stdout(text.clone(), true, &cli(&["-o", "out.txt", "m.eml"])),
             text
         );
+    }
+
+    #[test]
+    fn a_saved_attachment_name_is_escaped_on_stderr() {
+        let line = saved_line(std::path::Path::new("dl/evil\u{1b}]0;x\u{7}.pdf"));
+        assert_eq!(line, "saved dl/evil\\x1b]0;x\\x07.pdf");
     }
 
     #[test]

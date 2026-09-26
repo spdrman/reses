@@ -40,6 +40,8 @@ pub enum Job {
         key: String,
         bytes: u64,
     },
+    /// A whole object as bytes. Only the tests use it; the app opens messages with Open.
+    #[cfg(test)]
     Get {
         bucket: String,
         key: String,
@@ -190,6 +192,7 @@ fn run_job(store: &dyn Store, job: &Job) -> Result<Outcome, S3Error> {
         Job::Peek { bucket, key, bytes } => store
             .get_range(bucket, key, 0, bytes.saturating_sub(1))
             .map(Outcome::Data),
+        #[cfg(test)]
         Job::Get { bucket, key } => store.get(bucket, key).map(Outcome::Data),
         Job::Delete { bucket, key } => store.delete(bucket, key).map(|()| Outcome::Deleted),
         Job::PeekHead { bucket, key } => peek_head(store, bucket, key).map(Outcome::Head),
@@ -308,6 +311,8 @@ pub struct Jobs {
 }
 
 enum Mode {
+    /// Tests run each job on submit, so a screen's work is done by the next poll.
+    #[cfg(test)]
     Inline(VecDeque<Done>),
     Pool {
         shared: Arc<Shared>,
@@ -317,6 +322,7 @@ enum Mode {
 
 impl Jobs {
     /// Run each job synchronously inside `submit`; results come out of the next `poll`.
+    #[cfg(test)]
     pub fn inline() -> Self {
         Self {
             next_id: 1,
@@ -354,6 +360,7 @@ impl Jobs {
         }
     }
 
+    #[cfg(test)]
     pub fn submit(&mut self, store: Arc<dyn Store>, job: Job) -> JobId {
         self.submit_stamped(store, job, None)
     }
@@ -368,6 +375,7 @@ impl Jobs {
         let id = self.next_id;
         self.next_id += 1;
         match &mut self.mode {
+            #[cfg(test)]
             Mode::Inline(queue) => queue.push_back(run_work((id, store, job, stamp))),
             Mode::Pool { shared, .. } => {
                 // Record a delete before it's queued, so a worker can't finish it first.
@@ -392,6 +400,7 @@ impl Jobs {
     /// Everything finished since the last poll, without blocking.
     pub fn poll(&mut self) -> Vec<Done> {
         match &mut self.mode {
+            #[cfg(test)]
             Mode::Inline(queue) => queue.drain(..).collect(),
             Mode::Pool { done, .. } => done.try_iter().collect(),
         }
@@ -400,6 +409,8 @@ impl Jobs {
     /// At quit: run only the deletes still queued, wait for them up to `limit`, and hand back
     /// (bucket, key) for each one that hadn't finished by then, so the caller can say which.
     pub fn finish(&mut self, limit: Duration) -> Vec<(String, String)> {
+        // Only a pool has anything to drain; outside tests a pool is all there is.
+        #[allow(irrefutable_let_patterns)]
         let Mode::Pool { shared, .. } = &self.mode else {
             return Vec::new();
         };
@@ -425,12 +436,14 @@ impl Jobs {
     /// How many deletes are still queued or running, for the "waiting for" message at quit.
     pub fn deletes_outstanding(&self) -> usize {
         match &self.mode {
+            #[cfg(test)]
             Mode::Inline(_) => 0,
             Mode::Pool { shared, .. } => shared.deletes.lock().map_or(0, |d| d.len()),
         }
     }
 
     /// Wait up to `timeout` for at least one result, then take everything that's finished.
+    #[cfg(test)]
     pub fn wait(&mut self, timeout: Duration) -> Vec<Done> {
         match &mut self.mode {
             Mode::Inline(queue) => queue.drain(..).collect(),
@@ -447,6 +460,8 @@ impl Drop for Jobs {
     /// Closing the pool doesn't abandon deletes: the workers finish the ones still queued and
     /// skip everything else.
     fn drop(&mut self) {
+        // Outside tests a pool is all there is, so this always matches there.
+        #[allow(irrefutable_let_patterns)]
         if let Mode::Pool { shared, .. } = &self.mode {
             shared.drain();
         }

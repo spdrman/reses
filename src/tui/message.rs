@@ -14,6 +14,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use super::inbox::{Handoff, display_from, render_confirm};
 use super::jobs::{Decoded, Done, Generation, Job, JobId, Outcome};
+use super::saved;
 use super::text::{clean, escape, human_size, width as text_width};
 use super::{Ctx, Session, Transition, View};
 use crate::mail;
@@ -132,7 +133,13 @@ impl MessageScreen {
         }
         let stem = file_stem(&self.key);
         match write_new(&self.out_dir, &stem, "txt", self.shown().as_bytes()) {
-            Ok(path) => ctx.info(format!("Wrote {}", path.display())),
+            Ok(path) => {
+                // Marked as downloaded on macOS; a failure there costs a note, never the file.
+                let note = saved::quarantine_all(std::slice::from_ref(&path))
+                    .map(|n| format!("; {n}"))
+                    .unwrap_or_default();
+                ctx.info(format!("Wrote {}{note}", path.display()));
+            }
             Err(e) => ctx.error(format!(
                 "Could not write into {}: {e}",
                 self.out_dir.display()
@@ -153,10 +160,15 @@ impl MessageScreen {
                 } else {
                     "attachments"
                 };
+                // The names on disk, which differ from the message's when one was taken.
+                let note = saved::quarantine_all(&paths)
+                    .map(|n| format!("; {n}"))
+                    .unwrap_or_default();
                 ctx.info(format!(
-                    "Saved {} {noun} to {}",
+                    "Saved {} {noun} to {}: {}{note}",
                     paths.len(),
-                    self.out_dir.display()
+                    self.out_dir.display(),
+                    saved::names(&paths)
                 ));
             }
             Err(e) => ctx.error(format!(
@@ -620,6 +632,20 @@ attached words\r\n\
         let status = scr.lines().last().unwrap();
         assert!(status.contains("1 attachment"), "{scr}");
         assert!(status.contains(&out.path().display().to_string()), "{scr}");
+    }
+
+    #[test]
+    fn the_status_line_names_the_files_as_they_were_saved() {
+        let out = tempfile::tempdir().unwrap();
+        // A note.txt is already there, so the attachment lands as note-1.txt.
+        std::fs::write(out.path().join("note.txt"), b"older").unwrap();
+        let (mut app, _d) = open(store_with(&multipart()), out.path());
+        app.key(key(KeyCode::Char('a')));
+        assert!(out.path().join("note-1.txt").exists());
+        let scr = screen(&mut app, 200, 20);
+        let status = scr.lines().last().unwrap();
+        assert!(status.contains("note-1.txt"), "{scr}");
+        assert!(!status.contains("error"), "{scr}");
     }
 
     #[test]

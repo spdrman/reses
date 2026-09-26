@@ -152,11 +152,12 @@ fn cell_size(width_px: u16, height_px: u16, cols: u16, rows: u16) -> Option<(u16
 
 /// How the header draws the logo, decided once at startup.
 pub struct Brand {
-    background: Background,
     image: Option<Logo>,
 }
 
 struct Logo {
+    /// Which PNG, for the tests to check; the app itself never needs to ask.
+    #[cfg(test)]
     variant: Variant,
     protocol: StatefulProtocol,
     /// Columns the image takes at `IMAGE_ROWS` rows, from its aspect and the cell size.
@@ -164,24 +165,21 @@ struct Logo {
 }
 
 impl Brand {
-    /// The styled-text wordmark only.
-    pub fn text(background: Background) -> Self {
-        Self {
-            background,
-            image: None,
-        }
+    /// The styled-text wordmark only. It reads on any background, so it needs no variant.
+    pub fn text() -> Self {
+        Self { image: None }
     }
 
     /// The real logo when `picker` found an image protocol. Halfblocks, which is what the
     /// picker settles on when it found none, gets the text wordmark instead.
     pub fn with_picker(mut picker: Picker, background: Background) -> Self {
         if picker.protocol_type() == ProtocolType::Halfblocks {
-            return Self::text(background);
+            return Self::text();
         }
         let variant = Variant::for_background(background);
         let Ok(logo) = image::load_from_memory_with_format(variant.png(), image::ImageFormat::Png)
         else {
-            return Self::text(background);
+            return Self::text();
         };
         // Sixel has no transparency, so the picker flattens onto this colour.
         picker.set_background_color(match background {
@@ -190,8 +188,8 @@ impl Brand {
         });
         let cols = columns_for(&logo, picker.font_size());
         Self {
-            background,
             image: Some(Logo {
+                #[cfg(test)]
                 variant,
                 protocol: picker.new_resize_protocol(logo),
                 cols,
@@ -205,7 +203,7 @@ impl Brand {
     pub fn detect() -> Self {
         let background = Background::from_colorfgbg(std::env::var("COLORFGBG").ok().as_deref());
         match plan(&Env::from_process()) {
-            Plan::Text => Self::text(background),
+            Plan::Text => Self::text(),
             Plan::Image(protocol) => {
                 // The window's pixel size comes from an ioctl, which reads nothing from stdin.
                 let size = ratatui::crossterm::terminal::window_size()
@@ -217,21 +215,18 @@ impl Brand {
                         picker.set_protocol_type(protocol);
                         Self::with_picker(picker, background)
                     }
-                    None => Self::text(background),
+                    None => Self::text(),
                 }
             }
             Plan::Query => match Picker::from_query_stdio() {
                 Ok(picker) => Self::with_picker(picker, background),
-                Err(_) => Self::text(background),
+                Err(_) => Self::text(),
             },
         }
     }
 
-    pub fn background(&self) -> Background {
-        self.background
-    }
-
     /// The PNG in use, or None in text mode.
+    #[cfg(test)]
     pub fn variant(&self) -> Option<Variant> {
         self.image.as_ref().map(|l| l.variant)
     }
