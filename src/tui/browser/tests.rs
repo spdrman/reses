@@ -571,7 +571,9 @@ fn i_saves_the_folder_as_the_inbox_and_opens_it() {
     let saved = AppConfig::load(&dir.path().join("config.toml")).unwrap();
     assert_eq!(saved.inbox, Some(want));
     assert_eq!(app.stack.len(), 1, "the stack was reset");
-    assert_eq!(app.stack[0].title(), "Inbox");
+    // The inbox screen adds the folder and counts after "Inbox", so only the start is fixed.
+    let title = app.stack[0].title();
+    assert!(title.starts_with("Inbox"), "top view is {title:?}");
 }
 
 #[test]
