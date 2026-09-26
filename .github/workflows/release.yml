@@ -1,0 +1,164 @@
+name: Release
+
+# Merging main into `release` publishes a GitHub release: three binaries, each built natively on
+# its own platform and checked against the mail goldens there before anything goes out. The tag
+# is `v<version>` from Cargo.toml, and a version that already has a tag stops the run, so a
+# release can never overwrite another one. tests/release_workflow.rs pins this contract.
+
+on:
+  push:
+    branches: [release]
+  # A PR that edits this workflow runs everything except the publish job, so the PR itself
+  # shows the builds and checks working.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - tests/release_workflow.rs
+
+permissions:
+  contents: read
+
+# Never cancel a release halfway through.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Read the version and check it has no tag yet
+        run: |
+          version=$(grep -m1 -E '^version = "' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$version" ]; then
+            echo "::error::no version found in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            if [ "$GITHUB_EVENT_NAME" = push ]; then
+              echo "::error::tag v$version already exists. Bump the version in Cargo.toml on main, then merge into release again."
+              exit 1
+            fi
+            echo "::warning::tag v$version already exists, so a push to release would stop here. This dry run carries on."
+          fi
+          echo "releasing v$version"
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --no-fail-fast
+      - run: (cd python && python3 -m unittest -q)
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # The Linux binaries are static musl builds, so they run on any distro. ring compiles some
+      # C for the target, which needs musl's compiler wrapper.
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Build (Linux, static musl)
+        if: contains(matrix.target, 'musl')
+        env:
+          TARGET_CC: musl-gcc
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Check the Linux binary is static
+        if: contains(matrix.target, 'musl')
+        run: |
+          file "target/$TARGET/release/reses"
+          file "target/$TARGET/release/reses" | grep -q 'statically linked'
+      - run: scripts/check-goldens.sh "target/$TARGET/release/reses"
+      - name: The #15 replace test
+        if: runner.os == 'macOS'
+        run: tests/macos-replace-binary.sh "target/$TARGET/release/reses"
+      - name: Package
+        run: |
+          name="reses-v$VERSION-$TARGET"
+          mkdir -p "stage/$name"
+          cp "target/$TARGET/release/reses" README.md "stage/$name/"
+          tar -C stage -czf "$name.tar.gz" "$name"
+          tar -tzvf "$name.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reses-${{ matrix.target }}
+          path: reses-v${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [version, test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reses-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          ls -l
+          [ "$(ls *.tar.gz | wc -l)" -eq 3 ] || { echo "::error::expected 3 archives"; exit 1; }
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Release notes
+        run: |
+          cat > notes.md <<EOF
+          Binaries for reses v$VERSION. Each archive holds the \`reses\` binary and the README.
+
+          | File | Platform |
+          |---|---|
+          | \`reses-v$VERSION-x86_64-unknown-linux-musl.tar.gz\` | Linux x86_64 (amd64), static |
+          | \`reses-v$VERSION-aarch64-unknown-linux-musl.tar.gz\` | Linux arm64, static |
+          | \`reses-v$VERSION-aarch64-apple-darwin.tar.gz\` | macOS, Apple Silicon |
+
+          To install, unpack the archive, then move \`reses\` somewhere on your PATH, for example \`~/.local/bin\`. Check a download against \`SHA256SUMS\` with \`shasum -a 256 -c SHA256SUMS --ignore-missing\`.
+
+          The macOS binary is ad-hoc signed, not notarized, so macOS blocks it when it comes from a browser download. Clear the flag with \`xattr -d com.apple.quarantine reses\` after unpacking. On macOS, replace an existing copy with \`mv\`, never \`cp\` over it (#15).
+          EOF
+      - name: Create the release
+        run: |
+          gh release create "v$VERSION" dist/*.tar.gz dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "reses v$VERSION" --notes-file notes.md
