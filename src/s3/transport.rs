@@ -1,5 +1,6 @@
 //! The HTTP layer under `S3Client`, behind a trait so tests can script responses.
 
+use std::io::Read;
 use std::time::Duration;
 
 /// SES refuses messages over 40 MB, so a whole-object read stops a little past that.
@@ -128,7 +129,6 @@ impl UreqTransport {
     /// `connect` and `response` cover getting as far as the status line. `body` is the whole
     /// budget for reading the body, so a server that stalls halfway can't hang a worker.
     pub fn with_timeouts(connect: Duration, response: Duration, body: Duration) -> Self {
-        let _ = body;
         let config = ureq::Agent::config_builder()
             // Every status comes back as a response; the client reads S3's error documents.
             .http_status_as_error(false)
@@ -140,6 +140,7 @@ impl UreqTransport {
             .user_agent(concat!("reses/", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(connect))
             .timeout_recv_response(Some(response))
+            .timeout_recv_body(Some(body))
             .build();
         Self {
             agent: config.into(),
@@ -177,17 +178,26 @@ impl Transport for UreqTransport {
                 )
             })
             .collect();
-        let body = resp
-            .body_mut()
+        // Read one byte past the limit to tell "exactly the limit" from "more than that", and
+        // stop there rather than draining the rest.
+        let limit = req.body_limit.for_status(status);
+        let mut body = Vec::new();
+        resp.body_mut()
             .with_config()
             .limit(u64::MAX)
-            .read_to_vec()
+            .reader()
+            .take(limit.saturating_add(1))
+            .read_to_end(&mut body)
             .map_err(|e| format!("reading the response: {e}"))?;
+        let truncated = body.len() as u64 > limit;
+        if truncated {
+            body.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        }
         Ok(HttpResponse {
             status,
             headers,
             body,
-            truncated: false,
+            truncated,
         })
     }
 }

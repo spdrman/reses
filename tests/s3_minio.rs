@@ -244,15 +244,17 @@ fn dot_segment_keys_are_never_normalised() {
             .unwrap();
     }
 
-    let plain = ["inbox/.hidden", "inbox/..double", "inbox/x.y/..z.", "inbox/..."];
+    let plain = [
+        "inbox/.hidden",
+        "inbox/..double",
+        "inbox/x.y/..z.",
+        "inbox/...",
+    ];
     for k in plain {
         let body = format!("body of {k}");
         c.put_object(&b, k, body.as_bytes()).unwrap();
         let listed = c.list(&b, k, None, None).unwrap();
-        assert!(
-            listed.objects.iter().any(|o| o.key == k),
-            "{k}: {listed:?}"
-        );
+        assert!(listed.objects.iter().any(|o| o.key == k), "{k}: {listed:?}");
         assert_eq!(c.get(&b, k).unwrap(), body.as_bytes(), "{k}");
         assert_eq!(c.get_range(&b, k, 0, 3).unwrap(), b"body", "{k}");
         c.delete(&b, k).unwrap();

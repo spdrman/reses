@@ -60,16 +60,21 @@ impl Listing {
     /// `None` when there are no more pages, and also when the server handed back an empty
     /// token or the same token again, which would otherwise page forever.
     pub fn next_page(&self, sent: Option<&str>) -> Option<&str> {
-        let _ = sent;
-        self.next_token.as_deref()
+        self.next_token
+            .as_deref()
+            .filter(|t| !t.is_empty() && Some(*t) != sent)
     }
 }
 
 /// Whether `region` looks like a region name (`us-east-1`, `eu-west-2`, a MinIO region). The
 /// region goes into a hostname and the signing scope, so anything else is refused.
 pub fn valid_region(region: &str) -> bool {
-    let _ = region;
-    true
+    (1..=63).contains(&region.len())
+        && region
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !region.starts_with('-')
+        && !region.ends_with('-')
 }
 
 fn describe_size(size: &Option<u64>) -> String {

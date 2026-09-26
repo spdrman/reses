@@ -50,6 +50,7 @@ struct ListBucketResult {
     common_prefixes: Vec<PrefixEl>,
     next_continuation_token: Option<String>,
     is_truncated: Option<bool>,
+    encoding_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -131,7 +132,7 @@ pub fn parse_buckets(body: &[u8]) -> Result<Vec<Bucket>, S3Error> {
 /// `EncodingType` is `url`, and left alone otherwise.
 pub fn parse_listing(body: &[u8]) -> Result<Listing, S3Error> {
     let doc: ListBucketResult = parse(body, "ListBucketResult")?;
-    let url_encoded = true;
+    let url_encoded = doc.encoding_type.as_deref().map(str::trim) == Some("url");
     let decode = |s: String| if url_encoded { url_decode(&s) } else { Ok(s) };
     let mut listing = Listing::default();
     for p in doc.common_prefixes {
