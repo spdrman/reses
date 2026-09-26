@@ -149,7 +149,9 @@ impl AccountsScreen {
         let Some(mut file) = ctx.credentials() else {
             return Transition::None;
         };
-        if !overwrite && file.get(&profile.name).is_some() {
+        // Any section of that name counts, even one with only a region or role_arn, since
+        // writing keys into it changes something the user already has.
+        if !overwrite && (file.has_section(&profile.name) || file.get(&profile.name).is_some()) {
             form.confirm_overwrite = true;
             return Transition::None;
         }
