@@ -1,25 +1,30 @@
-//! reses's INI parser pinned against Python's configparser, which is what botocore and the AWS
-//! CLI read these files with. tests/profile_oracle.py prints what `RawConfigParser` makes of a
-//! file; these tests print the same thing from reses's parser and compare.
+//! The credentials writer, refereed by the two readers that matter.
 //!
-//! python3 has to be on PATH. It is in the CI image and on the GitHub runners, and a missing
-//! python3 fails these tests rather than skipping them, since a skip would look like a pass.
+//! reses reads profiles through aws-config, and the AWS CLI reads the same file through botocore,
+//! which uses Python's configparser. Whatever reses writes has to work for both, so these tests
+//! check every write against both. aws-config gets called directly, and configparser through
+//! tests/profile_oracle.py, which prints what `RawConfigParser` makes of a file.
+//!
+//! python3 has to be on PATH. It is in the CI image and on the GitHub runners, and if python3 is
+//! missing these tests fail rather than skip, since a skip would look like a pass.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use reses::aws_profile::{
-    CredentialsFile, IniError, IniView, Profile, ProfileError, parse_ini, region_from_config_file,
-};
+use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
+use aws_types::os_shim_internal::{Env, Fs};
+use reses::aws_profile::{CredentialsFile, Profile, ProfileError};
 
 const KEY_ID: &str = "AKIDEXAMPLE";
 const SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 
+/// The oracle script, found from the crate root so the test works from any directory.
 fn script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/profile_oracle.py")
 }
 
+/// I run the oracle and hand back what it printed, failing loudly if python3 can't run it.
 fn python(args: &[&str]) -> String {
     let out = Command::new("python3")
         .arg(script())
@@ -34,6 +39,7 @@ fn python(args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// The oracle's string encoding: hex of the UTF-8 bytes, "-" for empty.
 fn h(s: &str) -> String {
     if s.is_empty() {
         "-".into()
@@ -42,47 +48,76 @@ fn h(s: &str) -> String {
     }
 }
 
-fn error_line(e: &IniError) -> String {
-    match e {
-        IniError::MissingSectionHeader => "MissingSectionHeaderError".into(),
-        IniError::Parsing => "ParsingError".into(),
-        IniError::DuplicateSection { section } => format!("DuplicateSectionError {}", h(section)),
-        IniError::DuplicateOption { section, option } => {
-            format!("DuplicateOptionError {} {}", h(section), h(option))
-        }
-    }
-}
-
-/// The oracle's dump format, built from reses's parser.
-fn ours(view: &IniView) -> String {
-    let mut out = vec![match &view.strict_error {
-        None => "strict ok".to_string(),
-        Some(e) => format!("strict {}", error_line(e)),
-    }];
-    match &view.read {
-        Err(e) => out.push(format!("nonstrict {}", error_line(e))),
-        Ok(data) => {
-            out.push("nonstrict ok".into());
-            out.push("defaults".into());
-            for (k, v) in &data.defaults {
-                out.push(format!("item {} {}", h(k), h(v)));
-            }
-            for (name, items) in &data.sections {
-                out.push(format!("section {}", h(name)));
-                for (k, v) in items {
-                    out.push(format!("item {} {}", h(k), h(v)));
-                }
-            }
-        }
-    }
-    out.join("\n") + "\n"
-}
-
+/// What configparser makes of a file on disk.
 fn oracle_dump(path: &Path) -> String {
     python(&["dump", path.to_str().unwrap()])
 }
 
-/// Every construct I could find where a hand-rolled INI reader and configparser disagree.
+/// Whether aws-config itself accepts `text` as a credentials file. I ask the SDK directly here,
+/// not through reses, so this is an independent verdict.
+fn sdk_accepts(text: &str) -> bool {
+    let files = EnvConfigFiles::builder()
+        .with_contents(EnvConfigFileKind::Credentials, text)
+        .build();
+    pollster::block_on(aws_config::profile::load(
+        &Fs::from_slice(&[]),
+        &Env::from_slice(&[]),
+        &files,
+        None,
+    ))
+    .is_ok()
+}
+
+/// A complete profile under `name`, with the fake test keys.
+fn profile(name: &str) -> Profile {
+    Profile {
+        name: name.into(),
+        access_key_id: KEY_ID.into(),
+        secret_access_key: SECRET.into(),
+        session_token: None,
+        region: None,
+    }
+}
+
+/// The items configparser sees in one section of a file on disk. The file must pass strict.
+fn oracle_section(path: &Path, section: &str) -> Vec<String> {
+    let dump = oracle_dump(path);
+    assert!(
+        dump.starts_with("strict ok\n"),
+        "configparser refused it: {dump}"
+    );
+    let header = format!("section {}", h(section));
+    dump.lines()
+        .skip_while(|l| *l != header)
+        .skip(1)
+        .take_while(|l| l.starts_with("item "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every section of a non-strict dump except `skip`, as (header line, item lines).
+fn other_sections(dump: &str, skip: &str) -> Vec<(String, Vec<String>)> {
+    let skip = format!("section {}", h(skip));
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for line in dump.lines() {
+        if line.starts_with("section ") {
+            out.push((line.to_string(), Vec::new()));
+        } else if line.starts_with("item ")
+            && let Some(last) = out.last_mut()
+        {
+            last.1.push(line.to_string());
+        }
+    }
+    out.retain(|(header, _)| *header != skip);
+    out
+}
+
+/// One item line in the oracle's dump format.
+fn item(k: &str, v: &str) -> String {
+    format!("item {} {}", h(k), h(v))
+}
+
+/// Constructs where a hand-rolled INI reader, aws-config and configparser can disagree.
 const CASES: &[(&str, &str)] = &[
     (
         "plain",
@@ -152,23 +187,94 @@ const CASES: &[(&str, &str)] = &[
     ("only comments", "# nothing here\n"),
 ];
 
+/// For every case, adding a profile either works for both readers or is refused, and never
+/// changes a byte of the file when it's refused. aws-config refusing the file shows up as a load
+/// error, configparser refusing it (with the new profile added) as a save error.
 #[test]
-fn parse_matches_configparser_for_every_case() {
+fn adding_a_profile_works_for_both_readers_or_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut failures = Vec::new();
     for (i, (name, text)) in CASES.iter().enumerate() {
         let path = dir.path().join(format!("case{i}"));
         fs::write(&path, text).unwrap();
-        let want = oracle_dump(&path);
-        let got = ours(&parse_ini(text));
-        if want != got {
-            failures.push(format!("{name}:\n  python: {want:?}\n  reses:  {got:?}"));
+        let before = oracle_dump(&path);
+        let sdk_ok = sdk_accepts(text);
+        let outcome = CredentialsFile::load(&path).and_then(|mut f| {
+            f.upsert(&profile("zzz-new"))?;
+            f.save()
+        });
+        match outcome {
+            Err(ProfileError::Invalid(_)) => {
+                // Refused: fine only if one of the readers would have refused it too.
+                let strict_ok = before.starts_with("strict ok\n");
+                if sdk_ok && strict_ok {
+                    failures.push(format!("{name}: refused a file both readers accept"));
+                }
+                if fs::read_to_string(&path).unwrap() != *text {
+                    failures.push(format!("{name}: a refusal changed the file"));
+                }
+            }
+            Err(e) => failures.push(format!("{name}: unexpected error {e}")),
+            Ok(()) => {
+                // Written: both readers must accept the result and see the new profile, and
+                // configparser must see every other section exactly as before.
+                let after = oracle_dump(&path);
+                let new_text = fs::read_to_string(&path).unwrap();
+                if !sdk_ok || !sdk_accepts(&new_text) {
+                    failures.push(format!("{name}: wrote a file aws-config refuses"));
+                }
+                if !after.starts_with("strict ok\n") {
+                    failures.push(format!(
+                        "{name}: wrote a file configparser refuses: {after}"
+                    ));
+                    continue;
+                }
+                // configparser folds any DEFAULT items in too, so I only ask for mine.
+                let added = oracle_section(&path, "zzz-new");
+                let mine = [
+                    item("aws_access_key_id", KEY_ID),
+                    item("aws_secret_access_key", SECRET),
+                ];
+                if !mine.iter().all(|i| added.contains(i)) {
+                    failures.push(format!("{name}: new section reads as {added:?}"));
+                }
+                if other_sections(&before, "zzz-new") != other_sections(&after, "zzz-new") {
+                    failures.push(format!(
+                        "{name}: other sections changed:\n{before}\n{after}"
+                    ));
+                }
+                match CredentialsFile::load(&path).map(|f| f.get("zzz-new")) {
+                    Ok(Some(p)) if p == profile("zzz-new") => {}
+                    other => failures.push(format!("{name}: reses reads back {other:?}")),
+                }
+            }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// ---- what a section header means (item 17) ----
+/// A guard for the test above: if every case landed on one side it would prove little, so I
+/// check that the list really has files each reader refuses and files both accept.
+#[test]
+fn the_cases_cover_both_verdicts_of_both_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut sdk_no, mut cli_no, mut both_ok) = (0, 0, 0);
+    for (i, (_, text)) in CASES.iter().enumerate() {
+        let path = dir.path().join(format!("case{i}"));
+        fs::write(&path, text).unwrap();
+        let strict_ok = oracle_dump(&path).starts_with("strict ok\n");
+        let sdk_ok = sdk_accepts(text);
+        sdk_no += usize::from(!sdk_ok);
+        cli_no += usize::from(sdk_ok && !strict_ok);
+        both_ok += usize::from(sdk_ok && strict_ok);
+    }
+    assert!(
+        sdk_no >= 3 && cli_no >= 3 && both_ok >= 10,
+        "{sdk_no} {cli_no} {both_ok}"
+    );
+}
+
+// ---- what a section header means ----
 
 #[test]
 fn header_with_trailing_comment_is_its_own_profile() {
@@ -207,6 +313,26 @@ fn updating_a_commented_header_section_does_not_add_a_duplicate() {
     assert!(oracle_dump(&path).starts_with("strict ok\n"));
 }
 
+/// An upsert lands in `[ work ]` rather than adding a second `work` section.
+#[test]
+fn updating_a_padded_header_edits_that_section() {
+    // aws-config trims `[ work ]` to `work`, so an upsert of `work` has to land in it rather
+    // than add a second section the SDK would merge with it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    let text = "[ work ]\naws_access_key_id = AKIDOLD\n\
+                aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEOLD\n";
+    fs::write(&path, text).unwrap();
+    let mut file = CredentialsFile::load(&path).unwrap();
+    assert!(file.has_section("work"));
+    file.upsert(&profile("work")).unwrap();
+    file.save().unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        format!("[ work ]\naws_access_key_id = {KEY_ID}\naws_secret_access_key = {SECRET}\n")
+    );
+}
+
 #[test]
 fn save_refuses_a_file_with_duplicate_sections() {
     let dir = tempfile::tempdir().unwrap();
@@ -223,20 +349,27 @@ fn save_refuses_a_file_with_duplicate_sections() {
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
 }
 
+/// A file either reader refuses is never written, and stays byte for byte as it was.
 #[test]
-fn save_refuses_anything_configparser_would_refuse() {
+fn a_file_either_reader_refuses_is_never_written() {
     for text in [
+        // aws-config refuses these, so load does.
         "stray = line\n[a]\n",
         "[a]\nno delimiter here\n",
+        "[a]\nk: v\n",
+        // aws-config reads this one, but configparser refuses the repeated key, so save does.
         "[a]\nk = 1\nk = 2\n",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials");
         fs::write(&path, text).unwrap();
-        let mut file = CredentialsFile::load(&path).unwrap();
-        file.upsert(&profile("other")).unwrap();
-        let err = file.save().unwrap_err();
+        let outcome = CredentialsFile::load(&path).and_then(|mut f| {
+            f.upsert(&profile("other"))?;
+            f.save()
+        });
+        let err = outcome.expect_err(text);
         assert!(matches!(err, ProfileError::Invalid(_)), "{text:?}: {err:?}");
+        assert!(err.to_string().contains("credentials"), "{err}");
         assert_eq!(fs::read_to_string(&path).unwrap(), text);
     }
 }
@@ -249,8 +382,11 @@ fn default_is_not_a_profile_name_reses_writes() {
     assert!(matches!(err, ProfileError::Invalid(_)), "{err:?}");
 }
 
+/// DEFAULT values don't leak into other profiles, because aws-config doesn't do that.
 #[test]
-fn default_section_values_are_inherited_like_configparser() {
+fn default_section_is_not_inherited_by_the_sdk() {
+    // configparser would give `a` the DEFAULT region, but aws-config treats DEFAULT as one more
+    // profile, and aws-config is what reses reads with now.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
     fs::write(
@@ -262,7 +398,7 @@ fn default_section_values_are_inherited_like_configparser() {
     let file = CredentialsFile::load(&path).unwrap();
     let names: Vec<_> = file.profiles().into_iter().map(|p| p.name).collect();
     assert_eq!(names, ["a"]);
-    assert_eq!(file.get("a").unwrap().region.as_deref(), Some("us-east-2"));
+    assert_eq!(file.get("a").unwrap().region, None);
 }
 
 // ---- has_section ----
@@ -299,37 +435,108 @@ fn has_section_sees_a_section_added_by_upsert() {
     assert!(file.has_section("new"));
 }
 
-// ---- continuation lines (item 20) ----
+// ---- the legacy aws_security_token ----
 
-fn profile(name: &str) -> Profile {
-    Profile {
-        name: name.into(),
-        access_key_id: KEY_ID.into(),
-        secret_access_key: SECRET.into(),
-        session_token: None,
-        region: None,
-    }
-}
+const LEGACY: &str = "[a]\n\
+aws_access_key_id = AKIDOLD\n\
+aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEOLD\n\
+aws_security_token = FAKELEGACYTOKEN\n\
+\x20\x20continued-legacy\n\
+aws_session_token = FAKESESSIONTOKEN\n\
+note = keep\n";
 
-/// The items configparser sees in one section of a file on disk.
-fn oracle_section(path: &Path, section: &str) -> Vec<String> {
-    let dump = oracle_dump(path);
-    assert!(
-        dump.starts_with("strict ok\n"),
-        "configparser refused it: {dump}"
+/// With both token keys present, the legacy one is what reses reads, as botocore does.
+#[test]
+fn security_token_wins_over_session_token_like_botocore() {
+    // botocore's SharedCredentialProvider checks TOKENS = ['aws_security_token',
+    // 'aws_session_token'] in order and takes the first key present.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    fs::write(&path, LEGACY).unwrap();
+    let p = CredentialsFile::load(&path).unwrap().get("a").unwrap();
+    assert_eq!(
+        p.session_token.as_deref(),
+        Some("FAKELEGACYTOKEN\ncontinued-legacy")
     );
-    let header = format!("section {}", h(section));
-    dump.lines()
-        .skip_while(|l| *l != header)
-        .skip(1)
-        .take_while(|l| l.starts_with("item "))
-        .map(str::to_string)
-        .collect()
 }
 
-fn item(k: &str, v: &str) -> String {
-    format!("item {} {}", h(k), h(v))
+/// A file with only the legacy token key still gives the profile a token.
+#[test]
+fn security_token_alone_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    fs::write(
+        &path,
+        "[a]\naws_access_key_id = AKIDEXAMPLE\n\
+         aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\
+         aws_security_token = FAKELEGACYTOKEN\n",
+    )
+    .unwrap();
+    let p = CredentialsFile::load(&path).unwrap().get("a").unwrap();
+    assert_eq!(p.session_token.as_deref(), Some("FAKELEGACYTOKEN"));
 }
+
+/// An empty legacy token still wins, so the profile has no token, as in botocore.
+#[test]
+fn an_empty_security_token_still_shadows_the_session_token_like_botocore() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    fs::write(
+        &path,
+        "[a]\naws_access_key_id = AKIDEXAMPLE\n\
+         aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\
+         aws_security_token =\naws_session_token = FAKESESSIONTOKEN\n",
+    )
+    .unwrap();
+    let p = CredentialsFile::load(&path).unwrap().get("a").unwrap();
+    assert_eq!(p.session_token, None);
+}
+
+/// Upsert swaps the legacy token for aws_session_token, continuation lines and all.
+#[test]
+fn upsert_replaces_the_legacy_token_with_the_session_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    fs::write(&path, LEGACY).unwrap();
+    let mut p = profile("a");
+    p.session_token = Some("FAKENEWTOKEN".into());
+    let mut file = CredentialsFile::load(&path).unwrap();
+    file.upsert(&p).unwrap();
+    file.save().unwrap();
+    assert_eq!(
+        oracle_section(&path, "a"),
+        [
+            item("aws_access_key_id", KEY_ID),
+            item("aws_secret_access_key", SECRET),
+            item("aws_session_token", "FAKENEWTOKEN"),
+            item("note", "keep"),
+        ]
+    );
+    assert_eq!(
+        CredentialsFile::load(&path).unwrap().get("a").unwrap(),
+        p,
+        "what botocore would use is what I wrote"
+    );
+}
+
+/// Clearing the token removes both spellings of it and nothing else.
+#[test]
+fn clearing_the_token_removes_both_spellings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    fs::write(&path, LEGACY).unwrap();
+    let mut file = CredentialsFile::load(&path).unwrap();
+    file.upsert(&profile("a")).unwrap();
+    file.save().unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        format!(
+            "[a]\naws_access_key_id = {KEY_ID}\naws_secret_access_key = {SECRET}\nnote = keep\n"
+        )
+    );
+}
+
+// ---- continuation lines ----
 
 const CONTINUED: &str = "[a]\n\
 aws_access_key_id = AKIDOLD\n\
@@ -347,8 +554,9 @@ note = keep\n\
 aws_access_key_id = AKIDEXAMPLE2\n\
 aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY2\n";
 
+/// Continuation lines join into the value the way aws-config joins them.
 #[test]
-fn reading_joins_continuation_lines_like_configparser() {
+fn reading_joins_continuation_lines_like_the_sdk() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("credentials");
     fs::write(&path, CONTINUED).unwrap();
@@ -359,7 +567,7 @@ fn reading_joins_continuation_lines_like_configparser() {
     );
     assert_eq!(
         p.session_token.as_deref(),
-        Some("FAKETOKENOLD\ncontinued-token\n\nmore-token")
+        Some("FAKETOKENOLD\ncontinued-token\nmore-token")
     );
 }
 
@@ -440,94 +648,4 @@ fn adding_a_key_after_a_continued_value_does_not_split_it() {
             item("region", "us-west-2"),
         ]
     );
-}
-
-#[test]
-fn colon_delimited_keys_are_rewritten_in_place() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("credentials");
-    fs::write(
-        &path,
-        "[a]\naws_access_key_id: AKIDOLD\naws_secret_access_key:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEOLD\n",
-    )
-    .unwrap();
-    let mut file = CredentialsFile::load(&path).unwrap();
-    file.upsert(&profile("a")).unwrap();
-    file.save().unwrap();
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        format!("[a]\naws_access_key_id: {KEY_ID}\naws_secret_access_key:{SECRET}\n")
-    );
-}
-
-// ---- region from the config file ----
-
-const AWS_CONFIG: &str = "[default]\nregion = us-east-2\n\
-[profile work]\nregion=eu-central-1\n\
-[profile   spaced  ]\nregion = ap-northeast-1\n\
-[profile \"quoted name\"]\nregion = ca-central-1\n\
-[profile a b]\nregion = xx-three-words-1\n\
-[profilework2]\nregion = xx-no-space-1\n\
-[plain]\nregion = xx-not-a-profile-1\n\
-[profile later]\nregion = us-west-1\n\
-[profile later ]\nregion = us-west-2\n\
-[profile continued]\nregion = sa-east-1\n  tail\n\
-[profile noregion]\noutput = text\n\
-[profile emptyregion]\nregion =\n\
-[profile \"unbalanced]\nregion = xx-bad-quote-1\n";
-
-const REGION_PROFILES: &[&str] = &[
-    "default",
-    "work",
-    "spaced",
-    "quoted name",
-    "a b",
-    "a",
-    "work2",
-    "plain",
-    "later",
-    "continued",
-    "noregion",
-    "emptyregion",
-    "\"unbalanced",
-    "absent",
-];
-
-fn region_matches(text: &str) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config");
-    fs::write(&path, text).unwrap();
-    for profile in REGION_PROFILES {
-        let want = python(&["region", path.to_str().unwrap(), profile]);
-        let got = match region_from_config_file(&path, profile) {
-            Some(r) => h(&r),
-            None => "none".into(),
-        };
-        assert_eq!(got, want.trim_end(), "profile {profile:?} in {text:?}");
-    }
-}
-
-#[test]
-fn region_matches_botocore_for_every_profile() {
-    region_matches(AWS_CONFIG);
-}
-
-#[test]
-fn region_with_default_inherited_matches_botocore() {
-    region_matches(
-        "[DEFAULT]\nregion = us-east-1\n[profile work]\n[default]\nregion = ap-south-1\n",
-    );
-}
-
-#[test]
-fn region_from_a_file_configparser_refuses_is_none_like_botocore() {
-    region_matches("[profile work]\nregion = eu-west-1\n[profile work]\noutput = json\n");
-    region_matches("[profile work]\nregion = eu-west-1\nbogus line\n");
-}
-
-#[test]
-fn profile_default_spelling_matches_botocore() {
-    region_matches("[profile default]\nregion = sa-east-1\n");
-    region_matches("[profile default]\nregion = sa-east-1\n[default]\nregion = us-east-2\n");
-    region_matches("[default]\nregion = us-east-2\n[profile default]\nregion = sa-east-1\n");
 }

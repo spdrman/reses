@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
-use reses::aws_profile::{config_path_from, region_from_config_file};
+use reses::aws_profile::{config_path_from, region_from_config_file, region_from_config_in};
 
 const CONFIG: &str = "# aws config\n\
 [default]\n\
@@ -117,4 +117,102 @@ fn profile_prefix_needs_a_space_before_the_name() {
     let path = dir.path().join("config");
     fs::write(&path, "[profilework]\nregion = xx-wrong-1\n").unwrap();
     assert_eq!(region_from_config_file(&path, "work"), None);
+}
+
+// ---- aws-config's rules ----
+
+/// The region aws-config finds for `profile` in a config file holding `text`.
+fn region_in(text: &str, profile: &str) -> Option<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config");
+    fs::write(&path, text).unwrap();
+    region_from_config_file(&path, profile)
+}
+
+/// `[profile default]` wins over `[default]` whichever comes first.
+#[test]
+fn profile_default_beats_plain_default_in_either_order_like_the_sdk() {
+    let a = "[profile default]\nregion = sa-east-1\n[default]\nregion = us-east-2\n";
+    let b = "[default]\nregion = us-east-2\n[profile default]\nregion = sa-east-1\n";
+    assert_eq!(region_in(a, "default").as_deref(), Some("sa-east-1"));
+    assert_eq!(region_in(b, "default").as_deref(), Some("sa-east-1"));
+}
+
+/// Quoted and multi-word profile names give no region, since aws-config skips them.
+#[test]
+fn names_the_sdk_rejects_give_no_region() {
+    let text =
+        "[profile \"quoted name\"]\nregion = ca-central-1\n[profile a b]\nregion = eu-west-3\n";
+    assert_eq!(region_in(text, "quoted name"), None);
+    assert_eq!(region_in(text, "\"quoted name\""), None);
+    assert_eq!(region_in(text, "a b"), None);
+}
+
+/// A trailing comment isn't part of the region.
+#[test]
+fn inline_comment_is_dropped_from_the_region() {
+    assert_eq!(
+        region_in("[profile work]\nregion = eu-west-1 # dublin\n", "work").as_deref(),
+        Some("eu-west-1")
+    );
+}
+
+/// `region =` with nothing after it counts as no region.
+#[test]
+fn empty_region_is_none() {
+    assert_eq!(region_in("[profile work]\nregion =\n", "work"), None);
+}
+
+/// AWS_CONFIG_FILE points the lookup at another file.
+#[test]
+fn region_from_config_honours_aws_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("elsewhere");
+    fs::write(&path, "[profile work]\nregion = eu-north-1\n").unwrap();
+    let env = [
+        ("AWS_CONFIG_FILE", path.to_str().unwrap()),
+        ("HOME", "/nonexistent"),
+    ];
+    assert_eq!(
+        region_from_config_in(&env, "work").as_deref(),
+        Some("eu-north-1")
+    );
+}
+
+/// Without an override the lookup uses ~/.aws/config, and `~` in an override is expanded.
+#[test]
+fn region_from_config_expands_a_tilde_and_falls_back_to_home() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join(".aws")).unwrap();
+    fs::write(
+        dir.path().join(".aws/config"),
+        "[profile work]\nregion = ap-east-1\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("cfg"),
+        "[profile work]\nregion = me-south-1\n",
+    )
+    .unwrap();
+    let home = dir.path().to_str().unwrap();
+    assert_eq!(
+        region_from_config_in(&[("HOME", home)], "work").as_deref(),
+        Some("ap-east-1")
+    );
+    assert_eq!(
+        region_from_config_in(&[("HOME", home), ("AWS_CONFIG_FILE", "~/cfg")], "work").as_deref(),
+        Some("me-south-1")
+    );
+}
+
+/// A leading `~` in AWS_CONFIG_FILE becomes the home directory.
+#[test]
+fn config_path_expands_a_leading_tilde() {
+    assert_eq!(
+        config_path_from(
+            Some(OsString::from("~/cfg")),
+            Some(OsString::from("/home/u"))
+        ),
+        PathBuf::from("/home/u/cfg")
+    );
 }

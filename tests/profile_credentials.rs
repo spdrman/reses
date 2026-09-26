@@ -535,3 +535,104 @@ fn clearing_the_last_line_of_the_file_keeps_no_trailing_newline() {
          aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     );
 }
+
+// ---- reading goes through aws-config ----
+
+/// A ` #` or ` ;` comment after a value is dropped, the way aws-config reads it.
+#[test]
+fn inline_comment_after_whitespace_is_dropped_like_the_sdk() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "[a]\naws_access_key_id = AKIDEXAMPLE # the old key\n\
+                aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\
+                region = us-east-1 ; home\n";
+    let file = CredentialsFile::load(&write(dir.path(), text)).unwrap();
+    let p = file.get("a").unwrap();
+    assert_eq!(p.access_key_id, KEY_ID);
+    assert_eq!(p.region.as_deref(), Some("us-east-1"));
+}
+
+/// A `[profile x]` section in the credentials file isn't listed.
+#[test]
+fn profile_prefixed_section_is_ignored_like_the_sdk() {
+    // aws-config ignores `[profile x]` in the credentials file, so reses can't connect with it
+    // and shouldn't list it.
+    let dir = tempfile::tempdir().unwrap();
+    let text = "[profile x]\naws_access_key_id = AKIDEXAMPLE\n\
+                aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n";
+    let file = CredentialsFile::load(&write(dir.path(), text)).unwrap();
+    assert!(file.profiles().is_empty(), "{:?}", file.profiles());
+}
+
+/// A file aws-config can't parse fails to load, and the error names the file.
+#[test]
+fn a_file_the_sdk_cannot_parse_fails_to_load_naming_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "[a]\naws_access_key_id: AKIDEXAMPLE\n");
+    let err = CredentialsFile::load(&path).unwrap_err();
+    assert!(matches!(err, ProfileError::Invalid(_)), "{err:?}");
+    assert!(err.to_string().contains("credentials"), "{err}");
+}
+
+/// Names aws-config would skip are refused, and every character it allows works.
+#[test]
+fn names_the_sdk_would_ignore_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut file = CredentialsFile::load(&dir.path().join("credentials")).unwrap();
+    for name in [
+        "my profile",
+        "a#b",
+        "a;b",
+        "caf\u{e9}",
+        "a\tb",
+        "a=b",
+        "a\"b",
+    ] {
+        let err = file
+            .upsert(&Profile {
+                name: name.into(),
+                ..profile("x")
+            })
+            .expect_err(name);
+        assert!(matches!(err, ProfileError::Invalid(_)), "{name}: {err:?}");
+    }
+    // Everything aws-config allows in a name still works.
+    let fine = "Work_2-dev/eu.1%x@corp:+";
+    file.upsert(&Profile {
+        name: fine.into(),
+        ..profile("x")
+    })
+    .unwrap();
+    assert_eq!(file.get(fine).unwrap().name, fine);
+}
+
+/// A leading `~` in the override becomes the home directory.
+#[test]
+fn path_expands_a_leading_tilde_like_the_sdk() {
+    let p = credentials_path_from(
+        Some(OsString::from("~/creds")),
+        Some(OsString::from("/home/u")),
+    );
+    assert_eq!(p, PathBuf::from("/home/u/creds"));
+}
+
+/// aws-config hands profiles back in hash order, so with a dozen of them out of alphabetical
+/// order a missing sort can't pass by luck the way it could with three.
+#[test]
+fn many_profiles_come_back_in_file_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        "p07", "p02", "p11", "p04", "p09", "p01", "p12", "p05", "p10", "p03", "p08", "p06",
+    ];
+    let text: String = names
+        .iter()
+        .map(|n| {
+            format!(
+                "[{n}]\naws_access_key_id = AKIDEXAMPLE\n\
+                 aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\n"
+            )
+        })
+        .collect();
+    let file = CredentialsFile::load(&write(dir.path(), &text)).unwrap();
+    let got: Vec<String> = file.profiles().into_iter().map(|p| p.name).collect();
+    assert_eq!(got, names);
+}

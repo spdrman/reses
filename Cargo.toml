@@ -10,6 +10,12 @@ repository = "https://github.com/spdrman/reses"
 
 [dependencies]
 anyhow = "1"
+# reses reads ~/.aws/credentials and ~/.aws/config through the SDK's own profile loader, so it
+# sees exactly the profiles the S3 client will connect with. aws-runtime and aws-types carry the
+# file-set and environment types that loader takes.
+aws-config = { version = "1", default-features = false }
+aws-runtime = { version = "1", default-features = false }
+aws-types = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 hmac = "0.12"
@@ -18,6 +24,11 @@ hmac = "0.12"
 # Both are pure Rust and only add build time; I accept that rather than patch the dependency.
 image = { version = "0.25", default-features = false, features = ["png"] }
 mail-parser = "0.11"
+# The profile loader is async but never waits when it reads from memory, so a minimal
+# executor is all it needs.
+pollster = "0.4"
+# Saves go through a temp file in the same directory and a rename, so nobody sees half a file.
+tempfile = "3"
 percent-encoding = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 ratatui = "0.29"
@@ -34,7 +45,6 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 [dev-dependencies]
 # tests/tui_pty.rs runs the app on a real pty. 0.38 is the rustix ratatui-image already builds.
 rustix = { version = "0.38", features = ["pty", "process", "termios"] }
-tempfile = "3"
 
 [profile.release]
 strip = true

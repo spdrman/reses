@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
-"""Reference reads of AWS INI files, for tests/profile_oracle.rs.
+"""Reference reads of the AWS credentials file, for tests/profile_oracle.rs.
 
-botocore, and so the AWS CLI, reads ~/.aws/credentials and ~/.aws/config with Python's
-configparser, which makes configparser the authority on what those files mean. This script
-prints what RawConfigParser makes of a file, in a line format that tests/profile_oracle.rs
-rebuilds from reses's own parser and compares byte for byte.
+reses reads profiles through aws-config, but it also writes new ones into ~/.aws/credentials,
+and the AWS CLI reads that file through botocore, which uses Python's configparser. So
+configparser is the authority on whether a file reses writes still works for the CLI. This
+script prints what RawConfigParser makes of a file, and tests/profile_oracle.rs uses it to check
+the writer's output and when reses refuses to save.
 
-    profile_oracle.py dump FILE              strict and non-strict reads, every section and item
-    profile_oracle.py region FILE PROFILE    the region botocore resolves for PROFILE in a config file
+    profile_oracle.py dump FILE    strict and non-strict reads, every section and item
 
 Every string is printed as the hex of its UTF-8 bytes ("-" for an empty string), so nothing
 ever needs escaping.
 """
 
 import configparser
-import shlex
 import sys
 
 
 def h(s):
+    """I hex-encode a string so the Rust side never has to unescape anything."""
     return s.encode("utf-8").hex() or "-"
 
 
 def read(path, strict):
+    """I read a file the way botocore does, strict or not."""
     cp = configparser.RawConfigParser(strict=strict)
     # botocore calls cp.read([path]), which opens the file in text mode like this does, so the
     # same universal-newline splitting applies.
@@ -32,6 +33,7 @@ def read(path, strict):
 
 
 def error_line(e):
+    """I name a configparser error, with the section and key it points at when it has them."""
     name = type(e).__name__
     if isinstance(e, configparser.DuplicateSectionError):
         return f"{name} {h(e.section)}"
@@ -41,6 +43,7 @@ def error_line(e):
 
 
 def dump(path):
+    """I print the strict verdict, then every section and item the non-strict read sees."""
     out = []
     try:
         read(path, True)
@@ -63,40 +66,10 @@ def dump(path):
     return out
 
 
-def region(path, profile):
-    # botocore's raw_config_parse uses a strict parser and gives up on the whole file when it
-    # raises, so no region comes out of a file configparser rejects.
-    try:
-        cp = read(path, True)
-    except configparser.Error:
-        return "none"
-    # This loop is botocore's build_profile_map (botocore/configloader.py): `[profile NAME]`
-    # must shlex-split into exactly two words, and `[default]` counts as a profile too. A later
-    # section with the same profile name replaces an earlier one.
-    profiles = {}
-    for key in cp.sections():
-        values = dict(cp.items(key, raw=True))
-        if key.startswith("profile"):
-            try:
-                parts = shlex.split(key)
-            except ValueError:
-                continue
-            if len(parts) == 2:
-                profiles[parts[1]] = values
-        elif key == "default":
-            profiles[key] = values
-    value = profiles.get(profile, {}).get("region")
-    # botocore would hand back "" or a nested block; reses treats both as "no region".
-    if not value or value.startswith("\n"):
-        return "none"
-    return h(value)
-
-
 def main(argv):
+    """I only take `dump FILE`; anything else prints the usage and exits non-zero."""
     if len(argv) == 3 and argv[1] == "dump":
         print("\n".join(dump(argv[2])))
-    elif len(argv) == 4 and argv[1] == "region":
-        print(region(argv[2], argv[3]))
     else:
         sys.exit(__doc__)
 
