@@ -213,7 +213,10 @@ fn a_opens_the_add_form_with_every_field() {
         assert!(s.contains(label), "missing {label}: {s}");
     }
     let footer = s.lines().last().unwrap();
-    assert!(footer.contains("esc") && footer.contains("cancel"), "{footer}");
+    assert!(
+        footer.contains("esc") && footer.contains("cancel"),
+        "{footer}"
+    );
 }
 
 #[test]
@@ -221,13 +224,23 @@ fn the_secret_never_renders_while_masked() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app(dir.path(), None, None);
     press(&mut app, KeyCode::Char('a'));
-    fill_form(&mut app, "fake", "AKIAFAKEFAKE00000003", SECRET, TOKEN, "us-west-2");
+    fill_form(
+        &mut app,
+        "fake",
+        "AKIAFAKEFAKE00000003",
+        SECRET,
+        TOKEN,
+        "us-west-2",
+    );
     for (w, h) in [(100, 20), (60, 16), (200, 40)] {
         let s = screen(&mut app, w, h);
         for leak in [SECRET, "QZX9", "FAKEsecret", TOKEN, "JWV7", "FAKEtoken"] {
             assert!(!s.contains(leak), "{leak} leaked at {w}x{h}:\n{s}");
         }
-        assert!(s.contains("AKIAFAKEFAKE00000003"), "the key id is not secret: {s}");
+        assert!(
+            s.contains("AKIAFAKEFAKE00000003"),
+            "the key id is not secret: {s}"
+        );
         assert!(s.contains("us-west-2"), "{s}");
     }
     // The masked field still shows that something was typed.
@@ -246,7 +259,10 @@ fn ctrl_r_reveals_the_secret_and_hides_it_again() {
     assert!(s.contains(SECRET), "revealed: {s}");
     app.key(ctrl('r'));
     let s = screen(&mut app, 100, 20);
-    assert!(!s.contains(SECRET) && !s.contains("QZX9"), "masked again: {s}");
+    assert!(
+        !s.contains(SECRET) && !s.contains("QZX9"),
+        "masked again: {s}"
+    );
 }
 
 #[test]
@@ -304,7 +320,14 @@ fn validation_rejects_bad_fields() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app(dir.path(), None, None);
     press(&mut app, KeyCode::Char('a'));
-    fill_form(&mut app, "ok", "AKIAFAKEFAKE00000003", SECRET, "", "Not A Region");
+    fill_form(
+        &mut app,
+        "ok",
+        "AKIAFAKEFAKE00000003",
+        SECRET,
+        "",
+        "Not A Region",
+    );
     save(&mut app);
     assert!(status_error(&app).to_lowercase().contains("region"));
     assert!(!dir.path().join("credentials").exists());
@@ -315,7 +338,14 @@ fn a_validation_error_does_not_echo_the_secret() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = app(dir.path(), None, None);
     press(&mut app, KeyCode::Char('a'));
-    fill_form(&mut app, "ok", "AKIAFAKEFAKE00000003", "FAKE secret with spaces QZX9", "", "");
+    fill_form(
+        &mut app,
+        "ok",
+        "AKIAFAKEFAKE00000003",
+        "FAKE secret with spaces QZX9",
+        "",
+        "",
+    );
     save(&mut app);
     let err = status_error(&app);
     assert!(!err.contains("QZX9"), "{err}");
