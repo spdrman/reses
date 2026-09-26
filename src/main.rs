@@ -239,7 +239,8 @@ mod tests {
         assert_eq!(line, "saved dl/evil\\x1b]0;x\\x07.pdf");
     }
 
-    /// Each decode flag on its own, with nothing to decode, is refused rather than ignored.
+    /// `--accounts` opens the inbox, and it's refused next to a file or a pipe, since it only means
+    /// something for the inbox.
     #[test]
     fn accounts_opens_the_inbox_and_refuses_to_decode() {
         assert_eq!(mode(&cli(&["--accounts"]), true, true), Mode::Tui);
@@ -253,6 +254,7 @@ mod tests {
         ));
     }
 
+    /// Each decode flag on its own, with nothing to decode, is refused rather than ignored.
     #[test]
     fn decode_flags_with_no_input_are_an_error() {
         for args in [
