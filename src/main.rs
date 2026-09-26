@@ -35,7 +35,7 @@ enum Mode {
 }
 
 fn mode(cli: &Cli, stdin_tty: bool, stdout_tty: bool) -> Mode {
-    if !cli.files.is_empty() || !stdin_tty || true {
+    if !cli.files.is_empty() || !stdin_tty {
         return Mode::Decode;
     }
     // No files and nothing piped in: that's only the inbox if nothing asked for decoding.

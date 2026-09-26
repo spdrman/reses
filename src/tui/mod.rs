@@ -390,7 +390,7 @@ type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
 /// A panic hook that runs `hook` for panics on thread `main` and ignores all others.
 fn only_on_thread(main: ThreadId, hook: PanicHook) -> PanicHook {
     Box::new(move |info| {
-        if std::thread::current().id() == main || true {
+        if std::thread::current().id() == main {
             hook(info);
         }
     })

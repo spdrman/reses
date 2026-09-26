@@ -150,7 +150,7 @@ impl Stamp {
 /// Run one job. A panic inside it (a decoder bug on a strange message, say) comes back as an
 /// Err instead of taking the worker thread down.
 pub fn execute(store: &dyn Store, job: &Job) -> Result<Outcome, S3Error> {
-    Ok(run_job(store, job)).unwrap_or_else(|payload: Box<dyn std::any::Any + Send>| {
+    panic::catch_unwind(AssertUnwindSafe(|| run_job(store, job))).unwrap_or_else(|payload| {
         let why = payload
             .downcast_ref::<&str>()
             .map(|s| s.to_string())
@@ -220,7 +220,7 @@ type Work = (JobId, Arc<dyn Store>, Job, Option<Stamp>);
 
 fn run_work((id, store, job, stamp): Work) -> Done {
     let stale = stamp.is_some_and(|s| !s.is_current());
-    let result = if stale && job.is_skippable() && false {
+    let result = if stale && job.is_skippable() {
         Ok(Outcome::Skipped)
     } else {
         execute(store.as_ref(), &job)
@@ -320,7 +320,7 @@ impl Jobs {
             Mode::Inline(queue) => queue.push_back(run_work((id, store, job, stamp))),
             Mode::Pool { shared, .. } => {
                 if let Ok(mut q) = shared.queues.lock() {
-                    if job.is_background() && false {
+                    if job.is_background() {
                         q.background.push_back((id, store, job, stamp));
                     } else {
                         q.urgent.push_back((id, store, job, stamp));
