@@ -75,6 +75,12 @@ impl MessageScreen {
         self
     }
 
+    /// Stubbed for the red tests.
+    pub fn with_session(self, session: super::Session) -> Self {
+        let _ = session;
+        self
+    }
+
     fn location(&self) -> String {
         format!("s3://{}/{}", self.bucket, self.key)
     }
@@ -371,11 +377,11 @@ mod tests {
     use ratatui::crossterm::event::KeyCode;
 
     use super::*;
-    use crate::s3::{MemoryStore, Store};
-    use crate::tui::App;
+    use crate::s3::{S3Error, Store};
     use crate::tui::inbox::InboxScreen;
     use crate::tui::inbox::fixtures::*;
     use crate::tui::testing::{self, key, screen, settle};
+    use crate::tui::{App, Status};
 
     const KEY: &str = "mail/msg1";
 
@@ -431,8 +437,8 @@ attached words\r\n\
         (app, dir)
     }
 
-    fn store_with(raw: &[u8]) -> Arc<MemoryStore> {
-        let s = Arc::new(MemoryStore::new());
+    fn store_with(raw: &[u8]) -> Arc<Timed> {
+        let s = Timed::new();
         s.put(BUCKET, KEY, raw);
         s
     }
@@ -583,7 +589,7 @@ attached words\r\n\
 
     #[test]
     fn deleting_from_the_message_returns_to_the_inbox_without_the_row() {
-        let store = Arc::new(MemoryStore::new());
+        let store = Timed::new();
         store.put(
             BUCKET,
             "mail/keep",
@@ -643,7 +649,7 @@ attached words\r\n\
 
     #[test]
     fn a_missing_object_says_so() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         s.create_bucket(BUCKET);
         let out = tempfile::tempdir().unwrap();
         let (mut app, _d) = open(s, out.path());
@@ -658,5 +664,160 @@ attached words\r\n\
         let (mut app, _d) = open(store_with(&long_message()), out.path());
         app.key(key(KeyCode::Char('q')));
         assert!(app.quit);
+    }
+
+    /// Answers every get the way the client does above its size cap.
+    struct TooBig(Option<u64>);
+
+    impl Store for TooBig {
+        fn list_buckets(&self) -> Result<Vec<crate::s3::Bucket>, S3Error> {
+            Ok(Vec::new())
+        }
+        fn list(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<crate::s3::Listing, S3Error> {
+            Ok(crate::s3::Listing::default())
+        }
+        fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
+            Ok(Vec::new())
+        }
+        fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
+            Err(S3Error::TooLarge {
+                size: self.0,
+                limit: 41 * 1024 * 1024,
+            })
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_message_over_the_size_cap_says_how_big_it_is() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(Arc::new(TooBig(Some(120 * 1024 * 1024))), out.path());
+        let scr = screen(&mut app, 100, 10);
+        assert!(scr.contains("too large to open (120.0 MiB)"), "{scr}");
+        assert!(scr.contains("s3://inbox-bucket/mail/msg1"), "{scr}");
+        // No Content-Length: say it's over the cap instead.
+        let (mut app, _d) = open(Arc::new(TooBig(None)), out.path());
+        assert!(screen(&mut app, 100, 10).contains("too large to open (over 41.0 MiB)"));
+    }
+
+    #[test]
+    fn a_failed_delete_after_closing_the_message_is_still_reported_once() {
+        let inner = Timed::new();
+        inner.put(BUCKET, KEY, &long_message());
+        let store = Arc::new(Failing {
+            inner: inner.clone(),
+            list_err: None,
+            delete_err: Some(access_denied()),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), Some(store));
+        let mut app = App::with_view(ctx, Box::new(InboxScreen::new(inbox())));
+        settle(&mut app);
+
+        // While the message is open, it reports its own failure and the inbox stays quiet.
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        match &app.ctx.status {
+            Some(Status::Error(m)) => {
+                assert!(m.contains("AccessDenied"), "{m}");
+                assert!(!m.contains("after closing"), "reported twice: {m}");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // Close it before the answer comes back: the inbox picks the failure up.
+        app.ctx.status = None;
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        app.key(key(KeyCode::Char('q')));
+        assert!(app.stack.last().unwrap().title().contains("Inbox"));
+        settle(&mut app);
+        match &app.ctx.status {
+            Some(Status::Error(m)) => {
+                assert!(m.contains("after closing the message"), "{m}");
+                assert!(m.contains("mail/msg1") && m.contains("AccessDenied"), "{m}");
+            }
+            other => panic!("the failure was lost: {other:?}"),
+        }
+        assert!(inner.contains(BUCKET, KEY));
+        assert!(screen(&mut app, 100, 12).contains("Quarterly report"));
+    }
+
+    #[test]
+    fn a_successful_delete_after_closing_still_drops_the_row() {
+        let store = Timed::new();
+        store.put(BUCKET, KEY, &long_message());
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), Some(store.clone()));
+        let mut app = App::with_view(ctx, Box::new(InboxScreen::new(inbox())));
+        settle(&mut app);
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        app.key(key(KeyCode::Char('q')));
+        settle(&mut app);
+        assert!(!store.contains(BUCKET, KEY));
+        assert_eq!(app.stack.len(), 1);
+        let scr = screen(&mut app, 100, 12);
+        assert!(!scr.contains("Quarterly report"), "{scr}");
+        assert!(scr.lines().last().unwrap().contains("Deleted"), "{scr}");
+    }
+
+    #[test]
+    fn the_message_keeps_its_own_account() {
+        let mine = store_with(&long_message());
+        let out = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), Some(mine.clone()));
+        let view = MessageScreen::new(BUCKET.into(), KEY.into())
+            .with_session(ctx.session.clone().unwrap())
+            .with_out_dir(out.path().to_path_buf());
+        let mut app = App::with_view(ctx, Box::new(view));
+        let theirs = store_with(&long_message());
+        app.ctx.session.as_mut().unwrap().store = theirs.clone();
+        settle(&mut app);
+        assert!(screen(&mut app, 80, 20).contains("Quarterly report"));
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        assert!(!mine.contains(BUCKET, KEY));
+        assert!(theirs.contains(BUCKET, KEY));
+    }
+
+    #[test]
+    fn the_confirmation_flattens_and_cuts_a_hostile_subject() {
+        let raw = email(
+            "a@example.com",
+            &format!("Line one\tand {}", "more words ".repeat(30)),
+            "Fri, 25 Sep 2026 09:30:00 +0000",
+        );
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&raw), out.path());
+        app.key(key(KeyCode::Char('d')));
+        for w in [100u16, 50] {
+            let scr = screen(&mut app, w, 20);
+            let subject = line_with(&scr, "Subject: Line one");
+            assert!(subject.contains('…') && !subject.contains('\t'), "{scr}");
+            assert!(scr.contains("s3://inbox-bucket/mail/msg1"), "{scr}");
+            assert!(scr.contains("y to delete"), "{scr}");
+        }
+    }
+
+    fn line_with<'a>(scr: &'a str, needle: &str) -> &'a str {
+        scr.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no line contains {needle:?} in:\n{scr}"))
     }
 }

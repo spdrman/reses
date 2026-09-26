@@ -27,6 +27,10 @@ use crate::s3::{ObjectInfo, S3Error};
 const FIRST_PEEK: u64 = 32 * 1024;
 /// Stop growing the peek here and summarize whatever arrived.
 const MAX_PEEK: u64 = 1024 * 1024;
+/// Stubbed for the red tests.
+pub(super) const MAX_PAGES: usize = 1000;
+#[allow(dead_code)]
+const DEFAULT_PAGE: usize = 24;
 
 const DATE_W: usize = 10;
 const SIZE_W: usize = 8;
@@ -729,13 +733,138 @@ fn fit(s: &str, width: usize) -> String {
 /// Message builders and a store that fails on demand, shared with the message screen's tests.
 #[cfg(test)]
 pub(super) mod fixtures {
-    use std::sync::Arc;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use time::OffsetDateTime;
 
     use crate::config::Inbox;
     use crate::s3::{Bucket, Listing, MemoryStore, S3Error, Store};
 
     pub const BUCKET: &str = "inbox-bucket";
     pub const PREFIX: &str = "mail/";
+
+    /// A MemoryStore that lists each object with the time S3 received it (MemoryStore itself
+    /// stamps everything with the epoch), and counts header peeks.
+    pub struct Timed {
+        inner: MemoryStore,
+        received: Mutex<HashMap<String, OffsetDateTime>>,
+        peeks: AtomicUsize,
+    }
+
+    impl Timed {
+        pub fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: MemoryStore::new(),
+                received: Mutex::new(HashMap::new()),
+                peeks: AtomicUsize::new(0),
+            })
+        }
+
+        /// Received when its Date header says, the ordinary case for mail SES delivers.
+        pub fn put(&self, bucket: &str, key: &str, data: &[u8]) {
+            let at = crate::mail::summarize(data)
+                .date
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+            self.put_received(bucket, key, data, at);
+        }
+
+        pub fn put_received(&self, bucket: &str, key: &str, data: &[u8], at: OffsetDateTime) {
+            self.inner.put(bucket, key, data);
+            self.received.lock().unwrap().insert(key.to_string(), at);
+        }
+
+        pub fn create_bucket(&self, bucket: &str) {
+            self.inner.create_bucket(bucket);
+        }
+
+        pub fn contains(&self, bucket: &str, key: &str) -> bool {
+            self.inner.contains(bucket, key)
+        }
+
+        /// Ranged gets so far, which is what a header peek does.
+        pub fn peeks(&self) -> usize {
+            self.peeks.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Store for Timed {
+        fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
+            self.inner.list_buckets()
+        }
+        fn list(
+            &self,
+            bucket: &str,
+            prefix: &str,
+            delimiter: Option<&str>,
+            token: Option<&str>,
+        ) -> Result<Listing, S3Error> {
+            let mut listing = self.inner.list(bucket, prefix, delimiter, token)?;
+            let received = self.received.lock().unwrap();
+            for obj in &mut listing.objects {
+                if let Some(at) = received.get(&obj.key) {
+                    obj.last_modified = Some(*at);
+                }
+            }
+            Ok(listing)
+        }
+        fn get_range(
+            &self,
+            bucket: &str,
+            key: &str,
+            start: u64,
+            end: u64,
+        ) -> Result<Vec<u8>, S3Error> {
+            self.peeks.fetch_add(1, Ordering::SeqCst);
+            self.inner.get_range(bucket, key, start, end)
+        }
+        fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
+            self.inner.get(bucket, key)
+        }
+        fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
+            self.inner.delete(bucket, key)
+        }
+    }
+
+    /// Always answers a listing with the same page and a continuation token from `next`.
+    pub struct Endless {
+        pub next: fn(usize) -> String,
+        pub calls: AtomicUsize,
+    }
+
+    impl Store for Endless {
+        fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
+            Ok(Vec::new())
+        }
+        fn list(
+            &self,
+            _: &str,
+            prefix: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<Listing, S3Error> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Listing {
+                prefixes: Vec::new(),
+                objects: vec![crate::s3::ObjectInfo {
+                    key: format!("{prefix}obj{n}"),
+                    size: 10,
+                    last_modified: None,
+                }],
+                next_token: Some((self.next)(n)),
+            })
+        }
+        fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
+            Ok(b"not mail".to_vec())
+        }
+        fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
+            Ok(b"not mail".to_vec())
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
+            Ok(())
+        }
+    }
 
     pub fn inbox() -> Inbox {
         Inbox {
@@ -773,7 +902,7 @@ pub(super) mod fixtures {
 
     /// Delegates to a MemoryStore, except for the calls told to fail.
     pub struct Failing {
-        pub inner: Arc<MemoryStore>,
+        pub inner: Arc<Timed>,
         pub list_err: Option<S3Error>,
         pub delete_err: Option<S3Error>,
     }
@@ -818,13 +947,14 @@ pub(super) mod fixtures {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use ratatui::crossterm::event::KeyCode;
     use time::macros::datetime;
 
     use super::fixtures::*;
     use super::*;
-    use crate::s3::{MemoryStore, Store};
+    use crate::s3::Store;
     use crate::tui::App;
     use crate::tui::jobs::Job;
     use crate::tui::testing::{self, chars, key, screen, settle};
@@ -843,8 +973,8 @@ mod tests {
     }
 
     /// Three messages: today, earlier this month, and last year, stored oldest key first.
-    fn three() -> Arc<MemoryStore> {
-        let s = Arc::new(MemoryStore::new());
+    fn three() -> Arc<Timed> {
+        let s = Timed::new();
         s.put(
             BUCKET,
             "mail/aaa",
@@ -910,7 +1040,7 @@ mod tests {
 
     #[test]
     fn size_column_is_human_readable() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         let mut raw = email("a@example.com", "Sized", "Fri, 25 Sep 2026 09:30:00 +0000");
         raw.resize(2048, b'x');
         s.put(BUCKET, "mail/sized", &raw);
@@ -919,7 +1049,7 @@ mod tests {
         s.put(BUCKET, "mail/tiny", &small);
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
-        assert!(line_with(&scr, "Sized").contains("2.0 KB"), "{scr}");
+        assert!(line_with(&scr, "Sized").contains("2.0 KiB"), "{scr}");
         assert!(
             line_with(&scr, "Tiny").contains(&format!("{tiny_len} B")),
             "{scr}"
@@ -928,7 +1058,7 @@ mod tests {
 
     #[test]
     fn columns_truncate_cleanly_at_narrow_width() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         s.put(
             BUCKET,
             "mail/long",
@@ -939,7 +1069,7 @@ mod tests {
             ),
         );
         let (mut app, _d) = app_with(s);
-        for width in [60u16, 45] {
+        for width in [80u16, 60, 50] {
             let scr = screen(&mut app, width, 8);
             let row = line_with(&scr, "A subject");
             // Both long cells are cut with an ellipsis, and Date and Size still fit on the row.
@@ -952,6 +1082,19 @@ mod tests {
             );
             let head = line_with(&scr, "Subject");
             assert!(head.contains("Date") && head.contains("Size"), "{scr}");
+            // Subject gets more of the room than From.
+            assert!(
+                head.find("Subject").unwrap() < width as usize / 2,
+                "width {width}:\n{scr}"
+            );
+        }
+        // Below the minimum width Date and Size give their room to Subject and From.
+        for width in [49u16, 30] {
+            let scr = screen(&mut app, width, 8);
+            let row = line_with(&scr, "A subject");
+            assert!(!row.contains("09:30"), "width {width}:\n{scr}");
+            assert!(!line_with(&scr, "Subject").contains("Size"), "{scr}");
+            assert!(row.contains('…'), "width {width}:\n{scr}");
         }
     }
 
@@ -984,7 +1127,7 @@ mod tests {
     #[test]
     fn lists_every_page_but_only_direct_children() {
         // MemoryStore pages three keys at a time, so this needs several pages.
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         for i in 0..8 {
             s.put(
                 BUCKET,
@@ -1052,7 +1195,7 @@ mod tests {
                 break;
             }
             for done in batch {
-                if matches!(done.job, Job::Peek { .. }) {
+                if matches!(done.job, Job::PeekHead { .. }) {
                     held.push(done);
                 } else {
                     deliver(&mut app, &done);
@@ -1085,7 +1228,7 @@ mod tests {
 
     #[test]
     fn a_header_block_longer_than_the_first_peek_is_fetched_in_full() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         let mut raw = String::new();
         // 40 KiB of Received headers before the ones the list needs.
         for i in 0..400 {
@@ -1112,7 +1255,7 @@ mod tests {
     #[test]
     fn results_for_jobs_it_did_not_submit_are_ignored() {
         let (mut app, _d) = app_with(three());
-        let other = Arc::new(MemoryStore::new());
+        let other = Timed::new();
         other.put(
             BUCKET,
             "mail/zzz",
@@ -1319,7 +1462,7 @@ mod tests {
 
     #[test]
     fn an_empty_inbox_says_so() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         s.create_bucket(BUCKET);
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
@@ -1332,7 +1475,7 @@ mod tests {
 
     #[test]
     fn a_folder_with_only_non_email_says_so() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         s.put(BUCKET, "mail/image.png", b"\x89PNG\r\n\x1a\n\x00\x00");
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
@@ -1345,7 +1488,7 @@ mod tests {
 
     #[test]
     fn a_missing_bucket_says_so() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         let (mut app, _d) = app_with(s);
         let scr = screen(&mut app, 100, 10);
         assert!(scr.contains("bucket inbox-bucket does not exist"), "{scr}");
@@ -1379,7 +1522,7 @@ mod tests {
 
     #[test]
     fn selection_scrolls_with_a_long_list() {
-        let s = Arc::new(MemoryStore::new());
+        let s = Timed::new();
         for i in 0..30 {
             s.put(
                 BUCKET,
@@ -1405,5 +1548,248 @@ mod tests {
         );
         app.key(key(KeyCode::Home));
         assert!(screen(&mut app, 80, 10).contains("Numbered 29"));
+    }
+
+    fn row_with<'a>(scr: &'a str, needle: &str) -> Option<&'a str> {
+        scr.lines().find(|l| l.contains(needle))
+    }
+
+    #[test]
+    fn esc_at_the_root_inbox_does_not_quit_but_q_does() {
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::Esc));
+        assert!(!app.quit);
+        assert!(screen(&mut app, 100, 12).contains("Lunch today"));
+        app.key(key(KeyCode::Char('q')));
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn the_inbox_keeps_its_own_account_after_another_one_connects() {
+        let mine = three();
+        let (mut app, _d) = app_with(mine.clone());
+        // Somewhere else (the accounts screen behind `u`) connects a different account
+        // that happens to have an object under the same key.
+        let theirs = Timed::new();
+        theirs.put(
+            BUCKET,
+            "mail/bbb",
+            &email("x@example.com", "Theirs", "Fri, 25 Sep 2026 09:30:00 +0000"),
+        );
+        app.ctx.session.as_mut().unwrap().store = theirs.clone();
+
+        app.key(key(KeyCode::Char('r')));
+        settle(&mut app);
+        let scr = screen(&mut app, 100, 12);
+        assert!(
+            scr.contains("Lunch today") && !scr.contains("Theirs"),
+            "{scr}"
+        );
+
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        assert!(screen(&mut app, 100, 20).contains("body of Lunch today"));
+        app.key(key(KeyCode::Char('q')));
+
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        assert!(!mine.contains(BUCKET, "mail/bbb"));
+        assert!(theirs.contains(BUCKET, "mail/bbb"));
+    }
+
+    #[test]
+    fn dates_show_in_the_local_offset() {
+        let s = Timed::new();
+        // 02:30 UTC on the 25th is still the evening of the 24th four hours west.
+        s.put(
+            BUCKET,
+            "mail/late",
+            &email(
+                "a@example.com",
+                "Late last night",
+                "Fri, 25 Sep 2026 02:30:00 +0000",
+            ),
+        );
+        s.put(
+            BUCKET,
+            "mail/morning",
+            &email(
+                "a@example.com",
+                "This morning",
+                "Fri, 25 Sep 2026 13:15:00 +0000",
+            ),
+        );
+        let (mut app, _d) = app_with(s);
+        app.ctx.local_offset = time::UtcOffset::from_hms(-4, 0, 0).unwrap();
+        let scr = screen(&mut app, 100, 10);
+        assert!(
+            line_with(&scr, "Late last night").contains("Sep 24"),
+            "{scr}"
+        );
+        assert!(line_with(&scr, "This morning").contains("09:15"), "{scr}");
+    }
+
+    #[test]
+    fn a_forged_future_date_cannot_pin_a_message_to_the_top() {
+        let s = Timed::new();
+        s.put_received(
+            BUCKET,
+            "mail/forged",
+            &email(
+                "spam@example.com",
+                "Forged date",
+                "Tue, 01 Jan 2030 00:00:00 +0000",
+            ),
+            datetime!(2026-09-01 08:00 UTC),
+        );
+        s.put(
+            BUCKET,
+            "mail/real",
+            &email(
+                "a@example.com",
+                "Honest mail",
+                "Sun, 20 Sep 2026 12:00:00 +0000",
+            ),
+        );
+        let (mut app, _d) = app_with(s);
+        let scr = screen(&mut app, 100, 10);
+        let pos = |s: &str| scr.find(s).unwrap_or_else(|| panic!("{s} missing:\n{scr}"));
+        assert!(pos("Honest mail") < pos("Forged date"), "{scr}");
+        // The Date column still shows what the sender wrote.
+        assert!(
+            line_with(&scr, "Forged date").contains("2030-01-01"),
+            "{scr}"
+        );
+    }
+
+    #[test]
+    fn only_rows_on_screen_and_a_page_ahead_get_peeked() {
+        let s = Timed::new();
+        for i in 0..200 {
+            s.put_received(
+                BUCKET,
+                &format!("mail/m{i:03}"),
+                &email(
+                    "a@example.com",
+                    &format!("Number {i:03}"),
+                    "25 Sep 2026 10:00:00 +0000",
+                ),
+                OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(i),
+            );
+        }
+        let (mut app, _d) = app_with(s.clone());
+        let before = s.peeks();
+        assert!(before > 0 && before <= 2 * DEFAULT_PAGE, "{before} peeks");
+        assert!(screen(&mut app, 80, 12).contains("Number 199"));
+        // The first render says the page is 9 rows; jumping to the end peeks around there.
+        settle(&mut app);
+        app.key(key(KeyCode::End));
+        settle(&mut app);
+        let scr = screen(&mut app, 80, 12);
+        assert!(
+            scr.contains("Number 000") && !scr.contains("loading"),
+            "{scr}"
+        );
+        assert!(s.peeks() < 100, "{} peeks for 200 rows", s.peeks());
+        // Everything is still listed, peeked or not.
+        assert!(scr.contains("200 messages"), "{scr}");
+    }
+
+    #[test]
+    fn after_a_delete_the_next_row_takes_the_selection() {
+        let (mut app, _d) = app_with(three());
+        // Rows: Lunch today, Invoice for September, Old news. Delete the middle one.
+        app.key(key(KeyCode::Down));
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        assert!(screen(&mut app, 100, 20).contains("body of Old news"));
+        app.key(key(KeyCode::Char('q')));
+        // Deleting the last row selects the one above it.
+        app.key(key(KeyCode::Char('d')));
+        app.key(key(KeyCode::Char('y')));
+        settle(&mut app);
+        app.key(key(KeyCode::Enter));
+        settle(&mut app);
+        assert!(screen(&mut app, 100, 20).contains("body of Lunch today"));
+    }
+
+    #[test]
+    fn a_repeated_continuation_token_stops_the_listing() {
+        let store = Arc::new(Endless {
+            next: |_| "same".into(),
+            calls: AtomicUsize::new(0),
+        });
+        let (mut app, _d) = app_with(store.clone());
+        assert_eq!(store.calls.load(Ordering::SeqCst), 2);
+        let scr = screen(&mut app, 120, 10);
+        assert!(
+            scr.lines()
+                .last()
+                .unwrap()
+                .contains("same continuation token"),
+            "{scr}"
+        );
+    }
+
+    #[test]
+    fn the_listing_stops_at_the_page_cap() {
+        let store = Arc::new(Endless {
+            next: |n| format!("token-{n}"),
+            calls: AtomicUsize::new(0),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), Some(store.clone()));
+        let mut app = App::with_view(ctx, Box::new(InboxScreen::new(inbox()).with_now(NOW)));
+        // More pages than `settle` allows pumps for.
+        for _ in 0..10 * MAX_PAGES {
+            if app.pump() == 0 {
+                break;
+            }
+        }
+        assert_eq!(store.calls.load(Ordering::SeqCst), MAX_PAGES);
+        let scr = screen(&mut app, 120, 10);
+        assert!(
+            scr.lines()
+                .last()
+                .unwrap()
+                .contains(&format!("after {MAX_PAGES} pages")),
+            "{scr}"
+        );
+    }
+
+    #[test]
+    fn the_confirmation_always_shows_the_key_and_the_y_line() {
+        let s = Timed::new();
+        let subject = format!("URGENT {}", "account suspended verify now ".repeat(12));
+        s.put(
+            BUCKET,
+            "mail/bbb",
+            &email(
+                "\"Very Long Sender Name Indeed\" <x@example.com>",
+                &subject,
+                "Fri, 25 Sep 2026 09:30:00 +0000",
+            ),
+        );
+        let (mut app, _d) = app_with(s);
+        app.key(key(KeyCode::Char('d')));
+        for (w, h) in [(100u16, 20u16), (60, 20), (44, 20), (44, 9), (60, 8)] {
+            let scr = screen(&mut app, w, h);
+            assert!(
+                scr.contains("s3://inbox-bucket/mail/bbb"),
+                "{w}x{h}:\n{scr}"
+            );
+            assert!(scr.contains("y to delete"), "{w}x{h}:\n{scr}");
+            let subject_line = line_with(&scr, "Subject: URGENT");
+            assert!(subject_line.contains('…'), "{w}x{h}:\n{scr}");
+        }
+        // A screen too small for any of it still renders rather than panicking.
+        for (w, h) in [(10u16, 5u16), (3, 3), (1, 1)] {
+            screen(&mut app, w, h);
+        }
+        assert!(row_with(&screen(&mut app, 100, 20), "y to delete").is_some());
     }
 }
