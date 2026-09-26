@@ -89,14 +89,17 @@ done <"$messages"
 [ "$count" -gt 0 ] || { echo "FAIL  no messages in $messages" >&2; exit 1; }
 
 header='^ *From +Subject +Date +Size *$'
+# The header bar opens with the logo. vhs records in xterm.js, which gets the styled-text
+# wordmark: a cube mark, then "re:SES", then the screen's title.
+logo='^ ■ re:SES  '
 
 step "the accounts screen" \
-  'reses +Accounts' \
+  "${logo}Accounts" \
   'AWS profiles in /home/demo/\.aws/credentials' \
   '> default +us-east-1'
 
 step "the bucket list" \
-  'Browse S3 +default \(us-east-1\)' \
+  "${logo}Browse S3 +default \\(us-east-1\\)" \
   '3 buckets' \
   '> mail-inbound'
 
@@ -109,13 +112,13 @@ step "the folder with its email marks" \
 
 step "the saved inbox, every row loaded" \
   'saved mail-inbound/inbound/ as the inbox' \
-  "Inbox s3://mail-inbound/inbound/ · $count messages · 2 not email" \
+  "${logo}Inbox s3://mail-inbound/inbound/ · $count messages · 2 not email" \
   "$header" \
   "${rows[@]}" \
   '!loading…'
 
 step "the opened message" \
-  'Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o' \
+  "${logo}Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o" \
   '^From: Mei Chen <mei\.chen@example\.com>' \
   '^To: mail@example\.org *$' \
   '^Date: [A-Z][a-z]{2}, [0-9]{1,2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} \+0000 *$' \
@@ -125,18 +128,19 @@ step "the opened message" \
   'Finish the reporting export \(Sam owns this\)'
 
 step "the message, scrolled" \
-  'Message s3://mail-inbound/inbound/' \
+  "${logo}Message s3://mail-inbound/inbound/" \
   '!^Reply-To:' \
   'Keys for the new space arrive on the 3rd' \
   'Desks go in over the weekend, so pack up by Friday' \
   '^Cheers,'
 
 step "back in the inbox" \
+  "${logo}Inbox s3://" \
   "$header" \
   "${rows[@]}" \
   '!Message s3://'
 
-if matches "${frames[$last]}" "$header" "${rows[@]}" '!Message s3://'; then
+if matches "${frames[$last]}" "${logo}Inbox s3://" "$header" "${rows[@]}" '!Message s3://'; then
   echo "ok    the last snapshot is the inbox (snapshot $last)"
 else
   echo "FAIL  the last snapshot is not the inbox" >&2

@@ -1,4 +1,16 @@
-# re:SES
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/reSES-logo-light.svg">
+    <img src="assets/brand/reSES-logo.svg" alt="re:SES" width="300">
+  </picture>
+</h1>
+
+<p align="center">
+  <a href="https://github.com/spdrman/reses/actions/workflows/ci.yml"><img src="https://github.com/spdrman/reses/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/spdrman/reses/actions/workflows/release.yml"><img src="https://github.com/spdrman/reses/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/spdrman/reses/releases/latest"><img src="https://img.shields.io/github/v/release/spdrman/reses" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/spdrman/reses" alt="License"></a>
+</p>
 
 ![reses in a terminal: picking an AWS profile, browsing into the mail-inbound bucket where stored emails are marked, saving the folder as the inbox, then opening and scrolling a message from the From, Subject, Date and Size list](docs/demo.gif)
 
@@ -57,6 +69,8 @@ No file or path is needed.
 The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `u` goes back to the accounts. In a message, `h` switches to the HTML part, `w` saves the text and `a` saves the attachments, both into `~/Downloads`.
 
 Settings live in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
+
+The header shows the logo as an image in iTerm2, WezTerm, Ghostty, kitty, foot and mlterm, and as a styled `re:SES` everywhere else. It goes by the environment and never asks the terminal anything, so a terminal that doesn't answer can't swallow your keys. `RESES_LOGO=text` always uses the text, and `RESES_LOGO=image` asks the terminal what it supports, for trying an unlisted one (a terminal that never replies can then eat keypresses until you quit).
 
 ## Decode a stored message (optional)
 

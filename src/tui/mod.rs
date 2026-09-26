@@ -5,6 +5,7 @@
 //! through `testing`.
 
 pub mod accounts;
+pub mod brand;
 pub mod browser;
 pub mod inbox;
 pub mod jobs;
@@ -120,6 +121,9 @@ pub struct Ctx {
     /// lookup fails once there are other threads). One offset for the whole run means a
     /// message from the other side of a DST change shows an hour off; that's accepted.
     pub local_offset: UtcOffset,
+    /// How the header draws the logo: the real image when the terminal can show one, the
+    /// styled-text wordmark otherwise. Detected once at startup.
+    pub brand: brand::Brand,
     jobs: Jobs,
 }
 
@@ -132,12 +136,18 @@ impl Ctx {
             session: None,
             status: None,
             local_offset: UtcOffset::UTC,
+            brand: brand::Brand::text(brand::Background::Dark),
             jobs,
         }
     }
 
     pub fn with_local_offset(mut self, offset: UtcOffset) -> Self {
         self.local_offset = offset;
+        self
+    }
+
+    pub fn with_brand(mut self, brand: brand::Brand) -> Self {
+        self.brand = brand;
         self
     }
 
@@ -311,29 +321,55 @@ impl App {
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
+        let full = frame.area();
+        // The image logo when there's one and room for it; otherwise the one-row text bar.
+        let image = self.ctx.brand.image_for(full.width, full.height);
+        let header_rows = if image.is_some() {
+            brand::IMAGE_ROWS
+        } else {
+            1
+        };
         let [header, body, footer] = Layout::vertical([
-            Constraint::Length(1),
+            Constraint::Length(header_rows),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
-        .areas(frame.area());
+        .areas(full);
 
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let who = match top.session().or(self.ctx.session.as_ref()) {
-            Some(s) => format!("  {} ({})", s.profile.name, s.region),
-            None => String::new(),
-        };
-        let bar = Style::default().bg(Color::Blue).fg(Color::White);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" reses ", bar.add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" {}{who}", top.title()), bar),
-            ]))
-            .style(bar),
-            header,
-        );
+        let account = top
+            .session()
+            .or(self.ctx.session.as_ref())
+            .map(|s| format!("{} ({})", s.profile.name, s.region));
+        let bar = brand::bar_style();
+        match image {
+            Some((logo, cols)) => {
+                let [logo_area, _gap, rest] = Layout::horizontal([
+                    Constraint::Length(cols),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .areas(header);
+                frame.render_stateful_widget(
+                    ratatui_image::StatefulImage::default(),
+                    logo_area,
+                    logo,
+                );
+                let lines = vec![
+                    Line::from(format!(" {}", top.title())),
+                    Line::from(account.map(|a| format!(" {a}")).unwrap_or_default()),
+                ];
+                frame.render_widget(Paragraph::new(lines).style(bar), rest);
+            }
+            None => {
+                let mut spans = brand::wordmark(bar);
+                let who = account.map(|a| format!("  {a}")).unwrap_or_default();
+                spans.push(Span::styled(format!("  {}{who}", top.title()), bar));
+                frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), header);
+            }
+        }
 
         top.render(frame, body, &self.ctx);
 
@@ -368,11 +404,15 @@ pub fn run(
     local_offset: UtcOffset,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load(&config_path)?;
-    let ctx =
-        Ctx::new(config, config_path, creds_path, Jobs::pool(8)).with_local_offset(local_offset);
-    let mut app = App::new(ctx);
 
     let mut terminal = ratatui::init();
+    // After entering the alternate screen, as the picker asks, and before the job pool:
+    // like the local offset, it's read while nothing else is running.
+    let brand = brand::Brand::detect();
+    let ctx = Ctx::new(config, config_path, creds_path, Jobs::pool(8))
+        .with_local_offset(local_offset)
+        .with_brand(brand);
+    let mut app = App::new(ctx);
     // ratatui's hook restores the terminal on any thread's panic, which would drop the screen
     // under a still-running app when a worker panics. Workers catch their own panics, so only
     // a panic on this thread gets the restore (and the report).
@@ -467,6 +507,13 @@ pub(crate) mod testing {
             }
         }
         panic!("jobs never settled");
+    }
+
+    /// Render the whole app and hand back the cells, styles included.
+    pub fn buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| app.render(f)).unwrap();
+        term.backend().buffer().clone()
     }
 
     /// Render the whole app to plain text, one line per row, trailing spaces trimmed.

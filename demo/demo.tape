@@ -15,10 +15,12 @@ Set Height 660
 Set Padding 16
 Set Framerate 12
 Set TypingSpeed 80ms
-# Catppuccin Mocha, but with a deeper blue and a whiter white: the header bar is ANSI white
-# on blue, which washes out on the stock pastel palette.
-Set Theme { "name": "reses-demo", "background": "#1e1e2e", "foreground": "#cdd6f4", "cursor": "#f5e0dc", "selection": "#585b70", "black": "#45475a", "red": "#f38ba8", "green": "#a6e3a1", "yellow": "#f9e2af", "blue": "#3b6fd6", "magenta": "#f5c2e7", "cyan": "#94e2d5", "white": "#bac2de", "brightBlack": "#6c7086", "brightRed": "#f38ba8", "brightGreen": "#a6e3a1", "brightYellow": "#f9e2af", "brightBlue": "#89b4fa", "brightMagenta": "#f5c2e7", "brightCyan": "#94e2d5", "brightWhite": "#ffffff" }
 Set CursorBlink false
+
+# xterm.js here answers that it can draw sixel images, so reses would draw the real logo, but
+# vhs builds each frame from xterm.js's text layer and the image never reaches the GIF. The
+# styled-text wordmark is what a recording can show.
+Env RESES_LOGO "text"
 
 # vhs writes a text snapshot after every command, and demo/check-frames.sh checks those. So each
 # keystroke is followed by a short Sleep of its own before the pause: that snapshot shows the
