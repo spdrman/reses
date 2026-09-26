@@ -154,7 +154,7 @@ fn every_check_is_real_and_runs_where_it_should() {
         "no test run: {test:#?}"
     );
 
-    let goldens = step_with(&build, "scripts/check-goldens.sh");
+    let goldens = step_with(&build, "scripts/check-goldens.sh \"target/");
     assert!(
         !has(&goldens, "if:"),
         "the golden check must run for every target: {goldens:#?}"
@@ -331,7 +331,7 @@ fn the_linux_builds_ship_a_deb_that_apt_installs_before_publishing() {
     assert!(has(&package, "Package: reses"), "{package:#?}");
     // The .deb is installed with apt on its own runner and the installed binary is checked
     // against the goldens, so a broken package can't be published.
-    let install = step_with(&build, "sudo apt-get install");
+    let install = step_with(&build, "\"$PWD/reses_");
     assert!(
         has_line(&install, "if: contains(matrix.target, 'musl')"),
         "{install:#?}"
