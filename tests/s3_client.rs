@@ -822,3 +822,19 @@ fn a_profile_client_hides_its_secrets_from_debug() {
     assert!(dbg.contains("work"), "{dbg}");
     assert!(!dbg.contains(SECRET) && !dbg.contains(TOKEN), "{dbg}");
 }
+
+#[test]
+fn a_range_past_the_cap_on_a_server_that_ignores_range_is_too_large() {
+    // The server streams the whole object and the range starts beyond what I'll read of it,
+    // so the honest answer is TooLarge, not an empty range.
+    let start = MAX_GET_BYTES + 100;
+    let body = vec![b'x'; (MAX_GET_BYTES + 200) as usize];
+    let fake = Fake::new(vec![then_fail(200, &[], body)]);
+    match minio(&fake)
+        .get_range("mail", "k", start, start + 9)
+        .unwrap_err()
+    {
+        S3Error::TooLarge { limit, .. } => assert_eq!(limit, MAX_GET_BYTES),
+        other => panic!("{other:?}"),
+    }
+}
