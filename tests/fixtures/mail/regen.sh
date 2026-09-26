@@ -16,3 +16,12 @@ for f in *.eml; do
   done > "$base.saved"
   rm -rf "$dir"
 done
+
+# One level past each limit reses.py dies, which is the point of these fixtures, so there is no
+# golden. Make sure it still dies; if it ever stops dying, the fixture belongs in the main set.
+for f in beyond-python/*.eml; do
+  if python3 "$reses" "$f" >/dev/null 2>&1; then
+    echo "$f: reses.py decoded it, so it is not beyond the limit" >&2
+    exit 1
+  fi
+done

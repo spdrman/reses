@@ -167,6 +167,11 @@ fn parsedate_tz(data: &str) -> Option<Parsed> {
     let mut tzoffset = zone(&tz_up);
     if tzoffset.is_none() {
         tzoffset = pystr::py_int(&tz_up);
+        if tzoffset.is_none() && pystr::is_int_literal(&tz_up) {
+            // Too big for i64. Python still reads it, and the offset it makes is far past a
+            // day, so the date is invalid either way.
+            return None;
+        }
         if tzoffset == Some(0) && tz_up.starts_with('-') {
             tzoffset = None;
         }
@@ -174,8 +179,16 @@ fn parsedate_tz(data: &str) -> Option<Parsed> {
     if let Some(off) = tzoffset
         && off != 0
     {
-        let (sign, off) = if off < 0 { (-1, -off) } else { (1, off) };
-        tzoffset = Some(sign * ((off / 100) * 3600 + (off % 100) * 60));
+        let (sign, off) = if off < 0 {
+            (-1, off.checked_neg()?)
+        } else {
+            (1, off)
+        };
+        // An overflow here means an offset of centuries, which Python rejects as well.
+        let seconds = (off / 100)
+            .checked_mul(3600)?
+            .checked_add((off % 100) * 60)?;
+        tzoffset = Some(sign * seconds);
     }
     Some(Parsed {
         yy,
@@ -214,7 +227,7 @@ pub(super) fn parsedate_to_datetime(data: &str) -> Option<PyDateTime> {
         None => None,
         // datetime.timezone insists on strictly less than a day either way.
         Some(s) if s.abs() >= 86_400 => return None,
-        Some(s) => Some(UtcOffset::from_whole_seconds(s as i32).ok()?),
+        Some(s) => Some(UtcOffset::from_whole_seconds(i32::try_from(s).ok()?).ok()?),
     };
     Some(PyDateTime {
         dt: PrimitiveDateTime::new(date, time),
@@ -332,6 +345,21 @@ mod tests {
         assert_eq!(fmt("Mon, 1 Feb 2026 23:59:60 +0000"), None);
         assert_eq!(fmt("Mon, 1 Feb 2026 10:00:00 +2400"), None);
         assert_eq!(fmt("garbage"), None);
+    }
+
+    #[test]
+    fn huge_zone_offsets_are_invalid_not_wrapped() {
+        // Python raises ValueError for these, so the header prints as written.
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 +99999999"), None);
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 +999999999999"), None);
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 +9223372036854775807"), None);
+        assert_eq!(fmt("Fri, 25 Sep 2026 17:01:31 -99999999999999999999"), None);
+        assert_eq!(fmt("Fri, 25 Sep 99999999999999999999 17:01:31 +0000"), None);
+        // A zone that isn't a number at all is still just unknown, so the date is naive.
+        assert_eq!(
+            fmt("Fri, 25 Sep 2026 17:01:31 +12ab").unwrap(),
+            "Fri, 25 Sep 2026 17:01:31 -0000"
+        );
     }
 
     #[test]

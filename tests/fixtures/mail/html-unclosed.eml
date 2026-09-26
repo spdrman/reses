@@ -1,0 +1,6 @@
+From: unclosed@example.com
+To: you@example.org
+Subject: Unclosed style and tags
+Content-Type: text/html; charset=utf-8
+
+<p>start</p><style>never closed<p>kept</p> <script>s</script> mid <SCRIPT>open <b>tail</b> x < y <i
