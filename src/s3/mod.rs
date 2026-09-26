@@ -3,6 +3,14 @@
 //! Everything above this module talks to the `Store` trait, so the TUI can run against
 //! `MemoryStore` in tests.
 
+mod client;
+pub mod sigv4;
+pub mod transport;
+pub mod xml;
+
+pub use client::S3Client;
+pub use transport::{HttpRequest, HttpResponse, Transport, UreqTransport};
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -79,51 +87,6 @@ pub trait Store: Send + Sync {
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error>;
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error>;
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error>;
-}
-
-/// The real client. Handles buckets in other regions by following S3's region hint.
-pub struct S3Client {
-    creds: Credentials,
-    region: String,
-    endpoint: Option<String>,
-    path_style: bool,
-}
-
-impl S3Client {
-    pub fn new(creds: Credentials, region: &str) -> Self {
-        Self {
-            creds,
-            region: region.to_string(),
-            endpoint: None,
-            path_style: false,
-        }
-    }
-
-    /// Point at a non-AWS endpoint (MinIO in tests). `path_style` puts the bucket in the path.
-    pub fn with_endpoint(mut self, url: &str, path_style: bool) -> Self {
-        self.endpoint = Some(url.trim_end_matches('/').to_string());
-        self.path_style = path_style;
-        self
-    }
-}
-
-impl Store for S3Client {
-    fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
-        let _ = (&self.creds, &self.region, &self.endpoint, self.path_style);
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn list(&self, _: &str, _: &str, _: Option<&str>, _: Option<&str>) -> Result<Listing, S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
 }
 
 /// In-memory store for tests. Page size is small on purpose so paging gets exercised.

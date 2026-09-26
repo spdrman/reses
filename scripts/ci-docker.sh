@@ -53,15 +53,23 @@ ls -l dist/' ;;
   --integration)
     NET="reses-it-${LANE}"
     MINIO="reses-minio-${LANE}"
+    # Clean up first thing, so a failed start never leaves the network or container behind.
+    trap 'docker rm -f "$MINIO" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true' EXIT
     docker network create "$NET" >/dev/null 2>&1 || true
     docker rm -f "$MINIO" >/dev/null 2>&1 || true
     docker run -d --rm --platform "$PLATFORM" --name "$MINIO" --network "$NET" \
       -e MINIO_ROOT_USER=resesadmin -e MINIO_ROOT_PASSWORD=resesadmin-secret \
       minio/minio:RELEASE.2025-04-22T22-12-26Z server /data >/dev/null
-    trap 'docker rm -f "$MINIO" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true' EXIT
     EXTRA_DOCKER_ARGS=(--network "$NET"
       -e RESES_TEST_S3_ENDPOINT="http://$MINIO:9000"
       -e RESES_TEST_S3_ACCESS_KEY=resesadmin -e RESES_TEST_S3_SECRET_KEY=resesadmin-secret)
-    run 'cargo test --locked --no-fail-fast -- --ignored --test-threads=1' ;;
+    # MinIO takes a moment to listen; wait for its health check rather than racing it.
+    run 'set -e
+for i in $(seq 1 60); do
+  curl -fs -o /dev/null "$RESES_TEST_S3_ENDPOINT/minio/health/live" && break
+  [ "$i" = 60 ] && { echo "MinIO never came up" >&2; exit 1; }
+  sleep 1
+done
+cargo test --locked --no-fail-fast -- --ignored --test-threads=1' ;;
   *) echo "unknown option: $1" >&2; exit 2 ;;
 esac
