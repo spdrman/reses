@@ -3,6 +3,13 @@
 //! test can pick the machine's architecture, what the "release" serves and what its checksums
 //! say, and then check what the script actually asked apt to install. Nothing touches the
 //! network or the real package manager.
+//!
+//! These only run on Linux. The script is for Debian and Ubuntu and leans on GNU coreutils
+//! (sha256sum), which a Mac doesn't ship, so on macOS every test would only prove the script
+//! refuses a machine it was never meant for. ci.yml's macOS test job skips the file for that
+//! reason, and the Linux test job and the local gate still run all of it.
+
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
