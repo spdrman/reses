@@ -13,11 +13,13 @@ mod workflows;
 
 use workflows::{PINS, load, scalar, scalar_map, uses_lines};
 
+/// A repo file by its path from the root, with the path in the panic if it can't be read.
 fn read(rel: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
+/// release.yml as raw text, for the checks that read it line by line.
 fn workflow() -> String {
     read(".github/workflows/release.yml")
 }
@@ -60,14 +62,19 @@ fn step_with<'a>(job: &[&'a str], needle: &str) -> Vec<&'a str> {
     found.into_iter().next().unwrap()
 }
 
+/// Whether any of the lines mentions `needle` anywhere.
 fn has(lines: &[&str], needle: &str) -> bool {
     lines.iter().any(|l| l.contains(needle))
 }
 
+/// Whether one of the lines is exactly `exact` once trimmed. I use this where a substring would
+/// also match a weakened version of the line.
 fn has_line(lines: &[&str], exact: &str) -> bool {
     lines.iter().any(|l| l.trim() == exact)
 }
 
+/// The workflow runs for a push to `release`, and as a dry run for any PR that touches a file
+/// the release builds from or runs.
 #[test]
 fn it_runs_on_a_push_to_release_and_on_prs_that_touch_what_it_depends_on() {
     let text = workflow();
@@ -111,6 +118,7 @@ fn it_runs_on_a_push_to_release_and_on_prs_that_touch_what_it_depends_on() {
     }
 }
 
+/// The build matrix is the two musl targets and the Mac, each on a runner of its own platform.
 #[test]
 fn it_builds_the_three_binaries_each_natively_on_its_own_platform() {
     let text = workflow();
@@ -141,6 +149,8 @@ fn it_builds_the_three_binaries_each_natively_on_its_own_platform() {
     );
 }
 
+/// The build and test jobs can't fail softly, and each check on the binaries runs on the targets
+/// it applies to.
 #[test]
 fn every_check_is_real_and_runs_where_it_should() {
     let text = workflow();
@@ -202,6 +212,7 @@ fn every_check_is_real_and_runs_where_it_should() {
     );
 }
 
+/// Publish needs every other job, and its guard lets only a push to `release` through.
 #[test]
 fn publish_waits_for_everything_and_only_a_push_to_release_publishes() {
     let text = workflow();
@@ -228,6 +239,8 @@ fn publish_waits_for_everything_and_only_a_push_to_release_publishes() {
     );
 }
 
+/// Publish counts what it's about to ship, tags the commit explicitly, and goes through a draft
+/// it deletes if anything fails, so a half-finished release never shows up.
 #[test]
 fn publish_checks_the_set_and_never_leaves_a_half_release() {
     let text = workflow();
@@ -250,6 +263,7 @@ fn publish_checks_the_set_and_never_leaves_a_half_release() {
     let cleanup = step_with(&publish, "gh release delete");
     assert!(has(&cleanup, "if: failure()"), "{cleanup:#?}");
 
+    // Each archive carries the README and licence alongside the binary.
     let package = step_with(&job(&text, "build"), "tar -C stage");
     for file in ["README.md", "LICENSE"] {
         assert!(
@@ -259,6 +273,8 @@ fn publish_checks_the_set_and_never_leaves_a_half_release() {
     }
 }
 
+/// The version job runs scripts/release-version.sh itself (the one tests/release_version.rs
+/// covers) on a full-history checkout, and the build waits for it.
 #[test]
 fn the_version_check_is_the_tested_script_and_sees_main() {
     let text = workflow();
@@ -279,10 +295,11 @@ fn the_version_check_is_the_tested_script_and_sees_main() {
     );
 }
 
+/// Every `uses:` in either workflow is a row of the pin table. A comment is only a claim about
+/// the SHA before it, so each (action, SHA, version) has to be a row of the table in
+/// tests/support/workflows.rs, which I checked against GitHub.
 #[test]
 fn every_action_in_both_workflows_is_a_row_of_the_pin_table() {
-    // A comment is only a claim about the SHA before it, so each (action, SHA, version) has
-    // to be a row of the table in tests/support/workflows.rs, which I checked against GitHub.
     let mut used = BTreeSet::new();
     for rel in [".github/workflows/release.yml", ".github/workflows/ci.yml"] {
         let wf = load(rel);
@@ -333,10 +350,10 @@ fn every_action_in_both_workflows_is_a_row_of_the_pin_table() {
     }
 }
 
+/// Every Rust toolchain either workflow installs is the CI image's, except the MSRV job's, which
+/// is the declared rust-version's first release.
 #[test]
 fn releases_and_ci_build_with_the_pinned_rust() {
-    // Every Rust toolchain is the CI image's, except the MSRV job's, which is the declared
-    // rust-version's first release.
     let dockerfile = read("docker/ci.Dockerfile");
     let image = dockerfile
         .lines()
@@ -378,10 +395,10 @@ fn releases_and_ci_build_with_the_pinned_rust() {
     }
 }
 
+/// A skipped or soft-failing job reads as green, so the only job-level `if:` is publish's, and
+/// nothing anywhere carries continue-on-error.
 #[test]
 fn only_publish_can_be_skipped_and_nothing_may_fail_quietly() {
-    // A skipped or soft-failing job reads as green, so the only job-level `if:` is publish's,
-    // and nothing anywhere carries continue-on-error.
     let wf = load(".github/workflows/release.yml");
     for (id, job) in wf.jobs() {
         if id != "publish" {
@@ -400,11 +417,11 @@ fn only_publish_can_be_skipped_and_nothing_may_fail_quietly() {
     }
 }
 
+/// scripts/release-version.sh asks GitHub whether every ci.yml run on the commit passed. The
+/// run's own token reads that with `actions: read` added to what the workflow grants, and it only
+/// ever lives in the environment.
 #[test]
 fn the_version_job_can_read_ci_results_with_the_run_token() {
-    // scripts/release-version.sh asks GitHub whether every ci.yml run on the commit passed.
-    // The run's own token reads that with `actions: read` added to what the workflow grants,
-    // and it only ever lives in the environment.
     let wf = load(".github/workflows/release.yml");
     let version = wf.job("version");
     let perms = scalar_map(&version["permissions"]);
@@ -426,10 +443,11 @@ fn the_version_job_can_read_ci_results_with_the_run_token() {
     );
 }
 
+/// The release's integration job matches ci.yml's. The S3 client is what the inbox stands on,
+/// and only the MinIO suite drives it against a real server, so a release doesn't publish
+/// without it.
 #[test]
 fn the_release_runs_the_minio_suite_the_way_ci_does() {
-    // The S3 client is what the inbox stands on, and only the MinIO suite drives it against a
-    // real server, so a release doesn't publish without it.
     let release = load(".github/workflows/release.yml");
     let ci = load(".github/workflows/ci.yml");
     let (r, c) = (release.job("integration"), ci.job("integration"));
@@ -459,6 +477,7 @@ fn the_release_runs_the_minio_suite_the_way_ci_does() {
     );
 }
 
+/// The .deb's Maintainer field points at the GitHub account, not a personal email address.
 #[test]
 fn the_deb_names_its_maintainer_by_github_account() {
     let text = workflow();
@@ -477,10 +496,10 @@ fn the_deb_names_its_maintainer_by_github_account() {
     );
 }
 
+/// A macOS runner image whose kernel stops reproducing #15 says nothing about reses, so it
+/// shouldn't stop a release. ci.yml still fails on it (tests/ci_parity.rs).
 #[test]
 fn the_15_control_only_warns_in_the_release() {
-    // A macOS runner image whose kernel stops reproducing #15 says nothing about reses, so it
-    // shouldn't stop a release. ci.yml still fails on it (tests/ci_parity.rs).
     let wf = load(".github/workflows/release.yml");
     let step = workflows::step_with(wf.job("build"), "tests/macos-replace-binary.sh");
     assert_eq!(
@@ -494,6 +513,8 @@ fn the_15_control_only_warns_in_the_release() {
     );
 }
 
+/// Each Linux build packs a .deb, installs it with apt and runs the goldens on the installed
+/// binary, and publish ships both debs with checksums.
 #[test]
 fn the_linux_builds_ship_a_deb_that_apt_installs_before_publishing() {
     let text = workflow();
@@ -522,6 +543,7 @@ fn the_linux_builds_ship_a_deb_that_apt_installs_before_publishing() {
         "the .deb must be uploaded with the archive: {upload:#?}"
     );
 
+    // Publish counts the debs, checksums them and attaches them.
     let publish = job(&text, "publish");
     assert!(has(&publish, "expected 2 debs"), "{publish:#?}");
     assert!(
@@ -538,6 +560,8 @@ fn the_linux_builds_ship_a_deb_that_apt_installs_before_publishing() {
     );
 }
 
+/// The debs are xz-compressed so Debian 11 can read them, a Debian 11 container installs and
+/// runs one, and a prerelease version sorts before its release.
 #[test]
 fn the_debs_install_on_older_debian_and_order_prereleases_right() {
     let text = workflow();
@@ -553,6 +577,7 @@ fn the_debs_install_on_older_debian_and_order_prereleases_right() {
         has(&package, "${VERSION/-/~}"),
         "prereleases must map - to ~: {package:#?}"
     );
+    // The Debian 11 install step runs the installed binary, not just dpkg.
     let bullseye = step_with(&build, "debian:bullseye");
     assert!(
         has_line(&bullseye, "if: contains(matrix.target, 'musl')"),

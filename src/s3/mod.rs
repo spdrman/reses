@@ -20,6 +20,7 @@ use std::sync::Mutex;
 
 use time::OffsetDateTime;
 
+/// A fixed set of keys, for a client that isn't built from a profile (MinIO and the tests).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub access_key_id: String,
@@ -28,6 +29,7 @@ pub struct Credentials {
 }
 
 impl std::fmt::Debug for Credentials {
+    /// I show the key id only. The secret and token stay out, so a debug log can't leak them.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Credentials")
             .field("access_key_id", &self.access_key_id)
@@ -35,12 +37,14 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
+/// One bucket from ListBuckets. `created` is `None` when the server didn't say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bucket {
     pub name: String,
     pub created: Option<OffsetDateTime>,
 }
 
+/// One object in a listing: its raw key (never escaped for display), its size and its date.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectInfo {
     pub key: String,
@@ -78,6 +82,7 @@ pub fn valid_region(region: &str) -> bool {
         && !region.ends_with('-')
 }
 
+/// The size half of a `TooLarge` message, which has to read sensibly when the size is unknown.
 fn describe_size(size: &Option<u64>) -> String {
     match size {
         Some(n) => format!("{n} bytes"),
@@ -85,6 +90,8 @@ fn describe_size(size: &Option<u64>) -> String {
     }
 }
 
+/// Everything a `Store` call can fail with. The variants are plain data, with no SDK types, so
+/// the screens can match on them and `MemoryStore` can produce the same ones.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum S3Error {
     /// S3 answered with an error document.
@@ -94,8 +101,10 @@ pub enum S3Error {
         code: String,
         message: String,
     },
+    /// No answer from S3 at all: DNS, connect, TLS, a timeout, or credentials that didn't resolve.
     #[error("network error: {0}")]
     Transport(String),
+    /// S3 answered with something the client couldn't read.
     #[error("unexpected response: {0}")]
     Parse(String),
     /// The object is bigger than the client will read in one go. `size` is the object's
@@ -108,12 +117,17 @@ pub enum S3Error {
 }
 
 impl S3Error {
+    /// Whether S3 answered 404, so a screen can say the message no longer exists rather than
+    /// show a raw error.
     pub fn is_not_found(&self) -> bool {
         matches!(self, S3Error::Service { status: 404, .. })
     }
 }
 
+/// The handful of S3 calls reses makes, as plain blocking methods. It's `Send + Sync` because
+/// the screens share one store across their worker threads.
 pub trait Store: Send + Sync {
+    /// Every bucket the credentials can see.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error>;
     /// One page of keys under `prefix`. `delimiter` groups keys into folders ("/").
     fn list(
@@ -125,7 +139,9 @@ pub trait Store: Send + Sync {
     ) -> Result<Listing, S3Error>;
     /// Bytes `start..=end` of an object (clamped to its length).
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error>;
+    /// A whole object.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error>;
+    /// Delete one object. A key that is already gone still counts as success.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error>;
     /// The region the store learned for `bucket` from a redirect, if it did. The default
     /// is `None`, for stores that have no regions.
@@ -135,21 +151,25 @@ pub trait Store: Send + Sync {
     }
 }
 
-/// In-memory store for tests. Page size is small on purpose so paging gets exercised.
+/// One bucket's objects in `MemoryStore`, by key: the bytes and a last-modified time.
 type Objects = BTreeMap<String, (Vec<u8>, OffsetDateTime)>;
 
+/// In-memory store for tests. Page size is small on purpose so paging gets exercised. Keys sit
+/// in a `BTreeMap`, which gives me S3's lexical listing order for free.
 pub struct MemoryStore {
     buckets: Mutex<BTreeMap<String, Objects>>,
     page_size: usize,
 }
 
 impl Default for MemoryStore {
+    /// The same as [`MemoryStore::new`].
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl MemoryStore {
+    /// An empty store with no buckets, listing three entries a page.
     pub fn new() -> Self {
         Self {
             buckets: Mutex::new(BTreeMap::new()),
@@ -157,11 +177,14 @@ impl MemoryStore {
         }
     }
 
+    /// List `n` entries a page instead. Zero becomes one, since an empty page would never end.
     pub fn with_page_size(mut self, n: usize) -> Self {
         self.page_size = n.max(1);
         self
     }
 
+    /// Store an object, creating the bucket if needed. Every object gets the Unix epoch as its
+    /// date, so tests that show dates stay stable.
     pub fn put(&self, bucket: &str, key: &str, data: &[u8]) {
         let mut b = self.buckets.lock().unwrap();
         b.entry(bucket.to_string())
@@ -169,6 +192,7 @@ impl MemoryStore {
             .insert(key.to_string(), (data.to_vec(), OffsetDateTime::UNIX_EPOCH));
     }
 
+    /// Add an empty bucket, or leave an existing one alone.
     pub fn create_bucket(&self, bucket: &str) {
         self.buckets
             .lock()
@@ -177,6 +201,7 @@ impl MemoryStore {
             .or_default();
     }
 
+    /// Whether the object exists, so a test can check that a delete really happened.
     pub fn contains(&self, bucket: &str, key: &str) -> bool {
         self.buckets
             .lock()
@@ -185,6 +210,7 @@ impl MemoryStore {
             .is_some_and(|b| b.contains_key(key))
     }
 
+    /// The 404 S3 gives for a missing bucket.
     fn no_bucket(bucket: &str) -> S3Error {
         S3Error::Service {
             status: 404,
@@ -193,6 +219,7 @@ impl MemoryStore {
         }
     }
 
+    /// The 404 S3 gives for a missing key.
     fn no_key(key: &str) -> S3Error {
         S3Error::Service {
             status: 404,
@@ -203,6 +230,7 @@ impl MemoryStore {
 }
 
 impl Store for MemoryStore {
+    /// Every bucket, by name, with no creation date.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         Ok(self
             .buckets
@@ -216,6 +244,8 @@ impl Store for MemoryStore {
             .collect())
     }
 
+    /// One page, the way ListObjectsV2 builds it: keys under the prefix in order, anything past a
+    /// delimiter folded into one folder entry, and the token being the last entry returned.
     fn list(
         &self,
         bucket: &str,
@@ -250,6 +280,7 @@ impl Store for MemoryStore {
                 )),
             }
         }
+        // Resume after the token, and hand out a new one only when entries are left.
         let start = match token {
             Some(t) => entries
                 .iter()
@@ -262,6 +293,7 @@ impl Store for MemoryStore {
             .then(|| page.last().map(|(k, _)| k.clone()))
             .flatten();
 
+        // Sort the page back into folders and objects.
         let mut listing = Listing {
             next_token,
             ..Listing::default()
@@ -275,6 +307,7 @@ impl Store for MemoryStore {
         Ok(listing)
     }
 
+    /// The range cut from the whole object, empty when it starts past the end, as `S3Client`'s is.
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
         let data = self.get(bucket, key)?;
         let len = data.len() as u64;
@@ -285,6 +318,7 @@ impl Store for MemoryStore {
         Ok(data[start as usize..=end as usize].to_vec())
     }
 
+    /// A copy of the object's bytes, or the 404 S3 would give. There's no size cap here.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         let buckets = self.buckets.lock().unwrap();
         let objects = buckets.get(bucket).ok_or_else(|| Self::no_bucket(bucket))?;
@@ -294,6 +328,7 @@ impl Store for MemoryStore {
             .ok_or_else(|| Self::no_key(key))
     }
 
+    /// Remove the object. Only a missing bucket is an error.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         let mut buckets = self.buckets.lock().unwrap();
         let objects = buckets
@@ -309,6 +344,8 @@ impl Store for MemoryStore {
 mod memory_store_tests {
     use super::*;
 
+    /// With two a page, the folders fill the first page and the loose keys the second, which is
+    /// the last.
     #[test]
     fn folders_collapse_and_pages_continue() {
         let s = MemoryStore::new().with_page_size(2);
@@ -330,6 +367,7 @@ mod memory_store_tests {
         assert_eq!(p2.next_token, None);
     }
 
+    /// A range past the end is cut to the object, and a delete really removes it.
     #[test]
     fn range_clamps_and_delete_removes() {
         let s = MemoryStore::new();

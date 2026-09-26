@@ -31,6 +31,8 @@ const REGION: &str = "region";
 /// configparser's default section: never listed as a section, inherited by all of them.
 const DEFAULT_SECTION: &str = "DEFAULT";
 
+/// One profile's name, keys and region: what `profiles` reads out of the file, and what `upsert`
+/// writes into it.
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Profile {
     pub name: String,
@@ -57,6 +59,8 @@ impl fmt::Debug for Profile {
     }
 }
 
+/// Why the credentials file couldn't be read, changed or written. `Invalid` covers both a file
+/// one of the AWS readers would reject and a new profile that would make it so.
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileError {
     #[error("reading {path}: {source}")]
@@ -81,6 +85,8 @@ struct Line {
     eol: &'static str,
 }
 
+/// The shared credentials file, held as its original lines so a save rewrites only what reses
+/// changed and leaves the user's comments, spacing and line endings as they were.
 #[derive(Clone, Default)]
 pub struct CredentialsFile {
     path: PathBuf,
@@ -132,6 +138,7 @@ impl CredentialsFile {
         })
     }
 
+    /// The file this was loaded from, and the one `save` writes back to.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -169,6 +176,7 @@ impl CredentialsFile {
         out
     }
 
+    /// The usable profile called `name`, read the same way as [`profiles`](Self::profiles).
     pub fn get(&self, name: &str) -> Option<Profile> {
         self.profiles().into_iter().find(|p| p.name == name)
     }
@@ -309,6 +317,7 @@ impl CredentialsFile {
     /// Insert after the section's last value line, copying the spacing around the delimiter from
     /// its first key. The new line is never indented, so it can't read as a continuation.
     fn insert_key(&mut self, kinds: &[Kind], header: usize, end: usize, key: &str, value: &str) {
+        // Find where the new line goes and how its delimiter should be spaced.
         let body = header + 1..end;
         let last_value = body
             .clone()
@@ -345,12 +354,14 @@ impl CredentialsFile {
         let Some(last) = self.lines.len().checked_sub(1) else {
             return;
         };
+        // Note whether the line losing its place at the end was the open-ended one, then drop.
         let open_end = drop.contains(&last) && self.lines[last].eol.is_empty();
         let mut i = 0;
         self.lines.retain(|_| {
             i += 1;
             !drop.contains(&(i - 1))
         });
+        // The new last line inherits it, so the file still ends without a newline.
         if open_end && let Some(l) = self.lines.last_mut() {
             l.eol = "";
         }
@@ -550,6 +561,7 @@ fn py_rstrip(s: &str) -> &str {
 fn split_lines(text: &str) -> Vec<Line> {
     let mut lines = Vec::new();
     let mut rest = text;
+    // Take one line at a time off the front, "\r\n" before a lone "\r" so it counts once.
     while !rest.is_empty() {
         let (text, eol, next) = match rest.find(['\r', '\n']) {
             None => (rest, "", ""),
@@ -604,6 +616,7 @@ struct Parsed {
 /// stops at the first line before a section header; I keep going, marking it bogus, so the
 /// writer still knows where everything else is.
 fn parse(lines: &[Line]) -> Parsed {
+    // What configparser carries from one line to the next, plus the first error of each sort.
     let mut kinds = Vec::with_capacity(lines.len());
     let mut section: Option<String> = None;
     let mut open_option: Option<usize> = None;
@@ -781,6 +794,7 @@ pub(crate) fn write_atomic(
         Ok(m) if m.file_type().is_symlink() => fs::canonicalize(path)?,
         _ => path.to_path_buf(),
     };
+    // The temp file has to sit in the same directory, or the rename wouldn't be atomic.
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => PathBuf::from("."),

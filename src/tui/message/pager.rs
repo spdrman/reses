@@ -116,10 +116,12 @@ impl Pager {
         self.top = self.retreat(text, self.top, n);
     }
 
+    /// I jump back to the first row of the first line.
     pub(super) fn home(&mut self) {
         self.top = (0, 0);
     }
 
+    /// I jump to the last screenful, so the final row sits at the bottom rather than the top.
     pub(super) fn end(&mut self, text: &str) {
         self.top = self.max_top(text);
     }
@@ -173,6 +175,8 @@ fn line_starts(text: &str) -> Vec<usize> {
 mod tests {
     use super::*;
 
+    /// I check my line index splits text exactly the way `str::lines` does, CRLF and trailing
+    /// newlines included, since the pager relies on the two agreeing.
     #[test]
     fn line_starts_split_like_str_lines() {
         for text in [
@@ -193,6 +197,8 @@ mod tests {
         }
     }
 
+    /// I check lazily wrapping one screen gives the same rows as wrapping the whole text up front,
+    /// and that scrolling a row at a time visits each row once.
     #[test]
     fn the_screen_matches_wrapping_everything_up_front() {
         let text = "short\nthis line is long enough to wrap over several rows at ten\n\nend";

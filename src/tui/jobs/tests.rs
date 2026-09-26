@@ -1,3 +1,10 @@
+//! Tests for the job pool: which queue a job waits in, what a stale generation skips, panics
+//! inside a job, `finish` at shutdown, and how far a header peek reads.
+//!
+//! I use a store that holds every call at a gate and logs the order calls arrived in, so a
+//! test can line jobs up behind a busy worker and then check who went first. Nothing sleeps:
+//! the only timer is a ceiling that fails a test when a broken pool would otherwise hang it.
+
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -20,6 +27,7 @@ struct Gated {
 }
 
 impl Gated {
+    /// I build a shut gate over a store holding one small email per test key.
     fn new() -> Arc<Self> {
         let inner = MemoryStore::new();
         for k in ["busy", "a", "b", "c", "d", "fine"] {
@@ -34,6 +42,8 @@ impl Gated {
         })
     }
 
+    /// I log a call and hold it at the gate until the test opens it. A get of "explode" panics
+    /// instead, before it's logged.
     fn enter(&self, what: String) {
         if what == "get explode" {
             panic!("boom on explode");
@@ -65,21 +75,25 @@ impl Gated {
         }
     }
 
+    /// I open the gate, letting every held call and every later one through.
     fn release(&self) {
         *self.open.lock().unwrap() = true;
         self.opened.notify_all();
     }
 
+    /// I return the calls in the order they reached the store.
     fn log(&self) -> Vec<String> {
         self.log.lock().unwrap().clone()
     }
 }
 
 impl Store for Gated {
+    /// I log the call, wait at the gate, then list the buckets.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         self.enter("buckets".into());
         self.inner.list_buckets()
     }
+    /// I log the call, wait at the gate, then list.
     fn list(
         &self,
         bucket: &str,
@@ -90,20 +104,24 @@ impl Store for Gated {
         self.enter("list".into());
         self.inner.list(bucket, prefix, delimiter, token)
     }
+    /// I log the call as a peek, wait at the gate, then read the range.
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
         self.enter(format!("peek {key}"));
         self.inner.get_range(bucket, key, start, end)
     }
+    /// I log the call, wait at the gate, then read the object.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         self.enter(format!("get {key}"));
         self.inner.get(bucket, key)
     }
+    /// I log the call, wait at the gate, then delete.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         self.enter(format!("delete {key}"));
         self.inner.delete(bucket, key)
     }
 }
 
+/// I build a small plain text email with `subject` in its headers and body.
 fn email(subject: &str) -> Vec<u8> {
     format!(
         "From: A <a@example.com>\r\nTo: b@example.com\r\nSubject: {subject}\r\n\
@@ -113,6 +131,7 @@ fn email(subject: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// I build a 64 byte peek of `key`.
 fn peek(key: &str) -> Job {
     Job::Peek {
         bucket: B.into(),
@@ -121,6 +140,7 @@ fn peek(key: &str) -> Job {
     }
 }
 
+/// I build a whole-object get of `key`.
 fn get(key: &str) -> Job {
     Job::Get {
         bucket: B.into(),
@@ -128,6 +148,7 @@ fn get(key: &str) -> Job {
     }
 }
 
+/// I build a delete of `key`.
 fn delete(key: &str) -> Job {
     Job::Delete {
         bucket: B.into(),
@@ -135,6 +156,7 @@ fn delete(key: &str) -> Job {
     }
 }
 
+/// I build a folder listing of the test bucket's root.
 fn list() -> Job {
     Job::List {
         bucket: B.into(),
@@ -157,6 +179,8 @@ fn collect(jobs: &mut Jobs, n: usize) -> Vec<Done> {
     out
 }
 
+/// A get, a delete or a listing jumps ahead of the peeks already queued, since someone is
+/// sitting there waiting on it and peeks only fill in rows.
 #[test]
 fn jobs_someone_is_waiting_on_run_before_queued_peeks() {
     let store = Gated::new();
@@ -183,6 +207,8 @@ fn jobs_someone_is_waiting_on_run_before_queued_peeks() {
     );
 }
 
+/// After a refresh the stale listings and peeks come back skipped, but a stale delete still runs,
+/// because the user asked for it and skipping it would leave the mail there.
 #[test]
 fn a_stale_generation_skips_listings_and_peeks_but_never_a_delete() {
     let store = Gated::new();
@@ -220,6 +246,7 @@ fn a_stale_generation_skips_listings_and_peeks_but_never_a_delete() {
     }
 }
 
+/// Jobs stamped with the generation that's still current all run.
 #[test]
 fn a_current_generation_runs_everything() {
     let store = Gated::new();
@@ -235,6 +262,7 @@ fn a_current_generation_runs_everything() {
     }
 }
 
+/// A job that panics comes back as an `Err`, and the one worker survives to run the next job.
 #[test]
 fn a_panicking_job_comes_back_as_an_err_and_the_worker_keeps_going() {
     let store = Gated::new();
@@ -253,6 +281,7 @@ fn a_panicking_job_comes_back_as_an_err_and_the_worker_keeps_going() {
     assert!(matches!(done[0].result, Ok(Outcome::Data(_))), "{done:?}");
 }
 
+/// Sixty mixed jobs over four workers give back exactly one result each, none lost or doubled.
 #[test]
 fn every_submitted_job_sends_exactly_one_done() {
     let store = Gated::new();
@@ -269,6 +298,8 @@ fn every_submitted_job_sends_exactly_one_done() {
     assert!(jobs.poll().is_empty());
 }
 
+/// A header peek decides whether the object is mail and summarizes it on the worker, so the
+/// UI thread never parses.
 #[test]
 fn peek_head_decides_and_summarizes_on_the_worker() {
     let store = MemoryStore::new();
@@ -299,6 +330,8 @@ fn peek_head_decides_and_summarizes_on_the_worker() {
     );
 }
 
+/// A header block longer than the first peek (a long relay chain) is read on until it ends,
+/// so the subject after it still turns up.
 #[test]
 fn peek_head_reads_past_a_long_header_block() {
     let mut raw = String::new();
@@ -324,6 +357,7 @@ fn peek_head_reads_past_a_long_header_block() {
     }
 }
 
+/// Opening a message decodes both the text and the HTML view on the worker.
 #[test]
 fn open_decodes_on_the_worker() {
     let store = MemoryStore::new();
@@ -347,6 +381,7 @@ fn open_decodes_on_the_worker() {
     }
 }
 
+/// I build an open of `key`.
 fn open(key: &str) -> Job {
     Job::Open {
         bucket: B.into(),
@@ -370,6 +405,7 @@ fn eventually_logged(store: &Gated, what: &str) -> bool {
     }
 }
 
+/// Opens queued for a message screen that's since closed are skipped, while a fresh one runs.
 #[test]
 fn a_stale_open_is_skipped_like_a_peek() {
     let store = Gated::new();
@@ -393,6 +429,7 @@ fn a_stale_open_is_skipped_like_a_peek() {
     assert_eq!(skipped, [open("a"), open("b")]);
 }
 
+/// A delete still queued when quitting drops the pool reaches S3 anyway.
 #[test]
 fn a_delete_queued_when_the_pool_is_dropped_still_runs() {
     let store = Gated::new();
@@ -416,6 +453,8 @@ fn a_delete_queued_when_the_pool_is_dropped_still_runs() {
     }
 }
 
+/// At shutdown `finish` waits for the queued delete and drops the peek and listing nobody
+/// will read.
 #[test]
 fn finish_waits_for_queued_deletes_and_skips_everything_else() {
     let store = Gated::new();
@@ -449,6 +488,8 @@ fn finish_waits_for_queued_deletes_and_skips_everything_else() {
     assert_eq!(store.log(), ["get busy", "delete c"]);
 }
 
+/// When `finish` runs out of time it hands back every delete still queued, so I can tell
+/// the user which ones may not have happened.
 #[test]
 fn finish_names_the_deletes_it_could_not_wait_for() {
     let store = Gated::new();
@@ -469,6 +510,7 @@ fn finish_names_the_deletes_it_could_not_wait_for() {
     store.release();
 }
 
+/// Inline jobs have already run by the time `finish` is called, so it reports nothing dropped.
 #[test]
 fn finish_on_inline_jobs_has_nothing_to_wait_for() {
     let store = MemoryStore::new();
@@ -514,9 +556,11 @@ impl Ranges {
 }
 
 impl Store for Ranges {
+    /// I pass this straight through to the wrapped store.
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
         self.inner.list_buckets()
     }
+    /// I pass this straight through to the wrapped store.
     fn list(
         &self,
         bucket: &str,
@@ -526,18 +570,22 @@ impl Store for Ranges {
     ) -> Result<Listing, S3Error> {
         self.inner.list(bucket, prefix, delimiter, token)
     }
+    /// I record the range asked for, then read it through the wrapped store.
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
         self.asked.lock().unwrap().push((start, end));
         self.inner.get_range(bucket, key, start, end)
     }
+    /// I pass this straight through to the wrapped store.
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         self.inner.get(bucket, key)
     }
+    /// I pass this straight through to the wrapped store.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         self.inner.delete(bucket, key)
     }
 }
 
+/// A CRLF header that ends inside the first peek costs exactly one range request.
 #[test]
 fn a_crlf_header_that_ends_in_the_first_peek_stops_there() {
     // SES stores mail with CRLF line endings. When the blank line ending the header block is in
@@ -555,6 +603,7 @@ fn a_crlf_header_that_ends_in_the_first_peek_stops_there() {
     );
 }
 
+/// An object shorter than the first peek, with no blank line, is read once and not asked for again.
 #[test]
 fn an_object_smaller_than_the_peek_is_read_once() {
     // A short object with no blank line (a header block on its own) came back whole in the

@@ -1,3 +1,11 @@
+//! Tests for the header logo: when a terminal gets the image or the text wordmark, what the
+//! wordmark looks like, and how much room each leaves the screen below.
+//!
+//! I render the app with a probe view that only remembers the area it was handed, so the
+//! tests can measure the header without any real screen in the way. The plan tests build an
+//! `Env` by hand, since reading the real environment would make them depend on the terminal
+//! running the suite.
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -18,20 +26,26 @@ struct Probe {
 }
 
 impl View for Probe {
+    /// I title myself like an inbox, so the header has realistic text next to the logo.
     fn title(&self) -> String {
         "Inbox s3://mail/inbound/".into()
     }
+    /// I draw nothing and remember the area, so a test can see how much room the header left.
     fn render(&mut self, _frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         self.area.set(area);
     }
+    /// I ignore every key.
     fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx) -> Transition {
         Transition::None
     }
+    /// I show a single hint, enough for the status line to have something in it.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         vec![("q", "quit")]
     }
 }
 
+/// I build an app with `brand` in the header and the probe as its only screen, handing
+/// back the cell the probe writes its area into.
 fn app(brand: Brand) -> (App, Rc<Cell<Rect>>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = testing::ctx(dir.path(), None);
@@ -41,12 +55,14 @@ fn app(brand: Brand) -> (App, Rc<Cell<Rect>>, tempfile::TempDir) {
     (app, area, dir)
 }
 
+/// I build an image picker for `protocol` at an 8x16 font, without asking any terminal.
 fn picker(protocol: ProtocolType) -> Picker {
     let mut p = Picker::from_fontsize((8, 16));
     p.set_protocol_type(protocol);
     p
 }
 
+/// I read row `y` of the buffer back as text, one symbol per cell.
 fn row(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
 }
@@ -71,6 +87,8 @@ fn cols_of(buf: &Buffer, y: u16, s: &str) -> Vec<u16> {
         .collect()
 }
 
+/// In text mode the wordmark leads the bar on either background and the header stays one row, so no
+/// screen loses body height.
 #[test]
 fn text_mode_puts_the_wordmark_at_the_start_of_the_bar() {
     for bg in [Background::Dark, Background::Light] {
@@ -86,6 +104,8 @@ fn text_mode_puts_the_wordmark_at_the_start_of_the_bar() {
     }
 }
 
+/// I check the text wordmark picks out the cube and colon in logo blue and only SES in bold, like
+/// the image does.
 #[test]
 fn text_mode_styles_the_wordmark_like_the_logo() {
     let (mut app, _area, _d) = app(Brand::text());
@@ -112,6 +132,8 @@ fn text_mode_styles_the_wordmark_like_the_logo() {
     }
 }
 
+/// In both modes the bar after the logo uses the terminal's own colours reversed and bold, so it
+/// reads on any theme.
 #[test]
 fn the_bar_uses_the_terminals_own_colours_reversed_and_bold() {
     for brand in [
@@ -140,6 +162,8 @@ fn the_bar_uses_the_terminals_own_colours_reversed_and_bold() {
     }
 }
 
+/// In image mode the logo gets two rows and fifteen columns to itself, with the title starting
+/// clear of it.
 #[test]
 fn image_mode_reserves_the_logo_area_left_of_the_bar() {
     for bg in [Background::Dark, Background::Light] {
@@ -169,6 +193,8 @@ fn image_mode_reserves_the_logo_area_left_of_the_bar() {
     }
 }
 
+/// A dark background gets the light-text logo and a light one the dark-text logo, so it never
+/// vanishes into the theme.
 #[test]
 fn image_mode_picks_the_variant_for_the_background() {
     let dark = Brand::with_picker(picker(ProtocolType::Kitty), Background::Dark);
@@ -177,6 +203,7 @@ fn image_mode_picks_the_variant_for_the_background() {
     assert_eq!(light.variant(), Some(Variant::DarkText));
 }
 
+/// A terminal that can only do half blocks gets the text wordmark instead of a blurry picture.
 #[test]
 fn a_terminal_without_an_image_protocol_gets_the_text_wordmark() {
     let brand = Brand::with_picker(picker(ProtocolType::Halfblocks), Background::Dark);
@@ -186,6 +213,8 @@ fn a_terminal_without_an_image_protocol_gets_the_text_wordmark() {
     assert_eq!(area.get().y, 1);
 }
 
+/// Too narrow or too short a terminal falls back to text, and even a tiny one shows the wordmark
+/// whole.
 #[test]
 fn a_small_terminal_falls_back_to_the_text_wordmark() {
     for (w, h) in [(59u16, 20u16), (40, 20), (100, 11)] {
@@ -212,6 +241,8 @@ fn a_small_terminal_falls_back_to_the_text_wordmark() {
     assert_eq!(cols_of(&buf, 0, "■"), [1]);
 }
 
+/// I check COLORFGBG maps to dark or light, and that anything missing or garbled falls back to
+/// dark.
 #[test]
 fn the_background_comes_from_colorfgbg() {
     assert_eq!(Background::from_colorfgbg(Some("15;0")), Background::Dark);
@@ -228,6 +259,8 @@ fn the_background_comes_from_colorfgbg() {
     assert_eq!(Background::from_colorfgbg(None), Background::Dark);
 }
 
+/// Both logo PNGs decode at 702x192 and come out fifteen columns wide, which the layout above
+/// relies on.
 #[test]
 fn both_header_pngs_decode_at_the_rendered_size() {
     for png in [HEADER_PNG, HEADER_LIGHT_PNG] {
@@ -249,6 +282,7 @@ fn text_header_frame() {
     assert!(scr.lines().next().unwrap().starts_with(" ■ re:SES  Inbox"));
 }
 
+/// I build an `Env` from name and value pairs, leaving every other variable unset.
 fn env(vars: &[(&str, &str)]) -> Env {
     let mut e = Env::default();
     for (k, v) in vars {
@@ -267,6 +301,8 @@ fn env(vars: &[(&str, &str)]) -> Env {
     e
 }
 
+/// Terminals I can name from their variables get the right image protocol straight away, without
+/// querying the terminal.
 #[test]
 fn named_image_terminals_get_the_image_without_a_query() {
     for (vars, protocol) in [
@@ -288,6 +324,8 @@ fn named_image_terminals_get_the_image_without_a_query() {
     }
 }
 
+/// Every other terminal, tmux included, gets text and no query, since an unanswered query would
+/// stall startup.
 #[test]
 fn every_other_terminal_gets_text_and_no_query() {
     for vars in [
@@ -311,6 +349,7 @@ fn every_other_terminal_gets_text_and_no_query() {
     }
 }
 
+/// RESES_LOGO forces text or a query, and any other value is ignored rather than guessed at.
 #[test]
 fn reses_logo_forces_either_way() {
     assert_eq!(
@@ -332,6 +371,8 @@ fn reses_logo_forces_either_way() {
     );
 }
 
+/// The cell size comes from the window's pixels and cells, or not at all when the terminal doesn't
+/// report them.
 #[test]
 fn the_cell_size_comes_from_the_window_or_not_at_all() {
     assert_eq!(cell_size(800, 480, 100, 30), Some((8, 16)));

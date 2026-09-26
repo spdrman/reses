@@ -6,12 +6,15 @@ use std::collections::BTreeSet;
 
 use reses::s3::{Credentials, S3Client, S3Error, Store};
 
+/// A variable ci-docker.sh sets for the integration run. Missing means someone ran these by hand,
+/// so the panic says where to run them from.
 fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!("{name} is not set; run these through scripts/ci-docker.sh --integration")
     })
 }
 
+/// A client on MinIO's test keys, pointed at its endpoint with path-style addressing.
 fn client(region: &str) -> S3Client {
     S3Client::new(
         Credentials {
@@ -43,6 +46,7 @@ const KEYS: &[&str] = &[
     "other/elsewhere",
 ];
 
+/// A fresh bucket holding every key in KEYS, each with a body that names its key.
 fn seeded(tag: &str) -> (S3Client, String) {
     let c = client("us-east-1");
     let b = bucket(tag);
@@ -54,6 +58,7 @@ fn seeded(tag: &str) -> (S3Client, String) {
     (c, b)
 }
 
+/// ListBuckets includes a bucket I just made.
 #[test]
 #[ignore]
 fn list_buckets_sees_a_new_bucket() {
@@ -67,6 +72,8 @@ fn list_buckets_sees_a_new_bucket() {
     assert!(names.contains(&b), "{names:?}");
 }
 
+/// Two keys a page forces a delimited listing over several pages. Every page stays in the
+/// limit, the tokens eventually run out, and the union is exactly one level of the folder.
 #[test]
 #[ignore]
 fn page_through_a_folder_listing() {
@@ -93,6 +100,7 @@ fn page_through_a_folder_listing() {
         assert!(pages < 20, "listing never ended");
     }
     assert!(pages >= 4, "only {pages} pages");
+    // Only this level's objects come back, and each sub-folder as a single prefix.
     let expected: BTreeSet<String> = KEYS
         .iter()
         .filter(|k| k.starts_with("inbox/") && !k.starts_with("inbox/sub/"))
@@ -119,6 +127,7 @@ fn page_through_a_folder_listing() {
     assert!(flat.prefixes.is_empty());
 }
 
+/// Keys with spaces, `+`, `%` and non-ASCII survive signing and URL encoding on every call.
 #[test]
 #[ignore]
 fn odd_keys_round_trip_through_list_get_and_delete() {
@@ -137,6 +146,8 @@ fn odd_keys_round_trip_through_list_get_and_delete() {
     assert!(rest.objects.is_empty(), "{rest:?}");
 }
 
+/// Ranged reads clamp to the object's end (and past it give nothing), and a whole get of a
+/// few MB comes back intact.
 #[test]
 #[ignore]
 fn ranged_get_and_get() {
@@ -163,6 +174,7 @@ fn ranged_get_and_get() {
     );
 }
 
+/// A missing bucket or key comes back as S3's own 404 code, not a generic failure.
 #[test]
 #[ignore]
 fn missing_things_are_service_errors() {
@@ -185,6 +197,7 @@ fn missing_things_are_service_errors() {
     c.delete(&b, "nope").unwrap();
 }
 
+/// A bad secret is a 403 from the server, and neither the message nor Debug holds the secret.
 #[test]
 #[ignore]
 fn a_wrong_secret_is_a_service_error_that_does_not_leak_it() {
@@ -206,6 +219,7 @@ fn a_wrong_secret_is_a_service_error_that_does_not_leak_it() {
     assert!(!format!("{err} {err:?}").contains(secret));
 }
 
+/// Nothing listening is a transport error, kept apart from anything the server said.
 #[test]
 #[ignore]
 fn unreachable_endpoint_is_a_transport_error() {
@@ -225,7 +239,7 @@ fn unreachable_endpoint_is_a_transport_error() {
 /// bytes it was given (dots are unreserved, so they go out as `.`), and nothing between it
 /// and the server may normalise a path onto a neighbouring key.
 ///
-/// What MinIO does: a key whose segments include a bare `.` or `..` is refused outright with
+/// MinIO refuses a key whose segments include a bare `.` or `..` outright, with
 /// 400 XMinioInvalidResourceName, for put, get, delete and as a list prefix. Real S3 accepts
 /// such keys as opaque strings. Dots that aren't whole segments are ordinary characters and
 /// round-trip. The decoys prove no request landed on a normalised path.
@@ -250,6 +264,7 @@ fn dot_segment_keys_are_never_normalised() {
         "inbox/x.y/..z.",
         "inbox/...",
     ];
+    // Dots inside a segment are ordinary characters and have to work on every call.
     for k in plain {
         let body = format!("body of {k}");
         c.put_object(&b, k, body.as_bytes()).unwrap();
@@ -272,10 +287,12 @@ fn dot_segment_keys_are_never_normalised() {
         "..",
         "inbox/g/../../h",
     ];
+    /// MinIO's refusal of a dot segment.
     fn refused<T>(r: &Result<T, S3Error>) -> bool {
         matches!(r, Err(S3Error::Service { status: 400, code, .. })
             if code == "XMinioInvalidResourceName")
     }
+    // Whole dot segments are refused on every call, never quietly resolved.
     for k in segments {
         let body = format!("body of {k}");
         let put = c.put_object(&b, k, body.as_bytes());
@@ -288,6 +305,7 @@ fn dot_segment_keys_are_never_normalised() {
         assert!(refused(&deleted), "{k}: delete {deleted:?}");
     }
 
+    // And not one request landed on a decoy.
     for k in decoys {
         assert_eq!(
             c.get(&b, k).unwrap(),

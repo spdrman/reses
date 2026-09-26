@@ -16,18 +16,21 @@ BUCKET=mail-inbound
 PREFIX=inbound/
 TO=mail@example.org
 
+# One signed S3 request to MinIO; the arguments go straight to curl.
 s3() {
   # curl signs the request itself, so seeding needs no S3 client beyond what the CI image has.
   curl -fsS --aws-sigv4 "aws:amz:us-east-1:s3" --user "$S3_KEY:$S3_SECRET" \
     -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" "$@"
 }
 
+# MinIO takes a moment to listen, so wait for its health check rather than racing it.
 for i in $(seq 1 60); do
   curl -fs -o /dev/null "$S3_ENDPOINT/minio/health/live" && break
   [ "$i" = 60 ] && { echo "MinIO never came up" >&2; exit 1; }
   sleep 1
 done
 
+# The inbox bucket, plus two unrelated ones, so the inbox isn't the only bucket on show.
 s3 -X PUT "$S3_ENDPOINT/$BUCKET" -o /dev/null
 s3 -X PUT "$S3_ENDPOINT/site-assets" -o /dev/null
 s3 -X PUT "$S3_ENDPOINT/backups-2026" -o /dev/null
@@ -35,6 +38,7 @@ s3 -X PUT "$S3_ENDPOINT/backups-2026" -o /dev/null
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# Upload FILE as object KEY in the inbox bucket.
 put() { # put KEY FILE
   s3 -T "$2" "$S3_ENDPOINT/$BUCKET/$1" -o /dev/null
 }

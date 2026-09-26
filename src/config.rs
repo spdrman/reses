@@ -1,4 +1,9 @@
 //! reses's own settings: the default account and the saved inbox location.
+//!
+//! They live in one small TOML file (see [`AppConfig::default_path`]) that serde reads and
+//! writes whole. I keep them apart from the AWS files on purpose: those belong to the user and
+//! the AWS tools, while this file is reses's alone, so I can rewrite it freely. I validate an
+//! inbox both when loading and before saving, because a bad one would stop reses from starting.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,12 +21,18 @@ pub struct Inbox {
     pub region: Option<String>,
 }
 
+/// Everything in the settings file. Both parts are optional, so a first run starts from the
+/// default and fills them in as the user picks an account and a bucket.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// The account the accounts screen marks as default and starts on.
     pub default_profile: Option<String>,
+    /// The saved inbox location, if the user has picked one.
     pub inbox: Option<Inbox>,
 }
 
+/// Why the settings file couldn't be read or written. Each variant names the path, so the
+/// message alone tells the user which file to look at.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("reading {path}: {source}")]
@@ -44,12 +55,14 @@ impl Inbox {
     /// 255 characters), because reses saves whatever ListBuckets returned and an older bucket
     /// that refused to load would lock reses out at startup.
     pub fn validate(&self) -> Result<(), String> {
+        // The prefix is a folder, so it has to end where a folder does.
         if !self.prefix.is_empty() && !self.prefix.ends_with('/') {
             return Err(format!(
                 "inbox prefix {:?} must be empty or end in '/'",
                 self.prefix
             ));
         }
+        // The bucket name, by the loosest rules S3 has ever used.
         let b = &self.bucket;
         let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
         let ok = (3..=255).contains(&b.len())
@@ -63,7 +76,8 @@ impl Inbox {
 }
 
 impl AppConfig {
-    /// `$RESES_CONFIG`, else `$XDG_CONFIG_HOME/reses/config.toml`, else `~/.config/reses/config.toml`.
+    /// Where the settings file lives for this process: `$RESES_CONFIG`, else
+    /// `$XDG_CONFIG_HOME/reses/config.toml`, else `~/.config/reses/config.toml`.
     pub fn default_path() -> PathBuf {
         Self::path_from(
             std::env::var_os("RESES_CONFIG"),
@@ -93,8 +107,11 @@ impl AppConfig {
         PathBuf::from(home.unwrap_or_default()).join(".config/reses/config.toml")
     }
 
-    /// A missing file loads as the default config.
+    /// Read the settings at `path`. A missing file loads as the default config, and a saved
+    /// inbox that fails [`Inbox::validate`] is a parse error, so a hand-edited mistake is caught
+    /// here rather than as a confusing S3 failure later.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
+        // A missing file just means nothing is saved yet.
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -105,6 +122,7 @@ impl AppConfig {
                 });
             }
         };
+        // Bad TOML and a bad inbox both come back as a parse error naming the file.
         let parse_err = |message| ConfigError::Parse {
             path: path.to_path_buf(),
             message,
@@ -116,7 +134,8 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Create parent directories and write atomically.
+    /// Write the settings to `path`, creating parent directories and replacing the file
+    /// atomically, so a crash mid-save leaves the old settings rather than half of the new ones.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         let write_err = |source| ConfigError::Write {
             path: path.to_path_buf(),
@@ -128,6 +147,7 @@ impl AppConfig {
                 .validate()
                 .map_err(|m| write_err(std::io::Error::new(std::io::ErrorKind::InvalidInput, m)))?;
         }
+        // Serialise, then hand the bytes to the same atomic writer the credentials file uses.
         let text = toml::to_string_pretty(self)
             .map_err(|e| write_err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
         crate::aws_profile::write_atomic(path, text.as_bytes(), None, None).map_err(write_err)

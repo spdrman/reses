@@ -53,6 +53,7 @@ pub struct Summary {
 pub fn format_message(raw: &[u8], prefer_html: bool) -> String {
     let input = parts::prepare(raw);
     let parsed = parts::Parsed::new(&input);
+    // The fixed header lines, always all eight and always in this order, empty or not.
     let mut lines = vec![
         format!("From: {}", parsed.addresses("From")),
         format!("Reply-To: {}", parsed.addresses("Reply-To")),
@@ -72,6 +73,7 @@ pub fn format_message(raw: &[u8], prefer_html: bool) -> String {
             .collect();
         lines.push(format!("Attachments: {}", listed.join(", ")));
     }
+    // Then the body under its own line, with the blank line the oracle prints between them.
     lines.push("Message:".into());
     lines.push(String::new());
     lines.push(parsed.body(prefer_html));
@@ -91,6 +93,7 @@ pub fn summarize(raw: &[u8]) -> Summary {
             .map_or(0, |i| i + 1);
         data = &raw[..cut];
     }
+    // What's left parses like any whole message; the fields just come out empty where it stops.
     let input = parts::prepare(data);
     let parsed = parts::Parsed::new(&input);
     Summary {
@@ -122,6 +125,7 @@ pub fn save_attachments(raw: &[u8], dir: &Path) -> io::Result<Vec<PathBuf>> {
 /// paths written.
 pub fn save_attachments_report(raw: &[u8], dir: &Path) -> io::Result<SaveReport> {
     std::fs::create_dir_all(dir)?;
+    // The attachments come out in message order, as the Attachments line lists them.
     let input = parts::prepare(raw);
     let parsed = parts::Parsed::new(&input);
     let items = parsed

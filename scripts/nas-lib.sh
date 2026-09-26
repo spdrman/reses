@@ -30,6 +30,7 @@ NAS_SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR "$NAS")
 # I quote each argument with printf %q, so the NAS's shell sees exactly what the caller passed.
 # bash's %q writes newlines as $'...', so the NAS login shell has to be bash or zsh.
 nas() { "${NAS_SSH[@]}" "$(printf '%q ' "$@")"; }
+# docker on the NAS, through the same quoting.
 dk() { nas docker "$@"; }
 
 # Asked once, and a failure here is the one place a missing NAS gets a readable message.

@@ -1,4 +1,11 @@
 //! Pick an AWS profile from the credentials file, or add one.
+//!
+//! I read the profiles straight out of `~/.aws/credentials` (the same file the aws CLI uses)
+//! and list them with their region and key ID. Enter connects one and pushes the bucket
+//! browser on it; `a` opens a small form that validates a new profile and writes it back into
+//! that file. I keep secrets masked by default and out of every error message, because this
+//! screen is the one place reses ever handles a raw secret key. I'm the first screen when no
+//! account is connected yet, and the inbox can push me again with `u` to switch accounts.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,6 +34,8 @@ pub struct AccountsScreen {
 }
 
 impl AccountsScreen {
+    /// I build the screen, load the profiles and start the selection on the default account
+    /// if there is one. It's the root screen only when no session is open yet.
     pub fn new(ctx: &mut Ctx) -> Self {
         let mut screen = Self {
             profiles: Vec::new(),
@@ -57,6 +66,8 @@ impl AccountsScreen {
         self
     }
 
+    /// I re-read the credentials file and work out each profile's region, then clamp the
+    /// selection so a profile that vanished doesn't leave it pointing past the end.
     fn reload(&mut self, ctx: &mut Ctx) {
         self.file_exists = ctx.creds_path.exists();
         self.profiles = ctx.credentials().map(|f| f.profiles()).unwrap_or_default();
@@ -72,6 +83,7 @@ impl AccountsScreen {
         self.selected = self.selected.min(self.profiles.len().saturating_sub(1));
     }
 
+    /// I label q as quit on the first screen and as back when I'm pushed over another one.
     fn q_hint(&self) -> (&'static str, &'static str) {
         if self.root {
             ("q", "quit")
@@ -80,6 +92,8 @@ impl AccountsScreen {
         }
     }
 
+    /// I connect the profile and push a browser on that session. Only as the root screen do I
+    /// make it the shared session too.
     fn open_browser(&self, profile: Profile, ctx: &mut Ctx) -> Transition {
         let session = (self.connect)(profile);
         // As the first screen nothing below uses ctx.session, so it can follow this account and
@@ -90,6 +104,8 @@ impl AccountsScreen {
         Transition::Push(Box::new(BrowserScreen::with_session(session)))
     }
 
+    /// I handle a key on the profile list: move, connect, add, reload, or make a profile the
+    /// default.
     fn list_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         let n = self.profiles.len();
         match key.code {
@@ -121,6 +137,7 @@ impl AccountsScreen {
         Transition::None
     }
 
+    /// I pass a key to the open form and act on what it asks for: stay, cancel, or save.
     fn form_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         let Some(form) = self.form.as_mut() else {
             return Transition::None;
@@ -135,6 +152,9 @@ impl AccountsScreen {
         }
     }
 
+    /// I validate the form, ask before writing keys into a section that already exists, write
+    /// the credentials file, and connect the new profile. Anything that fails stays on the form
+    /// with the reason on the status line.
     fn save_form(&mut self, overwrite: bool, ctx: &mut Ctx) -> Transition {
         let Some(form) = self.form.as_mut() else {
             return Transition::None;
@@ -173,6 +193,8 @@ impl AccountsScreen {
         self.open_browser(profile, ctx)
     }
 
+    /// I draw the profile list with aligned name, region and key ID columns, or a hint about
+    /// adding an account when there are no profiles yet.
     fn render_list(&self, frame: &mut Frame, area: Rect, ctx: &Ctx) {
         let [head, body] =
             Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
@@ -260,6 +282,7 @@ impl AccountsScreen {
 }
 
 impl View for AccountsScreen {
+    /// I title the screen after whichever of the list or the form is showing.
     fn title(&self) -> String {
         if self.form.is_some() {
             "Add account".into()
@@ -268,6 +291,7 @@ impl View for AccountsScreen {
         }
     }
 
+    /// I draw the form when it's open and the list otherwise.
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx) {
         match &self.form {
             Some(form) => form.render(frame, area, ctx),
@@ -275,6 +299,7 @@ impl View for AccountsScreen {
         }
     }
 
+    /// I route a key to the form when it's open and to the list otherwise.
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.form.is_some() {
             self.form_key(key, ctx)
@@ -283,6 +308,8 @@ impl View for AccountsScreen {
         }
     }
 
+    /// I reload the profiles whenever I come back to the top, since the form or another tool
+    /// may have changed the file.
     fn on_focus(&mut self, ctx: &mut Ctx) {
         self.reload(ctx);
     }
@@ -298,6 +325,8 @@ impl View for AccountsScreen {
         Transition::None
     }
 
+    /// I show the keys that do something in the current mode: the overwrite prompt, the form,
+    /// or the list.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         match &self.form {
             Some(f) if f.confirm_overwrite => vec![("y", "overwrite"), ("any key", "back")],
@@ -357,6 +386,8 @@ enum FormAction {
 }
 
 impl AccountForm {
+    /// I handle a key in the form. While the overwrite prompt is up only y saves; otherwise I
+    /// type into the focused field, move focus, toggle the reveal, or ask to save or cancel.
     fn on_key(&mut self, key: KeyEvent) -> FormAction {
         if self.confirm_overwrite {
             self.confirm_overwrite = false;
@@ -440,6 +471,8 @@ impl AccountForm {
         })
     }
 
+    /// I draw each field with its label, a fixed width mask over secrets unless revealed, and
+    /// placeholders for empty fields, then the overwrite question or a note on where keys go.
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &Ctx) {
         // DIM rather than dark grey, which vanished on Solarized Dark.
         let dim = Style::default().add_modifier(Modifier::DIM);

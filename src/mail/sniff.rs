@@ -1,13 +1,13 @@
 //! Telling a stored message from any other object in the bucket, from the first bytes alone.
 //!
-//! An object this says no to vanishes from the inbox, so it leans towards yes (N31). The header
-//! syntax is read tolerantly: a byte order mark or blank lines in front, blanks before a colon
-//! (RFC 5322's obsolete syntax), and one or two lines that aren't headers at all all pass. What
-//! it asks for instead is evidence of mail: two distinct mail headers, one of them a From with an
+//! An object I say no to vanishes from the inbox, so I lean towards yes (N31). I read the header
+//! syntax tolerantly: a byte order mark or blank lines in front, blanks before a colon (RFC
+//! 5322's obsolete syntax), and one or two lines that aren't headers at all all pass. What I ask
+//! for instead is evidence of mail: two distinct mail headers, one of them a From with an
 //! address in it or a header only a mail server adds. A prefix that stops before the headers end
 //! gets the benefit of the doubt with one mail header, as long as every line so far is a header.
-//! The SES setup notice is shaped like mail but isn't anyone's message, so it's turned away by its
-//! subject, decoded first so an encoded subject can't slip past.
+//! The SES setup notice is shaped like mail but isn't anyone's message, so I turn it away by its
+//! subject, which I decode first so an encoded subject can't slip past.
 
 use std::collections::HashSet;
 
@@ -77,6 +77,7 @@ fn lines(data: &[u8]) -> Vec<(&[u8], bool)> {
         }
         i += 1;
     }
+    // Whatever follows the last line ending is a line the prefix cut short.
     if start < data.len() {
         out.push((&data[start..], false));
     }

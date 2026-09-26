@@ -48,6 +48,8 @@ pub struct MessageScreen {
 }
 
 impl MessageScreen {
+    /// I build a message screen for `bucket/key` that saves into ~/Downloads. The fetch starts
+    /// on first focus, so building one costs nothing.
     pub fn new(bucket: String, key: String) -> Self {
         Self {
             bucket,
@@ -87,15 +89,19 @@ impl MessageScreen {
         self
     }
 
+    /// I share the inbox's set of handed-over deletes, so a delete still in flight when I close
+    /// gets reported by the inbox instead of vanishing.
     pub(super) fn with_handoff(mut self, handoff: Handoff) -> Self {
         self.handoff = Some(handoff);
         self
     }
 
+    /// I spell out the message as an s3:// URL for the title.
     fn location(&self) -> String {
         format!("s3://{}/{}", self.bucket, self.key)
     }
 
+    /// I return the text or HTML part, whichever is showing, or nothing while it loads.
     fn shown(&self) -> &str {
         match &self.message {
             Some(m) if self.html => &m.html,
@@ -126,6 +132,8 @@ impl MessageScreen {
         Transition::Pop
     }
 
+    /// I write the part that's showing to a new .txt file named after the key, never
+    /// overwriting an existing one, and say where it went.
     fn write_text(&mut self, ctx: &mut Ctx) {
         if self.message.is_none() {
             ctx.info("The message is still loading.");
@@ -147,6 +155,8 @@ impl MessageScreen {
         }
     }
 
+    /// I save every attachment into the output folder and name the files on the status line,
+    /// or say the message has none.
     fn save_attachments(&mut self, ctx: &mut Ctx) {
         let Some(message) = &self.message else {
             ctx.info("The message is still loading.");
@@ -178,6 +188,8 @@ impl MessageScreen {
         }
     }
 
+    /// I turn a fetch error into a sentence: how big the message is when it's over the size
+    /// cap, and the plain error otherwise.
     fn fetch_error(&self, e: &S3Error) -> String {
         if let S3Error::TooLarge { size, limit } = e {
             let how_big = match size {
@@ -197,11 +209,15 @@ impl MessageScreen {
 }
 
 impl View for MessageScreen {
+    /// I title the screen with the message's location, marking when the HTML part is showing.
     fn title(&self) -> String {
         let view = if self.html { " (HTML)" } else { "" };
         format!("Message {}{view}", self.location())
     }
 
+    /// I draw the message: the error in red if the fetch failed, a loading line until it
+    /// arrives, then the pager's window of wrapped lines under a short header, with the delete
+    /// confirmation on top when it's open.
     fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         if let Some(err) = &self.error {
             frame.render_widget(
@@ -238,6 +254,8 @@ impl View for MessageScreen {
         }
     }
 
+    /// I handle a key. An open delete confirmation takes it first and only a bare y deletes;
+    /// otherwise I scroll, flip to HTML, save text or attachments, ask to delete, or go back.
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.confirm {
             self.confirm = false;
@@ -291,6 +309,8 @@ impl View for MessageScreen {
         Transition::None
     }
 
+    /// I take in the decoded message or the fetch error, and the answer to my delete, which
+    /// closes the screen when it worked and says why when it didn't.
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
         if Some(done.id) == self.fetch {
             self.fetch = None;
@@ -320,6 +340,8 @@ impl View for MessageScreen {
         Transition::None
     }
 
+    /// I start the fetch the first time I'm shown, on my own session or ctx.session if I wasn't
+    /// given one. Later focuses change nothing.
     fn on_focus(&mut self, ctx: &mut Ctx) {
         if self.started {
             return;
@@ -340,10 +362,12 @@ impl View for MessageScreen {
         }
     }
 
+    /// I report my own session, so the header bar names the account this message came from.
     fn session(&self) -> Option<&Session> {
         self.session.as_ref()
     }
 
+    /// I list the keys the message screen takes.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         vec![
             ("↑↓ pgup pgdn", "scroll"),
@@ -461,6 +485,7 @@ mod tests {
 
     const KEY: &str = "mail/msg1";
 
+    /// I build a message with a hundred numbered body lines, long enough to need scrolling.
     fn long_message() -> Vec<u8> {
         let mut raw = String::from_utf8(email(
             "Alice <alice@example.com>",
@@ -474,6 +499,7 @@ mod tests {
         raw.into_bytes()
     }
 
+    /// I build a multipart message with a text part, an HTML part and one attachment.
     fn multipart() -> Vec<u8> {
         b"From: Alice <alice@example.com>\r\n\
 To: me@example.com\r\n\
@@ -504,6 +530,8 @@ attached words\r\n\
             .to_vec()
     }
 
+    /// I open a message screen on `store` for the fixture key, saving into `out`, and let its
+    /// fetch settle. The returned guard keeps the config dir alive.
     fn open(store: Arc<dyn Store>, out: &Path) -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ctx = testing::ctx(dir.path(), Some(store));
@@ -513,12 +541,15 @@ attached words\r\n\
         (app, dir)
     }
 
+    /// I build a store holding `raw` at the fixture key.
     fn store_with(raw: &[u8]) -> Arc<Timed> {
         let s = Timed::new();
         s.put(BUCKET, KEY, raw);
         s
     }
 
+    /// I check the decoded headers and body show up and that End, Home, the page keys and the
+    /// arrows all scroll the way they should.
     #[test]
     fn shows_the_decoded_message_and_scrolls() {
         let out = tempfile::tempdir().unwrap();
@@ -551,6 +582,8 @@ attached words\r\n\
         assert_eq!(screen(&mut app, 80, 20).lines().nth(1).unwrap(), first);
     }
 
+    /// I check scrolling past either end stops there, and that the last page stays full rather
+    /// than scrolling into blank space.
     #[test]
     fn scrolling_stops_at_the_ends() {
         let out = tempfile::tempdir().unwrap();
@@ -569,6 +602,7 @@ attached words\r\n\
         assert!(scr.contains("report line 085"), "{scr}");
     }
 
+    /// I check a line wider than the screen wraps so its end is still readable.
     #[test]
     fn long_lines_wrap_to_the_width() {
         let raw = email("a@example.com", "Wide", "Fri, 25 Sep 2026 09:30:00 +0000");
@@ -580,6 +614,7 @@ attached words\r\n\
         assert!(scr.contains("END"), "{scr}");
     }
 
+    /// I check `h` switches between the plain and HTML parts and back again.
     #[test]
     fn h_toggles_the_html_view() {
         let out = tempfile::tempdir().unwrap();
@@ -594,6 +629,8 @@ attached words\r\n\
         assert!(screen(&mut app, 80, 20).contains("the plain version"));
     }
 
+    /// I check `w` writes exactly the decoded text, names the file on the status line, and never
+    /// overwrites an earlier save.
     #[test]
     fn w_writes_the_decoded_text_and_says_where() {
         let out = tempfile::tempdir().unwrap();
@@ -618,6 +655,7 @@ attached words\r\n\
         assert!(out.path().join("msg1-1.txt").exists());
     }
 
+    /// I check `a` saves the attachments and says how many went into which folder.
     #[test]
     fn a_saves_the_attachments_and_says_where() {
         let out = tempfile::tempdir().unwrap();
@@ -634,6 +672,8 @@ attached words\r\n\
         assert!(status.contains(&out.path().display().to_string()), "{scr}");
     }
 
+    /// I check the status line names the file as it actually landed on disk, so a renamed
+    /// note-1.txt isn't reported as note.txt.
     #[test]
     fn the_status_line_names_the_files_as_they_were_saved() {
         let out = tempfile::tempdir().unwrap();
@@ -648,6 +688,7 @@ attached words\r\n\
         assert!(!status.contains("error"), "{scr}");
     }
 
+    /// I check `a` on a message with nothing attached says so instead of doing nothing.
     #[test]
     fn a_with_no_attachments_says_so() {
         let out = tempfile::tempdir().unwrap();
@@ -660,6 +701,8 @@ attached words\r\n\
         );
     }
 
+    /// I check `d` on the message asks first with subject and key, and that `n` leaves the object
+    /// and me on the message.
     #[test]
     fn delete_confirms_with_subject_and_key_and_only_y_deletes() {
         let out = tempfile::tempdir().unwrap();
@@ -677,6 +720,7 @@ attached words\r\n\
         assert!(!screen(&mut app, 100, 20).contains("y to delete"));
     }
 
+    /// I check deleting from the message screen drops me back in the inbox with that row gone.
     #[test]
     fn deleting_from_the_message_returns_to_the_inbox_without_the_row() {
         let store = Timed::new();
@@ -710,6 +754,7 @@ attached words\r\n\
         assert!(scr.contains("1 message"), "{scr}");
     }
 
+    /// I check a delete S3 refuses keeps me on the message and shows the error on the status line.
     #[test]
     fn a_failed_delete_stays_on_the_message_and_says_why() {
         let inner = store_with(&long_message());
@@ -737,6 +782,7 @@ attached words\r\n\
         );
     }
 
+    /// I check a message deleted since the listing says it no longer exists and names its key.
     #[test]
     fn a_missing_object_says_so() {
         let s = Timed::new();
@@ -748,6 +794,7 @@ attached words\r\n\
         assert!(scr.contains("s3://inbox-bucket/mail/msg1"), "{scr}");
     }
 
+    /// I check `q` leaves the message screen, which quits when it's the only screen.
     #[test]
     fn q_goes_back() {
         let out = tempfile::tempdir().unwrap();
@@ -760,9 +807,11 @@ attached words\r\n\
     struct TooBig(Option<u64>);
 
     impl Store for TooBig {
+        /// I have no buckets.
         fn list_buckets(&self) -> Result<Vec<crate::s3::Bucket>, S3Error> {
             Ok(Vec::new())
         }
+        /// I list nothing.
         fn list(
             &self,
             _: &str,
@@ -772,20 +821,25 @@ attached words\r\n\
         ) -> Result<crate::s3::Listing, S3Error> {
             Ok(crate::s3::Listing::default())
         }
+        /// I answer a peek with nothing.
         fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
             Ok(Vec::new())
         }
+        /// I refuse every get as over the size cap, with the size S3 reported when there is one.
         fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
             Err(S3Error::TooLarge {
                 size: self.0,
                 limit: 41 * 1024 * 1024,
             })
         }
+        /// I pretend every delete worked.
         fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
             Ok(())
         }
     }
 
+    /// I check a message over the size cap says how big it is, or that it's over the cap when S3
+    /// didn't send a length.
     #[test]
     fn a_message_over_the_size_cap_says_how_big_it_is() {
         let out = tempfile::tempdir().unwrap();
@@ -798,6 +852,8 @@ attached words\r\n\
         assert!(screen(&mut app, 100, 10).contains("too large to open (over 41.0 MiB)"));
     }
 
+    /// I check a failed delete is reported exactly once: by the message while it's open, or by
+    /// the inbox when I closed the message before the answer came back.
     #[test]
     fn a_failed_delete_after_closing_the_message_is_still_reported_once() {
         let inner = Timed::new();
@@ -844,6 +900,7 @@ attached words\r\n\
         assert!(screen(&mut app, 100, 12).contains("Quarterly report"));
     }
 
+    /// I check a delete that finishes after I closed the message still drops the row from the inbox.
     #[test]
     fn a_successful_delete_after_closing_still_drops_the_row() {
         let store = Timed::new();
@@ -865,6 +922,8 @@ attached words\r\n\
         assert!(scr.lines().last().unwrap().contains("Deleted"), "{scr}");
     }
 
+    /// I switch the session's account under an open message and check its delete still goes to the
+    /// account it was opened with.
     #[test]
     fn the_message_keeps_its_own_account() {
         let mine = store_with(&long_message());
@@ -886,6 +945,8 @@ attached words\r\n\
         assert!(theirs.contains(BUCKET, KEY));
     }
 
+    /// I check the prompt flattens tabs in the subject and cuts it with an ellipsis, so a crafted
+    /// subject can't push the key or the `y` line out of view.
     #[test]
     fn the_confirmation_flattens_and_cuts_a_hostile_subject() {
         let raw = email(
@@ -905,6 +966,7 @@ attached words\r\n\
         }
     }
 
+    /// I find the first screen line holding `needle`, and fail with the whole screen if none does.
     fn line_with<'a>(scr: &'a str, needle: &str) -> &'a str {
         scr.lines()
             .find(|l| l.contains(needle))
@@ -947,6 +1009,8 @@ attached words\r\n\
         (screen, ctx, dir)
     }
 
+    /// I check the screen keeps the same `Arc` it was handed, so a big message is never copied on
+    /// the UI thread.
     #[test]
     fn opening_a_message_shares_the_decoded_text_instead_of_copying_it() {
         let message = huge(10);
@@ -958,6 +1022,8 @@ attached words\r\n\
         assert!(Arc::ptr_eq(kept, &message), "the screen copied the message");
     }
 
+    /// I count wrapped lines over open, resize and End/Home on a 100,000-line message and check only
+    /// about a screenful gets wrapped each time.
     #[test]
     fn a_huge_message_only_wraps_what_is_on_screen() {
         let message = huge(100_000);
@@ -980,6 +1046,8 @@ attached words\r\n\
         );
     }
 
+    /// I check End on a huge message puts its last line on the last body row, and that Down then
+    /// does nothing and Up moves by exactly one row.
     #[test]
     fn scrolling_a_huge_message_lands_exactly_at_the_end() {
         let message = huge(5_000);

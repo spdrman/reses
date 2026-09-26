@@ -139,6 +139,7 @@ pub fn human_size(n: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Sizes use KiB and friends and always fit the size column, even right under a unit boundary.
     #[test]
     fn sizes_use_binary_units_and_stay_narrow() {
         assert_eq!(human_size(0), "0 B");
@@ -161,6 +162,8 @@ mod tests {
         }
     }
 
+    /// `fit` pads short text and cuts long text to exactly the width asked for, wide characters
+    /// included.
     #[test]
     fn fit_pads_or_cuts_to_the_exact_width() {
         assert_eq!(fit("abc", 5), "abc  ");
@@ -171,6 +174,8 @@ mod tests {
         assert_eq!(width(&fit("日本語", 6)), 6);
     }
 
+    /// An emoji with a variation selector counts as two columns, matching ratatui, and cutting
+    /// never splits it.
     #[test]
     fn emoji_with_a_variation_selector_count_as_the_terminal_draws_them() {
         // U+2764 then U+FE0F: one grapheme, drawn two columns wide.
@@ -194,11 +199,14 @@ mod tests {
         assert_eq!(width(family), ratatui::text::Line::raw(family).width());
     }
 
+    /// `clean` turns line breaks and tabs into spaces.
     #[test]
     fn clean_flattens_control_characters() {
         assert_eq!(clean("a\r\n\tb"), "a   b");
     }
 
+    /// `escape` spells out every terminal control, bidi override and invisible character, and
+    /// leaves ordinary text borrowed.
     #[test]
     fn escape_writes_every_terminal_control_out_visibly() {
         // OSC 52 would write the clipboard; CSI 2J would clear the screen.
@@ -223,6 +231,8 @@ mod tests {
         }
     }
 
+    /// A key that already contains `\x1b` as text escapes differently from one with a real ESC,
+    /// so two keys never look the same.
     #[test]
     fn two_different_keys_never_escape_to_the_same_text() {
         let a = "mail/a\u{1b}b";
@@ -231,6 +241,8 @@ mod tests {
         assert_eq!(escape(b), "mail/a\\\\x1bb");
     }
 
+    /// `escape_text` keeps newlines and tabs so a message still reads as one, but spells out
+    /// escapes and a bare carriage return.
     #[test]
     fn escape_text_keeps_the_shape_of_a_message() {
         let body = "Subject: hi \u{1b}]0;owned\u{7}\nline two\tindented\nC:\\path";

@@ -17,6 +17,7 @@
 # how the bug first showed up. Identical bytes are killed too, so FIRST alone is a full test.
 set -euo pipefail
 [ "$(uname -s)" = Darwin ] || { echo "skipped: macOS only" >&2; exit 0; }
+# An absolute path for $1, so the binaries still resolve whatever directory runs this.
 abs() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 first="$(abs "$1")"
@@ -33,6 +34,8 @@ run() { # run BIN; prints the exit status, 137 for a SIGKILL at exec
   echo "$rc"
 }
 
+# FIRST goes in and runs, so the kernel has code-signing state on that inode. Then I hold it
+# open and put SECOND over it the way every build does, and SECOND has to run too.
 "$repo/scripts/place-binary.sh" "$first" "$dir/reses"
 rc="$(run "$dir/reses")"
 if [ "$rc" -ne 0 ]; then

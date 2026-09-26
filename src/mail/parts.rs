@@ -49,6 +49,8 @@ fn extension(ctype: &str) -> &'static str {
 /// Whether the header block ends inside `raw`, that is, whether a blank line follows the
 /// headers. A prefix fetched for the inbox list often stops before that.
 pub(super) fn header_block_complete(raw: &[u8]) -> bool {
+    // A line ending found at the start of a line is the blank line. A CR only ends a line on its
+    // own when no LF follows it.
     let mut at_line_start = true;
     for (i, &b) in raw.iter().enumerate() {
         if at_line_start && (b == b'\n' || b == b'\r') {
@@ -147,6 +149,7 @@ pub(super) fn prepare(raw: &[u8]) -> Cow<'_, [u8]> {
 /// `data` with `rename_charsets` applied to every header block of the message and its parts,
 /// or `None` when nothing changed.
 fn rename_in_headers(data: &[u8]) -> Option<Vec<u8>> {
+    // Parse once just to learn where each part's header block starts and ends.
     let msg = MessageParser::new().parse(data)?;
     let mut blocks: Vec<(usize, usize)> = msg
         .parts
@@ -251,10 +254,12 @@ fn mechanism(part: &MessagePart<'_>) -> Option<String> {
 /// gives up at the first character outside the base64 alphabet, and RFC 2045 6.8 says to ignore
 /// those, so when it does I drop them and decode the rest.
 fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
+    // mail-parser's decoder first, since it's what every other part went through.
     let (end, bytes) = MessageStream::new(data).decode_base64_mime(b"");
     if end != usize::MAX {
         return Some(bytes.into_owned());
     }
+    // It gave up, so keep only the alphabet and decode that.
     let alphabet: Vec<u8> = data
         .iter()
         .copied()
@@ -268,10 +273,12 @@ fn decode_base64(data: &[u8]) -> Option<Vec<u8>> {
 /// 6.7 asks of a robust decoder: blanks at a line end are dropped, "=" at a line end is a soft
 /// break, "=XX" is a byte in either case, and any other "=" stays as it is.
 fn decode_quoted_printable(data: &[u8]) -> Option<Vec<u8>> {
+    // mail-parser's decoder first, as for base64.
     let (end, bytes) = MessageStream::new(data).decode_quoted_printable_mime(b"");
     if end != usize::MAX {
         return Some(bytes.into_owned());
     }
+    // It gave up, so I decode it myself one line at a time.
     let mut out = Vec::with_capacity(data.len());
     for line in data.split_inclusive(|&b| b == b'\n') {
         // Split off the line ending, then the blanks a transport may have added before it.
@@ -304,6 +311,7 @@ fn decode_quoted_printable(data: &[u8]) -> Option<Vec<u8>> {
                 }
             }
         }
+        // A hard line break keeps its ending; a soft one joins the next line.
         if !soft {
             out.extend_from_slice(ending);
         }
@@ -415,6 +423,7 @@ impl<'x> Parsed<'x> {
     fn text(&self, part: &MessagePart<'x>) -> String {
         let data = self.bytes(part);
         let charset = part.content_type().and_then(|ct| ct.attribute("charset"));
+        // A charset nobody can decode falls back to lossy UTF-8 rather than losing the text.
         match charset {
             Some(cs) => match charset_decoder(charset_label(cs).as_bytes()) {
                 Some(decode) => decode(&data),
@@ -474,6 +483,7 @@ impl<'x> Parsed<'x> {
                 .copied()
                 .find(|p| content_type(p) == ctype)
         };
+        // Pick by preference, and remember whether the pick needs converting from HTML.
         let (chosen, convert) = if prefer_html {
             (first("text/html").or_else(|| first("text/plain")), false)
         } else {
@@ -542,6 +552,7 @@ fn flatten_deep_html(html: &str) -> Cow<'_, str> {
                 at = lt;
                 break;
             };
+            // A tag: work out its name and whether it opens a new level of nesting.
             let tag = &html[lt..=gt];
             let closing = tag.starts_with("</");
             let name: String = tag[if closing { 2 } else { 1 }..]
@@ -577,6 +588,7 @@ fn flatten_deep_html(html: &str) -> Cow<'_, str> {
                 at = end;
             }
         }
+        // After measuring, shallow HTML goes back untouched and deep HTML gets the rewrite pass.
         if pass == 0 {
             if deepest <= MAX_HTML_DEPTH {
                 return Cow::Borrowed(html);
