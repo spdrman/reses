@@ -121,12 +121,12 @@ impl Fake {
                     .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect(),
             });
-            let (status, headers, body, fail) = fake.answers.lock().unwrap().pop_front().unwrap_or((
-                599,
-                vec![],
-                b"no answer queued".to_vec(),
-                false,
-            ));
+            let (status, headers, body, fail) = fake
+                .answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or((599, vec![], b"no answer queued".to_vec(), false));
             let mut resp = http::Response::builder().status(status);
             for (k, v) in headers {
                 resp = resp.header(k, v);
@@ -299,8 +299,15 @@ fn get_range_stops_reading_a_partial_answer_past_its_slack() {
 #[test]
 fn get_range_on_a_200_stops_reading_once_it_has_the_range() {
     // A server that ignores Range and streams the whole object: I only need bytes up to `end`.
-    let fake = Fake::new(vec![then_fail(200, &[], b"hello world, and a lot more".to_vec())]);
-    assert_eq!(minio(&fake).get_range("mail", "k", 6, 10).unwrap(), b"world");
+    let fake = Fake::new(vec![then_fail(
+        200,
+        &[],
+        b"hello world, and a lot more".to_vec(),
+    )]);
+    assert_eq!(
+        minio(&fake).get_range("mail", "k", 6, 10).unwrap(),
+        b"world"
+    );
 }
 
 #[test]

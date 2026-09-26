@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use aws_config::BehaviorVersion;
 use aws_config::meta::region::ProvideRegion;
-use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
 use aws_config::profile::{ProfileFileCredentialsProvider, ProfileFileRegionProvider};
+use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::timeout::TimeoutConfig;
 use aws_sdk_s3::config::{Builder as ConfigBuilder, Credentials as SdkCredentials, Region};
@@ -99,12 +99,14 @@ impl std::fmt::Debug for S3Client {
 /// Settings every client shares: the SDK's current behaviour defaults, and timeouts that give
 /// up on a dead connection instead of waiting on it.
 fn with_defaults(builder: ConfigBuilder) -> ConfigBuilder {
-    builder.behavior_version(BehaviorVersion::latest()).timeout_config(
-        TimeoutConfig::builder()
-            .connect_timeout(Duration::from_secs(15))
-            .operation_attempt_timeout(Duration::from_secs(60))
-            .build(),
-    )
+    builder
+        .behavior_version(BehaviorVersion::latest())
+        .timeout_config(
+            TimeoutConfig::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .operation_attempt_timeout(Duration::from_secs(60))
+                .build(),
+        )
 }
 
 /// An empty key would address the bucket itself, so I refuse it before any request goes out.
@@ -295,7 +297,11 @@ impl S3Client {
     /// Build a profile client. I set the region and the credentials provider explicitly, so
     /// aws-config never falls back to the instance metadata service (a slow timeout on a laptop)
     /// and never swaps in AWS_ACCESS_KEY_ID from the environment for the profile the user picked.
-    fn profile_client(name: &str, region_hint: Option<&str>, files: Option<(&Path, &Path)>) -> Self {
+    fn profile_client(
+        name: &str,
+        region_hint: Option<&str>,
+        files: Option<(&Path, &Path)>,
+    ) -> Self {
         let files = profile_files(files);
         let config = runtime().block_on(async {
             // The region: a usable hint, else the profile's own, else the fallback.
@@ -369,7 +375,10 @@ impl S3Client {
     }
 
     /// Swap the SDK's HTTP client, so tests can script S3's answers.
-    pub fn with_http_client(mut self, client: impl aws_sdk_s3::config::HttpClient + 'static) -> Self {
+    pub fn with_http_client(
+        mut self,
+        client: impl aws_sdk_s3::config::HttpClient + 'static,
+    ) -> Self {
         self.base = self.base.http_client(client);
         self.clients.get_mut().unwrap().clear();
         self
@@ -427,7 +436,12 @@ impl S3Client {
         clients
             .entry(region.to_string())
             .or_insert_with(|| {
-                Client::from_conf(self.base.clone().region(Region::new(region.to_string())).build())
+                Client::from_conf(
+                    self.base
+                        .clone()
+                        .region(Region::new(region.to_string()))
+                        .build(),
+                )
             })
             .clone()
     }
@@ -473,7 +487,13 @@ impl S3Client {
     /// Ask S3 where a bucket lives with HeadBucket. A bucket in another region answers with a
     /// 301 that still carries `x-amz-bucket-region`, so I read the header from either outcome.
     async fn lookup_region(&self, bucket: &str, region: &str) -> Option<String> {
-        match self.client_for(region).head_bucket().bucket(bucket).send().await {
+        match self
+            .client_for(region)
+            .head_bucket()
+            .bucket(bucket)
+            .send()
+            .await
+        {
             Ok(out) => region_header(out.bucket_region()),
             Err(SdkError::ServiceError(se)) => {
                 region_header(se.raw().headers().get("x-amz-bucket-region"))
@@ -692,9 +712,10 @@ impl Store for S3Client {
     /// Delete one object. S3 answers success for a key that isn't there, and so do I.
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         require_key(key)?;
-        self.guard(runtime().block_on(self.call(bucket, |c| {
-            c.delete_object().bucket(bucket).key(key).send()
-        })))
+        self.guard(
+            runtime()
+                .block_on(self.call(bucket, |c| c.delete_object().bucket(bucket).key(key).send())),
+        )
         .map(drop)
     }
 }
