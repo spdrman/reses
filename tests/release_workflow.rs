@@ -34,10 +34,10 @@ fn steps<'a>(job: &[&'a str]) -> Vec<Vec<&'a str>> {
     for l in job {
         if l.starts_with("      - ") {
             out.push(vec![l]);
-        } else if let Some(step) = out.last_mut() {
-            if l.starts_with("        ") {
-                step.push(l);
-            }
+        } else if let Some(step) = out.last_mut()
+            && l.starts_with("        ")
+        {
+            step.push(l);
         }
     }
     out
@@ -245,7 +245,7 @@ fn the_version_check_is_the_tested_script_and_sees_main() {
     assert!(
         has_line(
             &version,
-            r#"scripts/release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_SHA" >> "$GITHUB_OUTPUT""#
+            r#"run: scripts/release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_SHA" >> "$GITHUB_OUTPUT""#
         ),
         "the version job must run scripts/release-version.sh: {version:#?}"
     );
