@@ -1,0 +1,31 @@
+[package]
+name = "reses"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Read raw SES/RFC 5322 email stored in S3, as a CLI decoder and a terminal inbox"
+license = "MIT"
+repository = "https://github.com/spdrman/reses"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+hmac = "0.12"
+mail-parser = "0.11"
+percent-encoding = "2"
+quick-xml = { version = "0.37", features = ["serialize"] }
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+toml = "0.8"
+ureq = "3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
