@@ -1,49 +1,366 @@
-//! One decoded message, fetched from S3.
+//! One decoded message, fetched from S3: scroll it, flip to the HTML part, save its text or
+//! its attachments, or delete it.
 
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::widgets::Paragraph;
+use ratatui::style::{Color, Style};
+use ratatui::text::Span;
+use ratatui::widgets::{Paragraph, Wrap};
 
+use super::inbox::{display_from, render_confirm};
+use super::jobs::{Done, Job, JobId, Outcome};
 use super::{Ctx, Transition, View};
+use crate::mail;
 
 pub struct MessageScreen {
     pub bucket: String,
     pub key: String,
+    subject: Option<String>,
+    from: String,
+    out_dir: PathBuf,
+    started: bool,
+    fetch: Option<JobId>,
+    delete: Option<JobId>,
+    raw: Option<Vec<u8>>,
+    text: String,
+    html: bool,
+    error: Option<String>,
+    confirm: bool,
+    /// `text` wrapped to `wrapped_for` columns; rebuilt when either changes.
+    wrapped: Vec<String>,
+    wrapped_for: Option<u16>,
+    offset: usize,
+    page: usize,
+    max_offset: usize,
 }
 
 impl MessageScreen {
     pub fn new(bucket: String, key: String) -> Self {
-        Self { bucket, key }
+        Self {
+            bucket,
+            key,
+            subject: None,
+            from: String::new(),
+            out_dir: PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Downloads"),
+            started: false,
+            fetch: None,
+            delete: None,
+            raw: None,
+            text: String::new(),
+            html: false,
+            error: None,
+            confirm: false,
+            wrapped: Vec::new(),
+            wrapped_for: None,
+            offset: 0,
+            page: 1,
+            max_offset: 0,
+        }
     }
 
-    pub fn with_out_dir(self, dir: PathBuf) -> Self {
-        let _ = dir;
+    /// The subject the inbox already knows, for the delete prompt before the body arrives.
+    pub fn with_subject(mut self, subject: String) -> Self {
+        self.subject = Some(subject);
         self
+    }
+
+    /// Where `w` and `a` write (default `~/Downloads`).
+    pub fn with_out_dir(mut self, dir: PathBuf) -> Self {
+        self.out_dir = dir;
+        self
+    }
+
+    fn location(&self) -> String {
+        format!("s3://{}/{}", self.bucket, self.key)
+    }
+
+    fn set_text(&mut self) {
+        if let Some(raw) = &self.raw {
+            self.text = mail::format_message(raw, self.html);
+            self.wrapped_for = None;
+        }
+    }
+
+    fn scroll_to(&mut self, offset: usize) {
+        self.offset = offset.min(self.max_offset);
+    }
+
+    fn write_text(&mut self, ctx: &mut Ctx) {
+        if self.raw.is_none() {
+            ctx.info("The message is still loading.");
+            return;
+        }
+        let stem = file_stem(&self.key);
+        match write_new(&self.out_dir, &stem, "txt", self.text.as_bytes()) {
+            Ok(path) => ctx.info(format!("Wrote {}", path.display())),
+            Err(e) => ctx.error(format!(
+                "Could not write into {}: {e}",
+                self.out_dir.display()
+            )),
+        }
+    }
+
+    fn save_attachments(&mut self, ctx: &mut Ctx) {
+        let Some(raw) = &self.raw else {
+            ctx.info("The message is still loading.");
+            return;
+        };
+        match mail::save_attachments(raw, &self.out_dir) {
+            Ok(paths) if paths.is_empty() => ctx.info("This message has no attachments."),
+            Ok(paths) => {
+                let noun = if paths.len() == 1 {
+                    "attachment"
+                } else {
+                    "attachments"
+                };
+                ctx.info(format!(
+                    "Saved {} {noun} to {}",
+                    paths.len(),
+                    self.out_dir.display()
+                ));
+            }
+            Err(e) => ctx.error(format!(
+                "Could not save attachments into {}: {e}",
+                self.out_dir.display()
+            )),
+        }
     }
 }
 
 impl View for MessageScreen {
     fn title(&self) -> String {
-        "Message".into()
+        let view = if self.html { " (HTML)" } else { "" };
+        format!("Message {}{view}", self.location())
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
-        frame.render_widget(Paragraph::new("Message: not built yet"), area);
+        if let Some(err) = &self.error {
+            frame.render_widget(
+                Paragraph::new(format!(" {err}"))
+                    .style(Style::default().fg(Color::Red))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+        } else if self.raw.is_none() {
+            frame.render_widget(
+                Paragraph::new(format!(" Fetching {} …", self.location())),
+                area,
+            );
+        } else {
+            if self.wrapped_for != Some(area.width) {
+                self.wrapped = wrap(&self.text, area.width as usize);
+                self.wrapped_for = Some(area.width);
+            }
+            self.page = (area.height as usize).max(1);
+            self.max_offset = self.wrapped.len().saturating_sub(self.page);
+            self.offset = self.offset.min(self.max_offset);
+            let shown: Vec<_> = self
+                .wrapped
+                .iter()
+                .skip(self.offset)
+                .take(self.page)
+                .map(|l| ratatui::text::Line::raw(l.as_str()))
+                .collect();
+            frame.render_widget(Paragraph::new(shown), area);
+        }
+
+        if self.confirm {
+            let subject = self
+                .subject
+                .clone()
+                .unwrap_or_else(|| "(no subject)".into());
+            render_confirm(frame, area, &subject, &self.from, &self.location());
+        }
     }
 
-    fn on_key(&mut self, key: KeyEvent, _ctx: &mut Ctx) -> Transition {
+    fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
+        if self.confirm {
+            self.confirm = false;
+            if key.code == KeyCode::Char('y') {
+                let job = Job::Delete {
+                    bucket: self.bucket.clone(),
+                    key: self.key.clone(),
+                };
+                match ctx.submit(job) {
+                    Some(id) => self.delete = Some(id),
+                    None => ctx.error("Not connected to an account."),
+                }
+            } else {
+                ctx.info("Delete cancelled.");
+            }
+            return Transition::None;
+        }
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => Transition::Pop,
-            _ => Transition::None,
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_to(self.offset.saturating_sub(1)),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_to(self.offset + 1),
+            KeyCode::PageUp => self.scroll_to(self.offset.saturating_sub(self.page)),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_to(self.offset + self.page),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll_to(0),
+            KeyCode::End | KeyCode::Char('G') => self.scroll_to(usize::MAX),
+            KeyCode::Char('h') if self.raw.is_some() => {
+                self.html = !self.html;
+                self.set_text();
+                self.offset = 0;
+                ctx.info(if self.html {
+                    "Showing the HTML part."
+                } else {
+                    "Showing the text part."
+                });
+            }
+            KeyCode::Char('w') => self.write_text(ctx),
+            KeyCode::Char('a') => self.save_attachments(ctx),
+            KeyCode::Char('d') => self.confirm = true,
+            KeyCode::Esc | KeyCode::Char('q') => return Transition::Pop,
+            _ => {}
+        }
+        Transition::None
+    }
+
+    fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
+        if Some(done.id) == self.fetch {
+            self.fetch = None;
+            match &done.result {
+                Ok(Outcome::Data(raw)) => {
+                    let summary = mail::summarize(raw);
+                    if !summary.subject.trim().is_empty() {
+                        self.subject = Some(summary.subject.trim().to_string());
+                    }
+                    self.from = display_from(&summary.from);
+                    self.raw = Some(raw.clone());
+                    self.set_text();
+                }
+                Ok(_) => self.error = Some(format!("Unexpected reply for {}", self.location())),
+                Err(e) if e.is_not_found() => {
+                    self.error = Some(format!(
+                        "This message no longer exists: {}",
+                        self.location()
+                    ))
+                }
+                Err(e) => self.error = Some(format!("Could not fetch {}: {e}", self.location())),
+            }
+        } else if Some(done.id) == self.delete {
+            self.delete = None;
+            match &done.result {
+                Ok(_) => {
+                    ctx.info(format!("Deleted {}", self.location()));
+                    return Transition::Pop;
+                }
+                Err(e) => ctx.error(format!("Could not delete {}: {e}", self.location())),
+            }
+        }
+        Transition::None
+    }
+
+    fn on_focus(&mut self, ctx: &mut Ctx) {
+        if self.started {
+            return;
+        }
+        self.started = true;
+        let job = Job::Get {
+            bucket: self.bucket.clone(),
+            key: self.key.clone(),
+        };
+        match ctx.submit(job) {
+            Some(id) => self.fetch = Some(id),
+            None => self.error = Some("Not connected to an account.".into()),
         }
     }
 
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("q", "back")]
+        vec![
+            ("↑↓ pgup pgdn", "scroll"),
+            ("h", if self.html { "text" } else { "html" }),
+            ("w", "save text"),
+            ("a", "save attachments"),
+            ("d", "delete"),
+            ("q", "back"),
+        ]
     }
+}
+
+/// The last path segment of a key, safe as a file name.
+fn file_stem(key: &str) -> String {
+    let base = key.rsplit('/').next().unwrap_or("");
+    let safe: String = base
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = safe.trim_start_matches('.');
+    if safe.is_empty() {
+        "message".into()
+    } else {
+        safe.to_string()
+    }
+}
+
+/// Write `data` to `dir/stem.ext`, or `stem-1.ext` and so on, never replacing a file.
+fn write_new(dir: &Path, stem: &str, ext: &str, data: &[u8]) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    for n in 0u32.. {
+        let name = if n == 0 {
+            format!("{stem}.{ext}")
+        } else {
+            format!("{stem}-{n}.{ext}")
+        };
+        let path = dir.join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                f.write_all(data)?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("ran out of file names")
+}
+
+fn char_width(c: char) -> usize {
+    let mut buf = [0u8; 4];
+    Span::raw(&*c.encode_utf8(&mut buf)).width()
+}
+
+/// Wrap each line to `width` columns, breaking after a space where there is one.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.replace('\t', "    ");
+        let line: String = line
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let mut cur = String::new();
+        let mut used = 0;
+        for c in line.chars() {
+            let w = char_width(c);
+            if used + w > width && !cur.is_empty() {
+                // Carry the unfinished word over when the line has a space to break at.
+                let carry = match cur.rfind(' ') {
+                    Some(i) if i + 1 < cur.len() => cur.split_off(i + 1),
+                    _ => String::new(),
+                };
+                out.push(cur.trim_end().to_string());
+                used = carry.chars().map(char_width).sum();
+                cur = carry;
+            }
+            cur.push(c);
+            used += w;
+        }
+        out.push(cur);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -55,10 +372,10 @@ mod tests {
 
     use super::*;
     use crate::s3::{MemoryStore, Store};
+    use crate::tui::App;
     use crate::tui::inbox::InboxScreen;
     use crate::tui::inbox::fixtures::*;
     use crate::tui::testing::{self, key, screen, settle};
-    use crate::tui::{App, View};
 
     const KEY: &str = "mail/msg1";
 
