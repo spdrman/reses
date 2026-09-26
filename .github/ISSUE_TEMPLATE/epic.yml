@@ -1,0 +1,62 @@
+name: EPIC
+description: A multi-issue piece of work that adds or reworks a feature.
+title: "[EPIC] "
+labels: ["epic"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: The goal
+      description: One paragraph. What somebody can do after this that they can't do now.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-now
+    attributes:
+      label: Why now
+      description: What makes this the right time, and which existing work it builds on.
+    validations:
+      required: true
+
+  - type: textarea
+    id: phases
+    attributes:
+      label: Phases and sub-issues
+      description: >
+        At most 2 phases, and at most 5 issues per phase, so 10 is the ceiling. Decide
+        the split before filing rather than after. If the work won't fit, fold related
+        packages into one issue and say what you folded in, carrying every acceptance
+        criterion across. Work that genuinely can't fit is two epics.
+      placeholder: |
+        Phase 1
+        - [ ] <letter>1.1 ...
+        - [ ] <letter>1.2 ...
+
+        Phase 2
+        - [ ] <letter>2.1 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: not-doing
+    attributes:
+      label: What this epic isn't
+      description: >
+        The scope you're deliberately leaving out, so nobody re-argues it halfway
+        through. A permanent refusal belongs here with its reason.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ### Before you close it
+
+        - **Zero open issues.** Code landing isn't the issue resolving. An epic with an
+          open sub-issue is an open epic, whatever has merged.
+        - **Compose before merge.** Put every open branch on one scratch branch and run
+          the full gate before merging any of them. Two PRs can each be right alone and
+          still break together.
+        - **Never point a closing keyword at this issue**, or it closes the first time
+          any sub-issue lands.

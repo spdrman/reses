@@ -1,6 +1,49 @@
+# Rust / Cargo
+# Cargo.lock stays committed: reses is a binary and the gate builds with --locked.
+/target/
+**/*.rs.bk
+
+# Release binaries built by scripts/ci-docker.sh --darwin
+/dist/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.exe
+*.pdb
+
+# Python (python/reses.py is the reference decoder)
 __pycache__/
 *.pyc
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak
+*.log
+
+# Local tooling state, never part of the project
 .claude/
 CLAUDE.md
-/target/
-/dist/
+
+# PR-body drafts written inside a worktree, so `git add` can't sweep them into a commit.
+.pr-*.md
