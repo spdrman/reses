@@ -74,7 +74,7 @@ fn cols_of(buf: &Buffer, y: u16, s: &str) -> Vec<u16> {
 #[test]
 fn text_mode_puts_the_wordmark_at_the_start_of_the_bar() {
     for bg in [Background::Dark, Background::Light] {
-        let (mut app, area, _d) = app(Brand::text(bg));
+        let (mut app, area, _d) = app(Brand::text());
         let scr = screen(&mut app, 80, 10);
         let header = scr.lines().next().unwrap();
         assert!(
@@ -88,7 +88,7 @@ fn text_mode_puts_the_wordmark_at_the_start_of_the_bar() {
 
 #[test]
 fn text_mode_styles_the_wordmark_like_the_logo() {
-    let (mut app, _area, _d) = app(Brand::text(Background::Dark));
+    let (mut app, _area, _d) = app(Brand::text());
     let buf = buffer(&mut app, 80, 10);
     let at = |x: u16| buf[(x, 0)].clone();
     // " ■ re:SES": the cube at 1, "re" at 3-4, ":" at 5, "SES" at 6-8.
@@ -115,7 +115,7 @@ fn text_mode_styles_the_wordmark_like_the_logo() {
 #[test]
 fn the_bar_uses_the_terminals_own_colours_reversed_and_bold() {
     for brand in [
-        Brand::text(Background::Dark),
+        Brand::text(),
         Brand::with_picker(picker(ProtocolType::Kitty), Background::Dark),
     ] {
         let (mut app, _area, _d) = app(brand);
@@ -206,7 +206,7 @@ fn a_small_terminal_falls_back_to_the_text_wordmark() {
         assert_eq!(area.get().y, 1, "{w}x{h}");
     }
     // Narrow enough that the title gets cut, the wordmark still shows whole.
-    let (mut app, _area, _d) = app(Brand::text(Background::Dark));
+    let (mut app, _area, _d) = app(Brand::text());
     let buf = buffer(&mut app, 12, 6);
     assert!(row(&buf, 0).starts_with(" ■ re:SES "), "{:?}", row(&buf, 0));
     assert_eq!(cols_of(&buf, 0, "■"), [1]);
@@ -243,7 +243,7 @@ fn both_header_pngs_decode_at_the_rendered_size() {
 /// The text header as it renders, printed so it can be eyeballed with --nocapture.
 #[test]
 fn text_header_frame() {
-    let (mut app, _area, _d) = app(Brand::text(Background::Dark));
+    let (mut app, _area, _d) = app(Brand::text());
     let scr = screen(&mut app, 80, 4);
     println!("{scr}");
     assert!(scr.lines().next().unwrap().starts_with(" ■ re:SES  Inbox"));

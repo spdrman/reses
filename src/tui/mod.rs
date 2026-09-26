@@ -4,12 +4,13 @@
 //! the event loop; screens never touch either, which is what lets them be tested headless
 //! through `testing`.
 
-pub mod accounts;
-pub mod brand;
-pub mod browser;
-pub mod inbox;
-pub mod jobs;
-pub mod message;
+pub(crate) mod accounts;
+pub(crate) mod brand;
+pub(crate) mod browser;
+pub(crate) mod inbox;
+pub(crate) mod jobs;
+pub(crate) mod message;
+pub mod saved;
 pub mod text;
 
 use std::panic::PanicHookInfo;
@@ -32,20 +33,25 @@ use jobs::{Done, Generation, Job, JobId, Jobs};
 use time::UtcOffset;
 
 /// What a view asks the shell to do after handling a key or a job result.
-pub enum Transition {
+pub(crate) enum Transition {
     None,
     Push(Box<dyn View>),
     Pop,
     /// Replace the whole stack with this view (e.g. jumping to the inbox after saving it).
     Reset(Box<dyn View>),
-    Quit,
 }
 
-pub trait View {
+pub(crate) trait View {
     /// Shown in the header bar.
     fn title(&self) -> String;
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx);
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition;
+    /// Text pasted into the terminal, whole. It never arrives as keys (bracketed paste is on),
+    /// so a paste can't press d and then y; a view with a text input takes it, the rest ignore it.
+    fn on_paste(&mut self, text: &str, ctx: &mut Ctx) -> Transition {
+        let _ = (text, ctx);
+        Transition::None
+    }
     /// Every finished job is offered to every view on the stack; ignore ids you did not submit.
     /// Only the top view's transition is applied.
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
@@ -72,7 +78,7 @@ pub trait View {
 
 /// A connected account.
 #[derive(Clone)]
-pub struct Session {
+pub(crate) struct Session {
     pub profile: Profile,
     pub region: String,
     pub store: Arc<dyn Store>,
@@ -123,13 +129,13 @@ impl From<String> for Profile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
+pub(crate) enum Status {
     Info(String),
     Error(String),
 }
 
 /// Shared state every view can read and change.
-pub struct Ctx {
+pub(crate) struct Ctx {
     pub config: AppConfig,
     pub config_path: PathBuf,
     pub creds_path: PathBuf,
@@ -154,7 +160,7 @@ impl Ctx {
             session: None,
             status: None,
             local_offset: UtcOffset::UTC,
-            brand: brand::Brand::text(brand::Background::Dark),
+            brand: brand::Brand::text(),
             jobs,
         }
     }
@@ -170,6 +176,7 @@ impl Ctx {
     }
 
     /// Queue a job against the current session. None when no account is connected.
+    #[cfg(test)]
     pub fn submit(&mut self, job: Job) -> Option<JobId> {
         let store = Arc::clone(&self.session.as_ref()?.store);
         Some(self.jobs.submit(store, job))
@@ -222,7 +229,7 @@ impl Ctx {
 }
 
 /// The first screen: straight into the saved inbox when there is one, else account selection.
-pub fn initial_view(ctx: &mut Ctx) -> Box<dyn View> {
+pub(crate) fn initial_view(ctx: &mut Ctx) -> Box<dyn View> {
     if let Some(inbox) = ctx.config.inbox.clone() {
         let profile = ctx.credentials().and_then(|f| f.get(&inbox.profile));
         match profile {
@@ -241,7 +248,7 @@ pub fn initial_view(ctx: &mut Ctx) -> Box<dyn View> {
 }
 
 /// The view stack plus the job pump, independent of any terminal.
-pub struct App {
+pub(crate) struct App {
     pub ctx: Ctx,
     pub stack: Vec<Box<dyn View>>,
     pub quit: bool,
@@ -258,6 +265,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn with_view(ctx: Ctx, view: Box<dyn View>) -> Self {
         let mut app = Self {
             ctx,
@@ -289,10 +297,6 @@ impl App {
                 self.stack.clear();
                 self.stack.push(v);
             }
-            Transition::Quit => {
-                self.quit = true;
-                return;
-            }
         }
         self.focus_top();
     }
@@ -310,6 +314,15 @@ impl App {
             return;
         };
         let t = top.on_key(key, &mut self.ctx);
+        self.apply(t);
+    }
+
+    /// Hand a paste to the top view.
+    pub fn paste(&mut self, text: &str) {
+        let Some(top) = self.stack.last_mut() else {
+            return;
+        };
+        let t = top.on_paste(text, &mut self.ctx);
         self.apply(t);
     }
 
@@ -357,10 +370,15 @@ impl App {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let account = top
-            .session()
-            .or(self.ctx.session.as_ref())
-            .map(|s| format!("{} ({})", s.profile.name, s.region));
+        let account = top.session().or(self.ctx.session.as_ref()).map(|s| {
+            format!(
+                "{} ({})",
+                text::escape(&s.profile.name),
+                text::escape(&s.region)
+            )
+        });
+        // Titles carry keys, buckets and prefixes straight from S3.
+        let title = text::escape(&top.title()).into_owned();
         let bar = brand::bar_style();
         match image {
             Some((logo, cols)) => {
@@ -376,7 +394,7 @@ impl App {
                     logo,
                 );
                 let lines = vec![
-                    Line::from(format!(" {}", top.title())),
+                    Line::from(format!(" {title}")),
                     Line::from(account.map(|a| format!(" {a}")).unwrap_or_default()),
                 ];
                 frame.render_widget(Paragraph::new(lines).style(bar), rest);
@@ -384,34 +402,112 @@ impl App {
             None => {
                 let mut spans = brand::wordmark(bar);
                 let who = account.map(|a| format!("  {a}")).unwrap_or_default();
-                spans.push(Span::styled(format!("  {}{who}", top.title()), bar));
+                spans.push(Span::styled(format!("  {title}{who}"), bar));
                 frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), header);
             }
         }
 
         top.render(frame, body, &self.ctx);
 
+        // Errors say so in words as well as in red, so NO_COLOR or a theme where red is
+        // faint still tells them from news. Info is the terminal's own colour, which reads on
+        // every theme, where green did not on a light one.
         let footer_line = match &self.ctx.status {
-            Some(Status::Error(m)) => {
-                Line::styled(format!(" {m}"), Style::default().fg(Color::Red))
-            }
-            Some(Status::Info(m)) => {
-                Line::styled(format!(" {m}"), Style::default().fg(Color::Green))
-            }
-            None => {
-                let mut spans = Vec::new();
-                for (k, what) in top.hints() {
-                    spans.push(Span::styled(
-                        format!(" {k} "),
-                        Style::default().add_modifier(Modifier::REVERSED),
-                    ));
-                    spans.push(Span::raw(format!(" {what}  ")));
-                }
-                Line::from(spans)
-            }
+            Some(Status::Error(m)) => Line::styled(
+                format!(" error: {}", text::escape(m)),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Some(Status::Info(m)) => Line::raw(format!(" {}", text::escape(m))),
+            None => hints_line(&top.hints(), footer.width as usize),
         };
         frame.render_widget(Paragraph::new(footer_line), footer);
     }
+}
+
+/// The key hints that fit in `cols` columns. Views list hints most important first, so the
+/// ones that don't fit come off the end, except `q`, which always stays: without it an 80
+/// column terminal lost the only hint for getting out.
+fn hints_line(hints: &[(&'static str, &'static str)], cols: usize) -> Line<'static> {
+    let cost = |(k, what): &(&str, &str)| text::width(k) + text::width(what) + 5;
+    let quit = hints.iter().find(|(k, _)| *k == "q").copied();
+    let mut budget = cols.saturating_sub(quit.as_ref().map_or(0, cost));
+    let mut kept: Vec<(&'static str, &'static str)> = Vec::new();
+    // Take hints in order while they fit, then put q back at the end.
+    for h in hints.iter().filter(|(k, _)| *k != "q") {
+        if cost(h) > budget {
+            break;
+        }
+        budget -= cost(h);
+        kept.push(*h);
+    }
+    kept.extend(quit);
+    let mut spans = Vec::new();
+    for (k, what) in kept {
+        spans.push(Span::styled(
+            format!(" {k} "),
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+        spans.push(Span::raw(format!(" {what}  ")));
+    }
+    Line::from(spans)
+}
+
+/// How long quitting waits for deletes still on their way to S3.
+const QUIT_DRAIN: Duration = Duration::from_secs(5);
+
+/// Put the terminal into the app's mode: raw, the alternate screen, and bracketed paste, so a
+/// paste arrives as one event and not as keys.
+fn enter_screen() -> std::io::Result<()> {
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::terminal::EnterAlternateScreen,
+        ratatui::crossterm::event::EnableBracketedPaste
+    )
+}
+
+/// Undo `enter_screen`, leaving the terminal as the shell expects it.
+fn leave_screen() {
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableBracketedPaste
+    );
+    ratatui::restore();
+}
+
+/// The line printed after the terminal is back, for each delete that hadn't finished when the
+/// wait at quit ran out.
+fn dropped_delete_line(bucket: &str, key: &str) -> String {
+    format!(
+        "reses: quit before this delete finished, so it may not have happened: s3://{}/{}",
+        text::escape(bucket),
+        text::escape(key)
+    )
+}
+
+/// Signals that should end the app through its own exit, restoring the terminal on the way:
+/// a kill, a closed terminal, or an interrupt sent from outside (ctrl-c itself is a key here).
+#[cfg(unix)]
+fn quit_on_signals() -> std::io::Result<Arc<std::sync::atomic::AtomicBool>> {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for sig in [SIGTERM, SIGINT, SIGHUP] {
+        signal_hook::flag::register(sig, Arc::clone(&flag))?;
+    }
+    Ok(flag)
+}
+
+/// Ctrl-z: hand the terminal back, stop the way any program does, and take the screen again
+/// when the shell resumes us.
+#[cfg(unix)]
+fn suspend<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+) -> std::io::Result<()> {
+    leave_screen();
+    // The default action for SIGTSTP stops the process; this returns after SIGCONT.
+    signal_hook::low_level::emulate_default_handler(signal_hook::consts::SIGTSTP)?;
+    enter_screen()?;
+    terminal.clear()
 }
 
 /// Run the interactive UI until the user quits.
@@ -422,8 +518,14 @@ pub fn run(
     local_offset: UtcOffset,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load(&config_path)?;
+    #[cfg(unix)]
+    let signalled = quit_on_signals()?;
 
     let mut terminal = ratatui::init();
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::EnableBracketedPaste
+    );
     // After entering the alternate screen, as the picker asks, and before the job pool:
     // like the local offset, it's read while nothing else is running.
     let brand = brand::Brand::detect();
@@ -441,19 +543,51 @@ pub fn run(
     ));
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {
+            #[cfg(unix)]
+            if signalled.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             terminal.draw(|f| app.render(f))?;
-            if event::poll(Duration::from_millis(50))?
-                && let Event::Key(key) = event::read()?
-            {
-                // A key press clears the last status message so hints come back.
-                app.ctx.status = None;
-                app.key(key);
+            if event::poll(Duration::from_millis(50))? {
+                match event::read()? {
+                    #[cfg(unix)]
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Press
+                            && key.code == KeyCode::Char('z')
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        suspend(&mut terminal)?;
+                    }
+                    Event::Key(key) => {
+                        // A key press clears the last status message so hints come back.
+                        app.ctx.status = None;
+                        app.key(key);
+                    }
+                    Event::Paste(text) => {
+                        app.ctx.status = None;
+                        app.paste(&text);
+                    }
+                    _ => {}
+                }
             }
             app.pump();
         }
+        // Deletes still queued get a bounded wait, with the screen saying what it waits for.
+        let waiting = app.ctx.jobs.deletes_outstanding();
+        if waiting > 0 {
+            let noun = if waiting == 1 { "delete" } else { "deletes" };
+            app.ctx.info(format!(
+                "Waiting for {waiting} {noun} to reach S3 before quitting..."
+            ));
+            terminal.draw(|f| app.render(f))?;
+        }
         Ok(())
     })();
-    ratatui::restore();
+    let dropped = app.ctx.jobs.finish(QUIT_DRAIN);
+    leave_screen();
+    for (bucket, key) in &dropped {
+        eprintln!("{}", dropped_delete_line(bucket, key));
+    }
     result
 }
 
@@ -467,6 +601,9 @@ fn only_on_thread(main: ThreadId, hook: PanicHook) -> PanicHook {
         }
     })
 }
+
+#[cfg(test)]
+mod review_tests;
 
 /// Headless helpers for view tests.
 #[cfg(test)]
@@ -553,6 +690,16 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod shell_tests {
+    #[test]
+    fn a_delete_that_missed_the_quit_is_named_escaped() {
+        let line = super::dropped_delete_line("bk", "mail/a\u{1b}]52;c;eA==\u{7}");
+        assert_eq!(
+            line,
+            "reses: quit before this delete finished, so it may not have happened: \
+             s3://bk/mail/a\\x1b]52;c;eA==\\x07"
+        );
+    }
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;

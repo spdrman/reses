@@ -24,6 +24,31 @@ struct Cli {
     /// Write attachments into this directory.
     #[arg(long, value_name = "DIR")]
     save_attachments: Option<PathBuf>,
+    /// Print control characters as they are, even to a terminal. Without it, a terminal gets
+    /// them written out visibly (`\x1b`), so a message can't send escape sequences to it.
+    #[arg(long)]
+    raw: bool,
+}
+
+/// The decoded text as it should reach stdout. A message is untrusted: its subject, names and
+/// body can carry escape sequences, and a terminal acts on those (retitling the window,
+/// writing the clipboard, redrawing the screen). So when stdout is a terminal I write every
+/// control character out visibly, unless --raw asks for the bytes. A pipe or `-o` file gets
+/// them untouched, since nothing there interprets them.
+fn for_stdout(text: String, stdout_tty: bool, cli: &Cli) -> String {
+    if !stdout_tty || cli.raw || cli.output.is_some() {
+        return text;
+    }
+    reses::tui::text::escape_text(&text).into_owned()
+}
+
+/// The line printed for each saved attachment. Its name came from the message, so it's
+/// escaped: stderr is usually the terminal.
+fn saved_line(path: &std::path::Path) -> String {
+    format!(
+        "saved {}",
+        reses::tui::text::escape(&path.display().to_string())
+    )
 }
 
 /// What a run does, from the arguments and whether stdin and stdout are terminals.
@@ -95,8 +120,13 @@ fn main() -> anyhow::Result<()> {
             text
         });
         if let Some(dir) = &cli.save_attachments {
-            for path in mail::save_attachments(data, dir)? {
-                eprintln!("saved {}", path.display());
+            let paths = mail::save_attachments(data, dir)?;
+            for path in &paths {
+                eprintln!("{}", saved_line(path));
+            }
+            // Marked as downloaded on macOS; a failure there is a note, not a failed save.
+            if let Some(note) = reses::tui::saved::quarantine_all(&paths) {
+                eprintln!("reses: {note}");
             }
         }
     }
@@ -105,7 +135,10 @@ fn main() -> anyhow::Result<()> {
         Some(path) => {
             std::fs::write(path, out).with_context(|| format!("writing {}", path.display()))?
         }
-        None => std::io::stdout().write_all(out.as_bytes())?,
+        None => {
+            let out = for_stdout(out, std::io::stdout().is_terminal(), &cli);
+            std::io::stdout().write_all(out.as_bytes())?
+        }
     }
     Ok(())
 }
@@ -134,6 +167,34 @@ mod tests {
             mode(&cli(&["-o", "out.txt", "m.eml"]), true, true),
             Mode::Decode
         );
+    }
+
+    #[test]
+    fn a_terminal_gets_control_characters_written_out() {
+        let text = "Subject: \u{1b}]52;c;aGk=\u{7}hi\nbody\ttab\n".to_string();
+        let escaped = for_stdout(text.clone(), true, &cli(&["m.eml"]));
+        assert_eq!(escaped, "Subject: \\x1b]52;c;aGk=\\x07hi\nbody\ttab\n");
+        assert!(!escaped.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn pipes_files_and_raw_get_the_bytes_as_they_are() {
+        let text = "a \u{1b}[2J b\n".to_string();
+        assert_eq!(for_stdout(text.clone(), false, &cli(&["m.eml"])), text);
+        assert_eq!(
+            for_stdout(text.clone(), true, &cli(&["--raw", "m.eml"])),
+            text
+        );
+        assert_eq!(
+            for_stdout(text.clone(), true, &cli(&["-o", "out.txt", "m.eml"])),
+            text
+        );
+    }
+
+    #[test]
+    fn a_saved_attachment_name_is_escaped_on_stderr() {
+        let line = saved_line(std::path::Path::new("dl/evil\u{1b}]0;x\u{7}.pdf"));
+        assert_eq!(line, "saved dl/evil\\x1b]0;x\\x07.pdf");
     }
 
     #[test]

@@ -6,18 +6,22 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
 use super::inbox::{Handoff, display_from, render_confirm};
-use super::jobs::{Decoded, Done, Job, JobId, Outcome};
-use super::text::{char_width, clean, human_size};
+use super::jobs::{Decoded, Done, Generation, Job, JobId, Outcome};
+use super::saved;
+use super::text::{clean, escape, human_size, width as text_width};
 use super::{Ctx, Session, Transition, View};
 use crate::mail;
 use crate::s3::S3Error;
+
+mod pager;
+use pager::Pager;
 
 pub struct MessageScreen {
     pub bucket: String,
@@ -32,16 +36,15 @@ pub struct MessageScreen {
     started: bool,
     fetch: Option<JobId>,
     delete: Option<JobId>,
-    message: Option<Box<Decoded>>,
+    /// Shared with the job result, never copied: a message can be tens of megabytes.
+    message: Option<std::sync::Arc<Decoded>>,
+    /// Bumped when this screen closes, so an Open it queued and never got is skipped.
+    generation: Generation,
     html: bool,
     error: Option<String>,
     confirm: bool,
-    /// The shown text wrapped to `wrapped_for` columns; rebuilt when either changes.
-    wrapped: Vec<String>,
-    wrapped_for: Option<u16>,
-    offset: usize,
-    page: usize,
-    max_offset: usize,
+    /// Scrolls the shown text, wrapping only the lines a screen needs.
+    pager: Option<Pager>,
 }
 
 impl MessageScreen {
@@ -58,14 +61,11 @@ impl MessageScreen {
             fetch: None,
             delete: None,
             message: None,
+            generation: Generation::new(),
             html: false,
             error: None,
             confirm: false,
-            wrapped: Vec::new(),
-            wrapped_for: None,
-            offset: 0,
-            page: 1,
-            max_offset: 0,
+            pager: None,
         }
     }
 
@@ -104,12 +104,22 @@ impl MessageScreen {
         }
     }
 
-    fn scroll_to(&mut self, offset: usize) {
-        self.offset = offset.min(self.max_offset);
+    /// Move the pager with `f`, handing it the text it pages over.
+    fn scroll(&mut self, f: impl FnOnce(&mut Pager, &str)) {
+        let text = match &self.message {
+            Some(m) if self.html => m.html.as_str(),
+            Some(m) => m.text.as_str(),
+            None => return,
+        };
+        if let Some(pager) = self.pager.as_mut() {
+            f(pager, text);
+        }
     }
 
     /// Leave, handing a delete that hasn't answered yet to the inbox.
     fn close(&mut self) -> Transition {
+        // An Open still queued for this screen is no longer wanted.
+        self.generation.bump();
         if let (Some(id), Some(handoff)) = (self.delete.take(), &self.handoff) {
             handoff.borrow_mut().insert(id);
         }
@@ -123,7 +133,13 @@ impl MessageScreen {
         }
         let stem = file_stem(&self.key);
         match write_new(&self.out_dir, &stem, "txt", self.shown().as_bytes()) {
-            Ok(path) => ctx.info(format!("Wrote {}", path.display())),
+            Ok(path) => {
+                // Marked as downloaded on macOS; a failure there costs a note, never the file.
+                let note = saved::quarantine_all(std::slice::from_ref(&path))
+                    .map(|n| format!("; {n}"))
+                    .unwrap_or_default();
+                ctx.info(format!("Wrote {}{note}", path.display()));
+            }
             Err(e) => ctx.error(format!(
                 "Could not write into {}: {e}",
                 self.out_dir.display()
@@ -144,10 +160,15 @@ impl MessageScreen {
                 } else {
                     "attachments"
                 };
+                // The names on disk, which differ from the message's when one was taken.
+                let note = saved::quarantine_all(&paths)
+                    .map(|n| format!("; {n}"))
+                    .unwrap_or_default();
                 ctx.info(format!(
-                    "Saved {} {noun} to {}",
+                    "Saved {} {noun} to {}: {}{note}",
                     paths.len(),
-                    self.out_dir.display()
+                    self.out_dir.display(),
+                    saved::names(&paths)
                 ));
             }
             Err(e) => ctx.error(format!(
@@ -184,31 +205,27 @@ impl View for MessageScreen {
     fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         if let Some(err) = &self.error {
             frame.render_widget(
-                Paragraph::new(format!(" {err}"))
+                Paragraph::new(format!(" {}", escape(err)))
                     .style(Style::default().fg(Color::Red))
                     .wrap(Wrap { trim: false }),
                 area,
             );
         } else if self.message.is_none() {
             frame.render_widget(
-                Paragraph::new(format!(" Fetching {} …", self.location())),
+                Paragraph::new(format!(" Fetching {} …", escape(&self.location()))),
                 area,
             );
         } else {
-            if self.wrapped_for != Some(area.width) {
-                self.wrapped = wrap(self.shown(), area.width as usize);
-                self.wrapped_for = Some(area.width);
-            }
-            self.page = (area.height as usize).max(1);
-            self.max_offset = self.wrapped.len().saturating_sub(self.page);
-            self.offset = self.offset.min(self.max_offset);
-            let shown: Vec<_> = self
-                .wrapped
-                .iter()
-                .skip(self.offset)
-                .take(self.page)
-                .map(|l| Line::raw(l.as_str()))
-                .collect();
+            let text = match &self.message {
+                Some(m) if self.html => m.html.as_str(),
+                Some(m) => m.text.as_str(),
+                None => "",
+            };
+            let rows = match self.pager.as_mut() {
+                Some(pager) => pager.screen(text, area.width as usize, area.height as usize),
+                None => Vec::new(),
+            };
+            let shown: Vec<_> = rows.into_iter().map(Line::raw).collect();
             frame.render_widget(Paragraph::new(shown), area);
         }
 
@@ -224,7 +241,8 @@ impl View for MessageScreen {
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.confirm {
             self.confirm = false;
-            if key.code == KeyCode::Char('y') {
+            // Only a bare y deletes; ctrl-y and everything else cancel.
+            if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
                 let job = Job::Delete {
                     bucket: self.bucket.clone(),
                     key: self.key.clone(),
@@ -239,16 +257,16 @@ impl View for MessageScreen {
             return Transition::None;
         }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.scroll_to(self.offset.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll_to(self.offset + 1),
-            KeyCode::PageUp => self.scroll_to(self.offset.saturating_sub(self.page)),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_to(self.offset + self.page),
-            KeyCode::Home | KeyCode::Char('g') => self.scroll_to(0),
-            KeyCode::End | KeyCode::Char('G') => self.scroll_to(usize::MAX),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll(|p, t| p.up(t, 1)),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll(|p, t| p.down(t, 1)),
+            KeyCode::PageUp => self.scroll(|p, t| p.up(t, p.page())),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll(|p, t| p.down(t, p.page())),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll(|p, _| p.home()),
+            KeyCode::End | KeyCode::Char('G') => self.scroll(|p, t| p.end(t)),
             KeyCode::Char('h') if self.message.is_some() => {
                 self.html = !self.html;
-                self.wrapped_for = None;
-                self.offset = 0;
+                // The other part, from its top.
+                self.scroll(|p, t| p.reset(t));
                 ctx.info(if self.html {
                     "Showing the HTML part."
                 } else {
@@ -257,9 +275,18 @@ impl View for MessageScreen {
             }
             KeyCode::Char('w') => self.write_text(ctx),
             KeyCode::Char('a') => self.save_attachments(ctx),
-            KeyCode::Char('d') => self.confirm = true,
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => self.confirm = true,
             KeyCode::Esc | KeyCode::Char('q') => return self.close(),
             _ => {}
+        }
+        Transition::None
+    }
+
+    /// Nothing here takes text, so a paste only matters as a no to an open confirmation.
+    fn on_paste(&mut self, _text: &str, ctx: &mut Ctx) -> Transition {
+        if self.confirm {
+            self.confirm = false;
+            ctx.info("Delete cancelled.");
         }
         Transition::None
     }
@@ -274,8 +301,8 @@ impl View for MessageScreen {
                         self.subject = Some(clean(subject));
                     }
                     self.from = display_from(&message.summary.from);
-                    self.message = Some(message.clone());
-                    self.wrapped_for = None;
+                    self.pager = Some(Pager::new(&message.text));
+                    self.message = Some(std::sync::Arc::clone(message));
                 }
                 Ok(_) => self.error = Some(format!("Unexpected reply for {}", self.location())),
                 Err(e) => self.error = Some(self.fetch_error(e)),
@@ -306,7 +333,9 @@ impl View for MessageScreen {
             key: self.key.clone(),
         };
         match &self.session {
-            Some(session) => self.fetch = Some(ctx.submit_to(session, job, None)),
+            Some(session) => {
+                self.fetch = Some(ctx.submit_to(session, job, Some(&self.generation)));
+            }
             None => self.error = Some("Not connected to an account.".into()),
         }
     }
@@ -324,6 +353,14 @@ impl View for MessageScreen {
             ("d", "delete"),
             ("q", "back"),
         ]
+    }
+}
+
+impl Drop for MessageScreen {
+    /// However the screen goes away (closed, reset, or the app quitting), an Open it queued
+    /// and never got is skipped rather than run for nobody.
+    fn drop(&mut self) {
+        self.generation.bump();
     }
 }
 
@@ -370,32 +407,42 @@ fn write_new(dir: &Path, stem: &str, ext: &str, data: &[u8]) -> std::io::Result<
     unreachable!("ran out of file names")
 }
 
-/// Wrap each line to `width` columns, breaking after a space where there is one.
-fn wrap(text: &str, width: usize) -> Vec<String> {
+/// Wrap one source line to `width` columns, breaking after a space where there is one. Always
+/// at least one row, so an empty line still takes its row.
+fn wrap_line(line: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    #[cfg(test)]
+    WRAPPED_LINES.with(|c| c.set(c.get() + 1));
     let width = width.max(1);
     let mut out = Vec::new();
-    for line in text.lines() {
-        let line = clean(&line.replace('\t', "    "));
-        let mut cur = String::new();
-        let mut used = 0;
-        for c in line.chars() {
-            let w = char_width(c);
-            if used + w > width && !cur.is_empty() {
-                // Carry the unfinished word over when the line has a space to break at.
-                let carry = match cur.rfind(' ') {
-                    Some(i) if i + 1 < cur.len() => cur.split_off(i + 1),
-                    _ => String::new(),
-                };
-                out.push(cur.trim_end().to_string());
-                used = carry.chars().map(char_width).sum();
-                cur = carry;
-            }
-            cur.push(c);
-            used += w;
+    let line = clean(&line.replace('\t', "    "));
+    let mut cur = String::new();
+    let mut used = 0;
+    // Grapheme by grapheme, measured the way the terminal draws them, so an emoji with a
+    // variation selector takes its two columns here too.
+    for g in line.graphemes(true) {
+        let w = text_width(g);
+        if used + w > width && !cur.is_empty() {
+            // Carry the unfinished word over when the line has a space to break at.
+            let carry = match cur.rfind(' ') {
+                Some(i) if i + 1 < cur.len() => cur.split_off(i + 1),
+                _ => String::new(),
+            };
+            out.push(cur.trim_end().to_string());
+            used = text_width(&carry);
+            cur = carry;
         }
-        out.push(cur);
+        cur.push_str(g);
+        used += w;
     }
+    out.push(cur);
     out
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Source lines this thread has wrapped, so a test can tell on-screen work from all of it.
+    static WRAPPED_LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -585,6 +632,20 @@ attached words\r\n\
         let status = scr.lines().last().unwrap();
         assert!(status.contains("1 attachment"), "{scr}");
         assert!(status.contains(&out.path().display().to_string()), "{scr}");
+    }
+
+    #[test]
+    fn the_status_line_names_the_files_as_they_were_saved() {
+        let out = tempfile::tempdir().unwrap();
+        // A note.txt is already there, so the attachment lands as note-1.txt.
+        std::fs::write(out.path().join("note.txt"), b"older").unwrap();
+        let (mut app, _d) = open(store_with(&multipart()), out.path());
+        app.key(key(KeyCode::Char('a')));
+        assert!(out.path().join("note-1.txt").exists());
+        let scr = screen(&mut app, 200, 20);
+        let status = scr.lines().last().unwrap();
+        assert!(status.contains("note-1.txt"), "{scr}");
+        assert!(!status.contains("error"), "{scr}");
     }
 
     #[test]
@@ -848,5 +909,95 @@ attached words\r\n\
         scr.lines()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("no line contains {needle:?} in:\n{scr}"))
+    }
+
+    /// A decoded message of `lines` lines, each longer than one screen row at 80 columns.
+    fn huge(lines: usize) -> Arc<Decoded> {
+        let mut text = String::new();
+        for i in 0..lines {
+            text.push_str(&format!(
+                "line {i:06} lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod\n"
+            ));
+        }
+        Arc::new(Decoded::new(
+            text.clone().into_bytes(),
+            text.clone(),
+            text,
+            Default::default(),
+        ))
+    }
+
+    /// A message screen that has just been handed `message` as its Open result.
+    fn opened(message: &Arc<Decoded>) -> (MessageScreen, crate::tui::Ctx, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = testing::ctx(dir.path(), None);
+        let mut screen = MessageScreen::new(BUCKET.into(), KEY.into());
+        // As if it had already asked for the message and this is the answer.
+        screen.started = true;
+        screen.fetch = Some(1);
+        let done = crate::tui::jobs::Done {
+            id: 1,
+            job: Job::Open {
+                bucket: BUCKET.into(),
+                key: KEY.into(),
+            },
+            result: Ok(Outcome::Message(Arc::clone(message))),
+        };
+        let _ = screen.on_done(&done, &mut ctx);
+        (screen, ctx, dir)
+    }
+
+    #[test]
+    fn opening_a_message_shares_the_decoded_text_instead_of_copying_it() {
+        let message = huge(10);
+        let (screen, _ctx, _d) = opened(&message);
+        let kept = screen
+            .message
+            .as_ref()
+            .expect("the screen kept the message");
+        assert!(Arc::ptr_eq(kept, &message), "the screen copied the message");
+    }
+
+    #[test]
+    fn a_huge_message_only_wraps_what_is_on_screen() {
+        let message = huge(100_000);
+        let (screen, ctx, _d) = opened(&message);
+        let mut app = App::with_view(ctx, Box::new(screen));
+        WRAPPED_LINES.with(|c| c.set(0));
+        // Open, resize by a column, and jump to the end and back: each only needs a screenful.
+        let scr = testing::screen(&mut app, 80, 24);
+        assert!(scr.contains("line 000000"), "{scr}");
+        let _ = testing::screen(&mut app, 81, 24);
+        app.key(key(KeyCode::End));
+        let scr = testing::screen(&mut app, 81, 24);
+        assert!(scr.contains("line 099999"), "{scr}");
+        app.key(key(KeyCode::Home));
+        assert!(testing::screen(&mut app, 81, 24).contains("line 000000"));
+        let wrapped = WRAPPED_LINES.with(std::cell::Cell::get);
+        assert!(
+            wrapped <= 10 * 24,
+            "{wrapped} of 100000 lines wrapped on the UI thread"
+        );
+    }
+
+    #[test]
+    fn scrolling_a_huge_message_lands_exactly_at_the_end() {
+        let message = huge(5_000);
+        let (screen, ctx, _d) = opened(&message);
+        let mut app = App::with_view(ctx, Box::new(screen));
+        let _ = testing::screen(&mut app, 80, 24);
+        app.key(key(KeyCode::End));
+        let scr = testing::screen(&mut app, 80, 24);
+        // The last line is on the last body row, not scrolled past it.
+        let body: Vec<&str> = scr.lines().skip(1).take(22).collect();
+        assert!(body.last().unwrap().contains("eiusmod"), "{scr}");
+        assert!(body.iter().any(|l| l.contains("line 004999")), "{scr}");
+        // Further down goes nowhere; one up moves by exactly one row.
+        app.key(key(KeyCode::Down));
+        assert_eq!(testing::screen(&mut app, 80, 24), scr);
+        app.key(key(KeyCode::Up));
+        let up = testing::screen(&mut app, 80, 24);
+        let up_body: Vec<&str> = up.lines().skip(1).take(22).collect();
+        assert_eq!(up_body[1..], body[..21], "{up}");
     }
 }

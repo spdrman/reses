@@ -40,11 +40,23 @@ ratatui = "0.29"
 ratatui-image = { version = "8.1", default-features = false }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+# The quit path for SIGTERM, SIGINT and SIGHUP, and ctrl-z. Already in the tree through
+# crossterm.
+signal-hook = "0.3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
 # The runtime reses owns, so the S3 calls can stay synchronous for the views.
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 toml = "0.8"
+# Grapheme widths, measured the way ratatui lays cells out. Both are the versions ratatui
+# already builds.
+unicode-segmentation = "1"
+unicode-width = "0.2"
+
+# Marks saved attachments with com.apple.quarantine on macOS. The same rustix
+# ratatui-image already builds.
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { version = "0.38", features = ["fs"] }
 
 [dev-dependencies]
 # A scripted HTTP client for the SDK, so region redirects and odd listings get tested offline.
