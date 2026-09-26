@@ -46,3 +46,13 @@ Tests never read or write the real `~/.aws` or `~/.config/reses`; they use temp 
 Every binary written into `dist/` goes through `scripts/place-binary.sh`, which copies beside the destination and renames over it. `tests/ci_parity.rs` fails if a `cp` or `mv` into `dist/` appears anywhere else in the Makefile or `scripts/ci-docker.sh`. The reason is #15: on Apple Silicon, overwriting a binary that has already run, in place, while any process holds it open, makes macOS kill it on every later exec, and Docker Desktop holds everything under a mounted folder.
 
 Two side effects are expected. Docker Desktop keeps the old, now unlinked binaries open, so each `make darwin` leaves a few MB on disk that comes back when Docker restarts. And a build killed partway through can leave a `dist/*.tmp.XXXXXX` file behind; nothing ever runs it, and it's safe to delete.
+
+## Releasing
+
+A push to the `release` branch publishes a release (`.github/workflows/release.yml`). It builds Linux x86_64 and arm64 (static musl) and macOS arm64, checks each binary against the mail goldens on its own platform, and attaches the three archives and a `SHA256SUMS` file to a release tagged `v<version>`.
+
+1. On main, bump `version` in `Cargo.toml` and run `scripts/ci-docker.sh --exec 'cargo update -p reses'` so `Cargo.lock` agrees, then merge that the usual way.
+2. `git push origin main:release`. That's a fast-forward, so `release` never carries commits of its own. The very first release is just the first push, which creates the branch.
+3. Watch the Release run. A red **Version** job means the version wasn't bumped (its tag already exists), or the commit isn't on main. Fix that on main and push again.
+
+The `release` branch is protected by a ruleset: it can't be deleted or force-pushed. The workflow also refuses any commit that isn't on main. If a publish fails partway through, the run removes the tag and draft it created, so pushing again after the fix starts clean.

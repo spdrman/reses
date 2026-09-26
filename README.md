@@ -48,6 +48,10 @@ The inbox shows From, Subject, Date and Size, newest first. Enter opens a messag
 
 Settings live in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
 
+## Download
+
+Ready-to-run binaries for Linux (x86_64 and arm64, static) and macOS (Apple Silicon) are on the [releases page](https://github.com/spdrman/reses/releases), with install steps and checksums in each release's notes.
+
 ## Build and install
 
 Everything runs in Docker through `scripts/ci-docker.sh`, and the Makefile wraps it:
@@ -66,4 +70,4 @@ On macOS, never install a new build by `cp` over an existing copy. Once a binary
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
