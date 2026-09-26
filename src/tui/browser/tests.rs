@@ -174,7 +174,14 @@ fn starts_at_the_bucket_list() {
     assert!(s.contains("mail"), "{s}");
     assert!(selected_row(&s).contains("archive"), "{s}");
     let footer = s.lines().last().unwrap();
-    for hint in ["enter", "open", "search", "filter"] {
+    for hint in ["enter", "open", "filter"] {
+        assert!(footer.contains(hint), "missing {hint}: {footer}");
+    }
+    // Search and saving the inbox only make sense inside a bucket.
+    open(&mut app, "mail");
+    let s = screen(&mut app, 80, 12);
+    let footer = s.lines().last().unwrap();
+    for hint in ["enter", "open", "up", "filter", "search", "inbox"] {
         assert!(footer.contains(hint), "missing {hint}: {footer}");
     }
 }
@@ -462,7 +469,8 @@ fn s_searches_down_from_the_folder_and_lists_folders_holding_email() {
         "search lists without a delimiter: {lists:?}"
     );
     let footer = s.lines().last().unwrap();
-    assert!(footer.contains("stop"), "{footer}");
+    assert!(footer.contains("go there"), "{footer}");
+    assert!(!footer.contains("stop"), "nothing left to stop: {footer}");
 }
 
 #[test]
@@ -472,8 +480,11 @@ fn search_from_a_folder_stays_inside_it() {
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "mail");
     open(&mut app, "inbound/");
+    // Only count what the search itself peeks, not the rows the folder views showed.
+    spy.peeks.lock().unwrap().clear();
     press(&mut app, KeyCode::Char('s'));
     let per_key = spy.peeks_per_key();
+    assert_eq!(per_key.len(), 7, "everything under inbound/: {per_key:?}");
     assert!(
         !per_key.keys().any(|k| k.starts_with("pictures/")),
         "{per_key:?}"
@@ -509,6 +520,9 @@ fn a_search_can_be_stopped() {
     app.key(key(KeyCode::Char('s')));
     app.pump();
     app.pump();
+    let s = screen(&mut app, 100, 30);
+    assert!(s.contains("searching"), "{s}");
+    assert!(s.lines().last().unwrap().contains("stop"), "{s}");
     app.key(key(KeyCode::Char('x')));
     let stopped_at = spy.peek_count();
     settle(&mut app);

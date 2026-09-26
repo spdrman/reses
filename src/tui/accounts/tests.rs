@@ -466,3 +466,25 @@ fn q_on_the_form_is_typed_not_quit() {
     let s = screen(&mut app, 100, 20);
     assert!(line_with(&s, "Profile name").contains("qd"), "{s}");
 }
+
+#[test]
+fn pasted_values_are_trimmed_before_saving() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path(), None, None);
+    press(&mut app, KeyCode::Char('a'));
+    fill_form(
+        &mut app,
+        " pasted ",
+        " AKIAFAKEFAKE00000003 ",
+        &format!(" {SECRET} "),
+        "",
+        " us-west-2 ",
+    );
+    save(&mut app);
+    assert!(app.ctx.session.is_some(), "{:?}", app.ctx.status);
+    let file = CredentialsFile::load(&dir.path().join("credentials")).unwrap();
+    let p = file.get("pasted").expect("saved under the trimmed name");
+    assert_eq!(p.access_key_id, "AKIAFAKEFAKE00000003");
+    assert_eq!(p.secret_access_key, SECRET);
+    assert_eq!(p.region.as_deref(), Some("us-west-2"));
+}
