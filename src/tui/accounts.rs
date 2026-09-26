@@ -81,8 +81,13 @@ impl AccountsScreen {
     }
 
     fn open_browser(&self, profile: Profile, ctx: &mut Ctx) -> Transition {
-        ctx.session = Some((self.connect)(profile));
-        Transition::Push(Box::new(BrowserScreen::new()))
+        let session = (self.connect)(profile);
+        // As the first screen nothing below uses ctx.session, so it can follow this account and
+        // the header bar shows it. Pushed over the inbox, the inbox keeps its own.
+        if self.root {
+            ctx.session = Some(session.clone());
+        }
+        Transition::Push(Box::new(BrowserScreen::with_session(session)))
     }
 
     fn list_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {

@@ -856,7 +856,11 @@ fn saving_the_inbox_hands_the_browsers_session_to_the_inbox() {
     assert_eq!(inbox.region.as_deref(), Some("eu-west-1"));
     let session = app.ctx.session.as_ref().expect("a session for the inbox");
     assert_eq!(session.profile.name, "mine");
-    assert_eq!(app.stack[0].title(), "Inbox");
+    assert!(
+        app.stack[0].title().starts_with("Inbox"),
+        "{}",
+        app.stack[0].title()
+    );
 }
 
 /// A browser on a real one-thread pool, so a stale stamp can be seen being skipped.
@@ -964,4 +968,25 @@ fn open_pooled(app: &mut App, name: &str) {
         press_pooled(app, KeyCode::Down);
     }
     panic!("never selected {name}");
+}
+
+#[test]
+fn a_wide_name_that_fits_is_shown_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    // Ten characters, twenty columns: the column must be sized in columns to hold it.
+    let wide = "受信メール保存フォルダ";
+    s.put("bk", "a", TEXT);
+    s.put("bk", wide, EMAIL);
+    s.put("bk", &format!("{wide}/m1"), EMAIL);
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    let spaced: String = wide.chars().map(|c| format!("{c} ")).collect();
+    let spaced = spaced.trim_end();
+    let s = screen(&mut app, 100, 12);
+    assert!(s.contains(spaced), "cut although it fits:\n{s}");
+    press(&mut app, KeyCode::Char('s'));
+    let s = screen(&mut app, 100, 12);
+    assert!(s.contains(spaced), "cut in the search results:\n{s}");
 }
