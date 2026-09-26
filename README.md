@@ -1,5 +1,7 @@
 # reses
 
+![reses browsing an inbox](docs/demo.gif)
+
 Read the raw email that Amazon SES stores in S3, either one file at a time or as a terminal inbox.
 
 SES can drop every incoming message into an S3 bucket, but what lands there is the raw RFC 5322 text: pages of `Received:`, DKIM and ARC headers, MIME boundaries and base64. reses turns that back into something readable... and with no arguments it opens an inbox over the bucket, so you can read and delete mail without downloading anything by hand.
@@ -55,6 +57,7 @@ make gate          fmt, clippy, check, docs, tests, python oracle tests
 make integration   the S3 tests, against a throwaway MinIO
 make darwin        cross-build the macOS binary into dist/ and check it against the goldens
 make install       make darwin, then link ~/.local/bin/reses to dist/reses
+make demo          re-record docs/demo.gif against a throwaway MinIO (see demo/record.sh)
 ```
 
 `~/.local/bin` has to be on your PATH. If something is already there under that name, `make install` leaves it alone and tells you to move it aside first.
