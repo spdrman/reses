@@ -38,6 +38,30 @@ pub enum ConfigError {
     },
 }
 
+impl Inbox {
+    /// Check the parts S3 cares about: a non-empty prefix ends in '/', and the bucket is a name
+    /// S3 could have. I accept the legacy us-east-1 names too (capitals and underscores, up to
+    /// 255 characters), because reses saves whatever ListBuckets returned and an older bucket
+    /// that refused to load would lock reses out at startup.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.prefix.is_empty() && !self.prefix.ends_with('/') {
+            return Err(format!(
+                "inbox prefix {:?} must be empty or end in '/'",
+                self.prefix
+            ));
+        }
+        let b = &self.bucket;
+        let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+        let ok = (3..=255).contains(&b.len())
+            && b.chars().all(allowed)
+            && b.starts_with(|c: char| c.is_ascii_alphanumeric());
+        if !ok {
+            return Err(format!("inbox bucket {b:?} is not a valid S3 bucket name"));
+        }
+        Ok(())
+    }
+}
+
 impl AppConfig {
     /// `$RESES_CONFIG`, else `$XDG_CONFIG_HOME/reses/config.toml`, else `~/.config/reses/config.toml`.
     pub fn default_path() -> PathBuf {
@@ -81,10 +105,15 @@ impl AppConfig {
                 });
             }
         };
-        toml::from_str(&text).map_err(|e| ConfigError::Parse {
+        let parse_err = |message| ConfigError::Parse {
             path: path.to_path_buf(),
-            message: e.to_string(),
-        })
+            message,
+        };
+        let config: Self = toml::from_str(&text).map_err(|e| parse_err(e.to_string()))?;
+        if let Some(inbox) = &config.inbox {
+            inbox.validate().map_err(parse_err)?;
+        }
+        Ok(config)
     }
 
     /// Create parent directories and write atomically.
@@ -93,6 +122,12 @@ impl AppConfig {
             path: path.to_path_buf(),
             source,
         };
+        // Writing an inbox that load would then refuse would stop reses from starting.
+        if let Some(inbox) = &self.inbox {
+            inbox
+                .validate()
+                .map_err(|m| write_err(std::io::Error::new(std::io::ErrorKind::InvalidInput, m)))?;
+        }
         let text = toml::to_string_pretty(self)
             .map_err(|e| write_err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
         crate::aws_profile::write_atomic(path, text.as_bytes(), None, None).map_err(write_err)
