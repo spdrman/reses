@@ -14,8 +14,9 @@
 # RESES_LANE names the cargo target volume, as for ci-docker.sh. It defaults to "demo" here,
 # so recording never shares build output with the main gate.
 #
-# RESES_DEMO_FRAMES, when set, is a path to copy the checked text snapshots to (for example to
-# refresh tests/fixtures/demo/good.txt).
+# RESES_DEMO_FRAMES, when set, is a path to copy the text snapshots to (for example to refresh
+# tests/fixtures/demo/good.txt), with the GIF next to them. Both are copied before the check, so a
+# failed run can be looked at.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -93,13 +94,15 @@ docker run --rm --name "$VHS" --platform "$PLATFORM" --network "$NET" \
   -v "$WORK:/demo" -v "$WORK/home:/home/demo" -w /demo \
   "$VHS_IMAGE" demo.tape
 
+# Copied before the check, so a failed recording can still be read.
+if [ -n "${RESES_DEMO_FRAMES:-}" ]; then
+  cp "$WORK/demo.txt" "$RESES_DEMO_FRAMES"
+  cp "$WORK/demo.gif" "${RESES_DEMO_FRAMES%.txt}.gif"
+fi
 echo "==> checking the recording"
 docker run --rm --name "$CHECK" --platform "$PLATFORM" \
   -v "$REPO_ROOT/demo:/check:ro" -v "$WORK:/demo:ro" \
   "$CI_IMAGE" bash /check/check-frames.sh /demo/demo.txt /check/messages.tsv
-if [ -n "${RESES_DEMO_FRAMES:-}" ]; then
-  cp "$WORK/demo.txt" "$RESES_DEMO_FRAMES"
-fi
 
 # Written next to the old GIF and moved over it, so a concurrent or interrupted run never
 # leaves a half-written docs/demo.gif.
