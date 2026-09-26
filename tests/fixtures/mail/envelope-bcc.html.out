@@ -1,0 +1,11 @@
+From: sender@example.com
+Reply-To: 
+To: Visible Person <visible@example.org>
+Cc: cc@example.org
+Bcc: Hidden@Example.org, second.hidden@example.org, third@example.org, fourth@example.org
+Date: Fri, 09 Oct 2026 07:07:00 -0500
+Subject: Envelope-only Bcc
+Message-ID: <env-bcc-1@example.com>
+Message:
+
+Empty Bcc header, so the envelope recipients fill it. Two-digit year and EST.

@@ -1,0 +1,12 @@
+From: sender@example.com
+Reply-To: 
+To: receiver@example.org
+Cc: 
+Bcc: 
+Date: Thu, 08 Oct 2026 23:59:59 +0530
+Subject: Base64 body
+Message-ID: <b64-1@example.com>
+Message:
+
+Hello from base64.
+With a ✓ check mark and a second line.
