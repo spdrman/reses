@@ -119,12 +119,10 @@ fn envelope_recipients(msg: &Message) -> Vec<String> {
     for received in msg.part(ROOT).get_all("Received") {
         found.extend(received_for(&received));
     }
-    let mut seen = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for addr in found {
-        let key = pystr::lower(&addr);
-        if !seen.contains(&key) {
-            seen.push(key);
+        if seen.insert(pystr::lower(&addr)) {
             out.push(addr);
         }
     }
@@ -140,7 +138,8 @@ fn bcc(msg: &Message) -> String {
     }
     let mut visible: Vec<String> = addresses(msg, "To");
     visible.extend(addresses(msg, "Cc"));
-    let visible: Vec<String> = visible.iter().map(|a| pystr::lower(a)).collect();
+    let visible: std::collections::HashSet<String> =
+        visible.iter().map(|a| pystr::lower(a)).collect();
     envelope_recipients(msg)
         .into_iter()
         .filter(|a| !visible.contains(&pystr::lower(a)))
@@ -354,7 +353,20 @@ pub fn looks_like_email(prefix: &[u8]) -> bool {
     !is_setup_notice
 }
 
-/// The last path component of an attachment name, so a name can't point outside `dir`.
+/// Longest attachment name I write, in bytes. Filesystems stop at 255, and this leaves room for
+/// the "-N" that keeps a name unique.
+const MAX_NAME_BYTES: usize = 200;
+
+/// Characters that make a name lie about itself on screen: controls, and the bidi formatting
+/// characters that can reorder it ("invoice\u{202e}fdp.exe" shows as "invoiceexe.pdf").
+fn is_deceptive(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// The name an attachment is saved under: its last path component, so it can't point outside
+/// `dir`, with deceptive characters replaced and the length capped. A leading dot stays, as it
+/// does in reses.py.
 fn safe_file_name(name: &str) -> String {
     let base = name
         .split(['/', '\\'])
@@ -363,7 +375,26 @@ fn safe_file_name(name: &str) -> String {
     if base.is_empty() || base == ".." {
         return "attachment".into();
     }
-    base.replace('\0', "_")
+    let clean: String = base
+        .chars()
+        .map(|c| if is_deceptive(c) { '_' } else { c })
+        .collect();
+    if clean.len() <= MAX_NAME_BYTES {
+        return clean;
+    }
+    let (stem, suffix) = stem_suffix(&clean);
+    // Keep a sensible extension; a "suffix" this long is really part of the name.
+    let suffix = if suffix.len() <= 32 { suffix } else { "" };
+    let mut budget = MAX_NAME_BYTES - suffix.len();
+    let stem = if suffix.is_empty() {
+        clean.as_str()
+    } else {
+        stem
+    };
+    while !stem.is_char_boundary(budget) {
+        budget -= 1;
+    }
+    format!("{}{suffix}", &stem[..budget])
 }
 
 /// pathlib's stem and suffix.
@@ -374,15 +405,13 @@ fn stem_suffix(name: &str) -> (&str, &str) {
     }
 }
 
-/// Write every named attachment into `dir`, never overwriting, and return the paths written.
-pub fn save_attachments(raw: &[u8], dir: &Path) -> io::Result<Vec<PathBuf>> {
-    std::fs::create_dir_all(dir)?;
-    let msg = Message::parse(raw);
+/// Write `(name, payload)` pairs into `dir` under fresh names. One that can't be written is
+/// skipped so the rest still land; the error only comes back if nothing could be written.
+fn save_named(dir: &Path, items: Vec<(String, Vec<u8>)>) -> io::Result<Vec<PathBuf>> {
     let mut saved = Vec::new();
-    for (part, filename) in attachments(&msg) {
-        let name = safe_file_name(&filename);
+    let mut first_error = None;
+    for (name, payload) in items {
         let (stem, suffix) = stem_suffix(&name);
-        let payload = msg.part(part).decoded_payload().unwrap_or_default();
         let mut n = 0;
         loop {
             let candidate = if n == 0 {
@@ -399,16 +428,44 @@ pub fn save_attachments(raw: &[u8], dir: &Path) -> io::Result<Vec<PathBuf>> {
                 .open(&target)
             {
                 Ok(mut f) => {
-                    f.write_all(&payload)?;
-                    saved.push(target);
+                    match f.write_all(&payload) {
+                        Ok(()) => saved.push(target),
+                        Err(e) => {
+                            drop(f);
+                            // Only the half-written file I just created goes.
+                            let _ = std::fs::remove_file(&target);
+                            first_error.get_or_insert(e);
+                        }
+                    }
                     break;
                 }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => n += 1,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                    break;
+                }
             }
         }
     }
-    Ok(saved)
+    match first_error {
+        Some(e) if saved.is_empty() => Err(e),
+        _ => Ok(saved),
+    }
+}
+
+/// Write every named attachment into `dir`, never overwriting, and return the paths written.
+/// An attachment that can't be written is skipped; the error is returned only when none could.
+pub fn save_attachments(raw: &[u8], dir: &Path) -> io::Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(dir)?;
+    let msg = Message::parse(raw);
+    let items = attachments(&msg)
+        .into_iter()
+        .map(|(part, filename)| {
+            let payload = msg.part(part).decoded_payload().unwrap_or_default();
+            (safe_file_name(&filename), payload)
+        })
+        .collect();
+    save_named(dir, items)
 }
 
 #[cfg(test)]
@@ -427,6 +484,27 @@ mod tests {
         );
         assert_eq!(received_for("before a@example.com"), Vec::<String>::new());
         assert_eq!(received_for("for @x for x@ for a@b"), ["a@b"]);
+    }
+
+    #[test]
+    fn a_failed_write_skips_that_attachment_only() {
+        let dir = tempfile::tempdir().unwrap();
+        // 300 bytes is past every filesystem's name limit, so this one write fails.
+        let items = vec![
+            ("first.txt".to_string(), b"1".to_vec()),
+            ("x".repeat(300), b"2".to_vec()),
+            ("third.txt".to_string(), b"3".to_vec()),
+        ];
+        let saved = save_named(dir.path(), items).unwrap();
+        assert_eq!(
+            saved,
+            [dir.path().join("first.txt"), dir.path().join("third.txt")]
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+
+        // When nothing could be written at all, the error comes back.
+        let err = save_named(dir.path(), vec![("y".repeat(300), b"4".to_vec())]).unwrap_err();
+        assert_ne!(err.kind(), io::ErrorKind::AlreadyExists);
     }
 
     #[test]

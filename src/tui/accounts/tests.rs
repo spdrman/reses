@@ -488,3 +488,175 @@ fn pasted_values_are_trimmed_before_saving() {
     assert_eq!(p.secret_access_key, SECRET);
     assert_eq!(p.region.as_deref(), Some("us-west-2"));
 }
+
+#[test]
+fn the_mask_does_not_give_away_the_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut masks = Vec::new();
+    for secret in [
+        "FAKEx",
+        "FAKEsecretQZX9fakeFAKE0000FAKEsecretQZX9fakeFAKE0000",
+    ] {
+        let mut app = app(dir.path(), None, None);
+        press(&mut app, KeyCode::Char('a'));
+        fill_form(&mut app, "fake", "AKIAFAKEFAKE00000003", secret, secret, "");
+        // Move off the masked fields so only the mask itself differs.
+        press(&mut app, KeyCode::Tab);
+        let s = screen(&mut app, 120, 20);
+        let secret_line = line_with(&s, "Secret access key").to_string();
+        let token_line = line_with(&s, "Session token").to_string();
+        assert!(secret_line.contains('*'), "{s}");
+        masks.push((secret_line, token_line));
+    }
+    assert_eq!(
+        masks[0], masks[1],
+        "a 5 and a 52 character secret look the same"
+    );
+}
+
+#[test]
+fn an_empty_masked_field_shows_no_mask() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path(), None, None);
+    press(&mut app, KeyCode::Char('a'));
+    let s = screen(&mut app, 120, 20);
+    assert!(!line_with(&s, "Secret access key").contains('*'), "{s}");
+}
+
+#[test]
+fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    // As the first screen there is no session yet, and q quits.
+    let mut root = app(dir.path(), Some(TWO_PROFILES), None);
+    let s = screen(&mut root, 100, 12);
+    let footer = s.lines().last().unwrap();
+    assert!(
+        footer.contains("quit") && !footer.contains("back"),
+        "{footer}"
+    );
+
+    // Pushed from the inbox with `u`, a session is already open and q goes back.
+    fs::write(dir.path().join("credentials"), TWO_PROFILES).unwrap();
+    let mut ctx = testing::ctx(dir.path(), Some(store() as Arc<dyn Store>));
+    let screen_view = AccountsScreen::new(&mut ctx);
+    let mut pushed = App::with_view(ctx, Box::new(screen_view));
+    let s = screen(&mut pushed, 100, 12);
+    let footer = s.lines().last().unwrap();
+    assert!(
+        footer.contains("back") && !footer.contains("quit"),
+        "{footer}"
+    );
+
+    // The empty-file hint follows the same rule.
+    let empty = tempfile::tempdir().unwrap();
+    let mut ctx = testing::ctx(empty.path(), Some(store() as Arc<dyn Store>));
+    let screen_view = AccountsScreen::new(&mut ctx);
+    let mut pushed = App::with_view(ctx, Box::new(screen_view));
+    let s = screen(&mut pushed, 100, 12);
+    let footer = s.lines().last().unwrap();
+    assert!(
+        footer.contains("back") && !footer.contains("quit"),
+        "{footer}"
+    );
+}
+
+#[test]
+fn a_section_without_keys_still_asks_before_keys_go_into_it() {
+    // Neither section is a complete profile, so get() finds nothing, but writing keys into
+    // either one changes a section the user already has.
+    const PARTIAL: &str = "\
+[work]
+region = eu-west-1
+
+[assumed]
+role_arn = arn:aws:iam::000000000000:role/fake
+source_profile = work
+";
+    for name in ["work", "assumed"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        let mut app = app(dir.path(), Some(PARTIAL), None);
+        press(&mut app, KeyCode::Char('a'));
+        fill_form(&mut app, name, "AKIAFAKEFAKE00000009", SECRET, "", "");
+        save(&mut app);
+        let s = screen(&mut app, 120, 20);
+        assert!(s.contains("already exists"), "{name}: {s}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), PARTIAL, "{name}");
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(fs::read_to_string(&path).unwrap(), PARTIAL, "{name}");
+        assert!(app.ctx.session.is_none(), "{name}");
+    }
+}
+
+#[test]
+fn connecting_from_a_pushed_accounts_screen_leaves_the_shared_session_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("credentials"), TWO_PROFILES).unwrap();
+    // The inbox below this screen talks to its own store through ctx.session.
+    let inbox_store = MemoryStore::new();
+    inbox_store.create_bucket("the-inbox-bucket");
+    let mut ctx = testing::ctx(dir.path(), Some(Arc::new(inbox_store) as Arc<dyn Store>));
+    let new_store = store();
+    let accounts = AccountsScreen::new(&mut ctx).with_connector(move |profile: Profile| {
+        let region = profile.region.clone().unwrap_or_else(|| "us-east-1".into());
+        Session {
+            profile,
+            region,
+            store: Arc::clone(&new_store) as Arc<dyn Store>,
+        }
+    });
+    let mut app = App::with_view(ctx, Box::new(accounts));
+    settle(&mut app);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "test");
+    let s = screen(&mut app, 100, 12);
+    assert!(
+        s.contains("mail-archive"),
+        "the browser lists the new account: {s}"
+    );
+    assert!(!s.contains("the-inbox-bucket"), "{s}");
+    assert!(s.contains("work"), "and says which account it is on: {s}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "test");
+}
+
+#[test]
+fn a_refused_save_shows_why_and_changes_nothing() {
+    // The AWS CLI refuses a file with a section twice, so the save refuses to write it.
+    const DUPLICATED: &str = "\
+[work]
+aws_access_key_id = AKIAFAKEWORK00000002
+aws_secret_access_key = fakeWorkSecret
+
+[work]
+region = eu-west-1
+";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    let mut app = app(dir.path(), Some(DUPLICATED), None);
+    press(&mut app, KeyCode::Char('a'));
+    fill_form(&mut app, "fresh", "AKIAFAKEFAKE00000003", SECRET, "", "");
+    save(&mut app);
+    let err = status_error(&app);
+    assert!(!err.contains("QZX9"), "{err}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), DUPLICATED);
+    assert!(app.ctx.session.is_none(), "no connect after a failed save");
+    assert!(app.ctx.config.default_profile.is_none());
+    assert!(!dir.path().join("config.toml").exists());
+    let s = screen(&mut app, 120, 20);
+    assert!(s.contains("Profile name"), "the form stays open: {s}");
+}
+
+#[test]
+fn a_profile_named_default_in_capitals_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path(), None, None);
+    press(&mut app, KeyCode::Char('a'));
+    fill_form(&mut app, "DEFAULT", "AKIAFAKEFAKE00000003", SECRET, "", "");
+    save(&mut app);
+    let err = status_error(&app);
+    assert!(err.contains("DEFAULT"), "{err}");
+    assert!(!dir.path().join("credentials").exists());
+    assert!(app.ctx.session.is_none());
+}

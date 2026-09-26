@@ -10,8 +10,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 use super::inbox::InboxScreen;
-use super::jobs::{Done, Job, JobId, Outcome};
-use super::{Ctx, Transition, View};
+use super::jobs::{Done, Generation, Job, JobId, Outcome};
+use super::text::{SIZE_WIDTH, fit, human_size, width};
+use super::{Ctx, Session, Transition, View};
 use crate::config::Inbox;
 use crate::mail;
 use crate::s3::S3Error;
@@ -22,6 +23,45 @@ const PEEK_BYTES: u64 = 4096;
 const SEARCH_IN_FLIGHT: usize = 16;
 /// Lines above the list: the path and the counts.
 const HEADER_LINES: u16 = 2;
+/// Most pages one listing or search follows (10 million keys at S3's 1000 a page).
+const MAX_PAGES: usize = 10_000;
+
+/// Guards a run of continuation tokens against a server that never stops handing them out.
+struct Paging {
+    pages: usize,
+    last: Option<String>,
+    max: usize,
+}
+
+impl Paging {
+    fn new(max: usize) -> Self {
+        Self {
+            pages: 0,
+            last: None,
+            max,
+        }
+    }
+
+    /// Count a page that just arrived. Ok(Some) is the token to follow, Ok(None) means that
+    /// was the last page, and Err says why following it would never end.
+    fn next(&mut self, token: Option<&String>, what: &str) -> Result<Option<String>, String> {
+        self.pages += 1;
+        let Some(token) = token else {
+            return Ok(None);
+        };
+        if self.last.as_ref() == Some(token) {
+            return Err(format!(
+                "S3 sent the same continuation token twice, so I stopped {what} after {} pages",
+                self.pages
+            ));
+        }
+        if self.pages >= self.max {
+            return Err(format!("stopped {what} after {} pages", self.pages));
+        }
+        self.last = Some(token.clone());
+        Ok(Some(token.clone()))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Location {
@@ -67,6 +107,8 @@ pub struct BrowserScreen {
     loading: bool,
     list_job: Option<JobId>,
     list_error: Option<String>,
+    paging: Paging,
+    max_pages: usize,
     /// Peek jobs for the current folder, by object index.
     peeks: HashMap<JobId, usize>,
     filter: String,
@@ -74,6 +116,11 @@ pub struct BrowserScreen {
     /// After going up, select the folder or bucket we came out of once it shows up.
     reselect: Option<String>,
     search: Option<Search>,
+    /// The account this browser talks to, fixed when it opens, so connecting somewhere else
+    /// later cannot change it under this screen.
+    session: Option<Session>,
+    /// Bumped on every navigation, so peeks still queued for the folder we left are skipped.
+    generation: Generation,
 }
 
 impl BrowserScreen {
@@ -91,15 +138,20 @@ impl BrowserScreen {
             loading: false,
             list_job: None,
             list_error: None,
+            paging: Paging::new(MAX_PAGES),
+            max_pages: MAX_PAGES,
             peeks: HashMap::new(),
             filter: String::new(),
             editing_filter: false,
             reselect: None,
             search: None,
+            session: None,
+            generation: Generation::new(),
         }
     }
 
     fn go(&mut self, location: Location, ctx: &mut Ctx) {
+        self.generation.bump();
         self.location = location;
         self.buckets.clear();
         self.folders.clear();
@@ -112,6 +164,7 @@ impl BrowserScreen {
         self.editing_filter = false;
         self.list_error = None;
         self.loading = true;
+        self.paging = Paging::new(self.max_pages);
         let job = match &self.location {
             Location::Buckets => Job::ListBuckets,
             Location::Folder { bucket, prefix } => Job::List {
@@ -121,7 +174,7 @@ impl BrowserScreen {
                 token: None,
             },
         };
-        self.list_job = ctx.submit(job);
+        self.list_job = submit(ctx, self.session.as_ref(), &self.generation, job);
         if self.list_job.is_none() {
             self.loading = false;
             ctx.error("no account is connected");
@@ -264,7 +317,7 @@ impl BrowserScreen {
                 key: obj.key.clone(),
                 bytes: PEEK_BYTES,
             };
-            match ctx.submit(job) {
+            match submit(ctx, self.session.as_ref(), &self.generation, job) {
                 Some(id) => {
                     obj.mark = Mark::Checking;
                     self.peeks.insert(id, i);
@@ -284,15 +337,21 @@ impl BrowserScreen {
     }
 
     fn save_inbox(&mut self, bucket: String, prefix: String, ctx: &mut Ctx) -> Transition {
-        let Some(session) = &ctx.session else {
+        let Some(session) = self.session.clone() else {
             ctx.error("no account is connected");
             return Transition::None;
         };
+        // The bucket's own region when a redirect taught the client one, so the next start
+        // goes straight there; otherwise the region we have been talking to it in.
+        let region = session
+            .store
+            .bucket_region(&bucket)
+            .unwrap_or_else(|| session.region.clone());
         let inbox = Inbox {
             profile: session.profile.name.clone(),
             bucket,
             prefix,
-            region: Some(session.region.clone()),
+            region: Some(region),
         };
         let previous = ctx.config.inbox.replace(inbox.clone());
         if !ctx.save_config() {
@@ -303,6 +362,9 @@ impl BrowserScreen {
             "saved {}/{} as the inbox",
             inbox.bucket, inbox.prefix
         ));
+        // The inbox reads ctx.session, and the reset leaves no other screen that could be
+        // relying on the old one.
+        ctx.session = Some(session);
         Transition::Reset(Box::new(InboxScreen::new(inbox)))
     }
 
@@ -311,7 +373,12 @@ impl BrowserScreen {
             ctx.error("open a bucket first, then press s to search it");
             return;
         };
-        let mut search = Search::new(bucket.clone(), prefix.clone());
+        let mut search = Search::new(
+            bucket.clone(),
+            prefix.clone(),
+            self.max_pages,
+            self.session.clone(),
+        );
         search.list(None, ctx);
         self.search = Some(search);
     }
@@ -349,7 +416,8 @@ impl BrowserScreen {
                 self.filter.clear();
                 self.rebuild_rows();
             }
-            KeyCode::Esc => return Transition::Pop,
+            KeyCode::Esc if self.location == Location::Buckets => return Transition::Pop,
+            KeyCode::Esc => self.up(ctx),
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::PageDown => self.move_by(page),
@@ -384,6 +452,7 @@ impl BrowserScreen {
         };
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
+                search.stop();
                 self.search = None;
                 self.peek_visible(ctx);
             }
@@ -397,6 +466,7 @@ impl BrowserScreen {
             KeyCode::Enter => {
                 if let Some(folder) = search.selected_folder() {
                     let bucket = search.bucket.clone();
+                    search.stop();
                     self.search = None;
                     self.go(
                         Location::Folder {
@@ -441,15 +511,28 @@ impl BrowserScreen {
                         }),
                 );
                 self.list_job = None;
-                match (&listing.next_token, &self.location) {
-                    (Some(token), Location::Folder { bucket, prefix }) => {
-                        self.list_job = ctx.submit(Job::List {
-                            bucket: bucket.clone(),
-                            prefix: prefix.clone(),
-                            delimiter: true,
-                            token: Some(token.clone()),
-                        });
+                let what = format!("listing {}", self.path());
+                match (
+                    self.paging.next(listing.next_token.as_ref(), &what),
+                    &self.location,
+                ) {
+                    (Ok(Some(token)), Location::Folder { bucket, prefix }) => {
+                        self.list_job = submit(
+                            ctx,
+                            self.session.as_ref(),
+                            &self.generation,
+                            Job::List {
+                                bucket: bucket.clone(),
+                                prefix: prefix.clone(),
+                                delimiter: true,
+                                token: Some(token),
+                            },
+                        );
                         self.loading = self.list_job.is_some();
+                    }
+                    (Err(msg), _) => {
+                        self.loading = false;
+                        ctx.error(msg);
                     }
                     _ => self.loading = false,
                 }
@@ -568,18 +651,19 @@ impl BrowserScreen {
 
         let end = (self.offset + self.visible).min(self.rows.len());
         let window = &self.rows[self.offset..end];
-        let width = body.width as usize;
+        let cols = body.width as usize;
         // Name column: as wide as the longest visible name, leaving room for size and mark.
         let name_w = window
             .iter()
-            .map(|&r| self.row_name(r).chars().count())
+            .map(|&r| width(self.row_name(r)))
             .max()
             .unwrap_or(0)
-            .min(width.saturating_sub(22).max(10));
+            .min(cols.saturating_sub(22).max(10));
         let items: Vec<ListItem> = window
             .iter()
             .map(|&row| {
-                let name = truncate(self.row_name(row), name_w);
+                // Cut and padded by display width, so wide characters keep the columns lined up.
+                let name = fit(self.row_name(row), name_w);
                 match row {
                     Row::Bucket(_) => {
                         ListItem::new(Line::styled(name, Style::default().fg(Color::Cyan)))
@@ -599,8 +683,8 @@ impl BrowserScreen {
                             Mark::NotEmail => ("", dim),
                         };
                         ListItem::new(Line::from(vec![
-                            Span::raw(format!("{name:<name_w$}  ")),
-                            Span::styled(format!("{:>9}  ", human_size(obj.size)), dim),
+                            Span::raw(format!("{name}  ")),
+                            Span::styled(format!("{:>SIZE_WIDTH$}  ", human_size(obj.size)), dim),
                             Span::styled(mark, style),
                         ]))
                     }
@@ -616,6 +700,25 @@ impl BrowserScreen {
             body,
             &mut state,
         );
+    }
+}
+
+impl BrowserScreen {
+    /// A browser that talks to `session`, whatever `ctx.session` says later.
+    pub fn with_session(session: Session) -> Self {
+        Self {
+            session: Some(session),
+            ..Self::new()
+        }
+    }
+}
+
+impl BrowserScreen {
+    /// Lower the page cap so a test can reach it.
+    #[cfg(test)]
+    pub(crate) fn with_max_pages(mut self, n: usize) -> Self {
+        self.max_pages = n;
+        self
     }
 }
 
@@ -637,6 +740,11 @@ impl View for BrowserScreen {
         }
     }
 
+    /// The header bar names this browser's own account, which may not be ctx.session's.
+    fn session(&self) -> Option<&Session> {
+        self.session.as_ref()
+    }
+
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.search.is_some() {
             self.search_key(key, ctx)
@@ -652,6 +760,8 @@ impl View for BrowserScreen {
             if let Some(obj) = self.objects.get_mut(i) {
                 obj.mark = match &done.result {
                     Ok(Outcome::Data(bytes)) if mail::looks_like_email(bytes) => Mark::Email,
+                    // Never ran; leave it for the next time it is on screen.
+                    Ok(Outcome::Skipped) => Mark::Unchecked,
                     Ok(_) => Mark::NotEmail,
                     Err(_) => Mark::Failed,
                 };
@@ -663,6 +773,9 @@ impl View for BrowserScreen {
     }
 
     fn on_focus(&mut self, ctx: &mut Ctx) {
+        if self.session.is_none() {
+            self.session = ctx.session.clone();
+        }
         if !self.started {
             self.started = true;
             self.go(Location::Buckets, ctx);
@@ -694,7 +807,7 @@ impl View for BrowserScreen {
                 ("/", "filter"),
                 ("s", "search"),
                 ("i", "inbox"),
-                ("esc", "back"),
+                ("esc", "up"),
             ],
         }
     }
@@ -715,14 +828,24 @@ struct Search {
     folders: BTreeMap<String, usize>,
     stopped: bool,
     error: Option<String>,
+    /// Why the listing ended early, when it did.
+    note: Option<String>,
+    paging: Paging,
+    session: Option<Session>,
+    /// Bumped on stop, so the peeks still queued are skipped rather than run.
+    generation: Generation,
     selected: usize,
     offset: usize,
     visible: usize,
 }
 
 impl Search {
-    fn new(bucket: String, prefix: String) -> Self {
+    fn new(bucket: String, prefix: String, max_pages: usize, session: Option<Session>) -> Self {
         Self {
+            session,
+            generation: Generation::new(),
+            note: None,
+            paging: Paging::new(max_pages),
             bucket,
             prefix,
             list_job: None,
@@ -746,12 +869,13 @@ impl Search {
     }
 
     fn list(&mut self, token: Option<String>, ctx: &mut Ctx) {
-        self.list_job = ctx.submit(Job::List {
+        let job = Job::List {
             bucket: self.bucket.clone(),
             prefix: self.prefix.clone(),
             delimiter: false,
             token,
-        });
+        };
+        self.list_job = submit(ctx, self.session.as_ref(), &self.generation, job);
         if self.list_job.is_none() {
             self.fail("no account is connected".into(), ctx);
         }
@@ -764,6 +888,7 @@ impl Search {
     }
 
     fn stop(&mut self) {
+        self.generation.bump();
         self.stopped = true;
         self.list_job = None;
         self.queue.clear();
@@ -779,7 +904,7 @@ impl Search {
                 key: key.clone(),
                 bytes: PEEK_BYTES,
             };
-            match ctx.submit(job) {
+            match submit(ctx, self.session.as_ref(), &self.generation, job) {
                 Some(id) => {
                     self.in_flight.insert(id, key);
                 }
@@ -807,9 +932,16 @@ impl Search {
                             self.queue.push_back(o.key.clone());
                         }
                     }
-                    match &listing.next_token {
-                        Some(t) => self.list(Some(t.clone()), ctx),
-                        None => self.listing_done = true,
+                    let what = format!("the search of {}/{}", self.bucket, self.prefix);
+                    match self.paging.next(listing.next_token.as_ref(), &what) {
+                        Ok(Some(t)) => self.list(Some(t), ctx),
+                        Ok(None) => self.listing_done = true,
+                        Err(msg) => {
+                            // Keep checking what did arrive, and say why it is not everything.
+                            self.listing_done = true;
+                            ctx.error(msg.clone());
+                            self.note = Some(msg);
+                        }
                     }
                 }
                 Ok(_) => self.listing_done = true,
@@ -850,8 +982,11 @@ impl Search {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let [head, body] =
-            Layout::vertical([Constraint::Length(HEADER_LINES), Constraint::Min(1)]).areas(area);
+        let [head, body] = Layout::vertical([
+            Constraint::Length(HEADER_LINES + u16::from(self.note.is_some())),
+            Constraint::Min(1),
+        ])
+        .areas(area);
         let dim = Style::default().fg(Color::DarkGray);
         let state = if let Some(e) = &self.error {
             Span::styled(format!("failed: {e}"), Style::default().fg(Color::Red))
@@ -859,6 +994,11 @@ impl Search {
             Span::styled("stopped", Style::default().fg(Color::Yellow))
         } else if self.running() {
             Span::styled("searching...", Style::default().fg(Color::Cyan))
+        } else if self.note.is_some() {
+            Span::styled(
+                "done, but only partly (see below)".to_string(),
+                Style::default().fg(Color::Yellow),
+            )
         } else {
             Span::styled("done", Style::default().fg(Color::Green))
         };
@@ -868,24 +1008,33 @@ impl Search {
             format!("{}+", self.listed)
         };
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    format!(" Email under {}/{}", self.bucket, self.prefix),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-                Line::from(vec![
-                    Span::styled(
-                        format!(
-                            " checked {} of {listed} objects · {} in {} · ",
-                            self.checked,
-                            plural(self.emails, "email"),
-                            plural(self.folders.len(), "folder"),
+            Paragraph::new(
+                vec![
+                    Line::from(Span::styled(
+                        format!(" Email under {}/{}", self.bucket, self.prefix),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(vec![
+                        Span::styled(
+                            format!(
+                                " checked {} of {listed} objects · {} in {} · ",
+                                self.checked,
+                                plural(self.emails, "email"),
+                                plural(self.folders.len(), "folder"),
+                            ),
+                            dim,
                         ),
-                        dim,
-                    ),
-                    state,
-                ]),
-            ]),
+                        state,
+                    ]),
+                ]
+                .into_iter()
+                .chain(
+                    self.note
+                        .iter()
+                        .map(|n| Line::styled(format!(" {n}"), Style::default().fg(Color::Yellow))),
+                )
+                .collect::<Vec<_>>(),
+            ),
             head,
         );
 
@@ -906,7 +1055,7 @@ impl Search {
         } else if self.selected >= self.offset + visible {
             self.offset = self.selected + 1 - visible;
         }
-        let width = body.width as usize;
+        let cols = body.width as usize;
         let rows: Vec<(String, usize)> = self
             .folders
             .iter()
@@ -916,16 +1065,16 @@ impl Search {
             .collect();
         let name_w = rows
             .iter()
-            .map(|(f, _)| f.chars().count())
+            .map(|(f, _)| width(f))
             .max()
             .unwrap_or(0)
-            .min(width.saturating_sub(16).max(10));
+            .min(cols.saturating_sub(16).max(10));
         let items: Vec<ListItem> = rows
             .iter()
             .map(|(f, n)| {
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{:<name_w$}  ", truncate(f, name_w)),
+                        format!("{}  ", fit(f, name_w)),
                         Style::default()
                             .fg(Color::Blue)
                             .add_modifier(Modifier::BOLD),
@@ -962,29 +1111,15 @@ fn plural(n: usize, what: &str) -> String {
     }
 }
 
-/// Cut to `width` characters, ending in "~" when something was dropped.
-fn truncate(s: &str, width: usize) -> String {
-    if s.chars().count() <= width {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(width.saturating_sub(1)).collect();
-        out.push('~');
-        out
-    }
-}
-
-fn human_size(n: u64) -> String {
-    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
-    if n < 1024 {
-        return format!("{n} B");
-    }
-    let mut v = n as f64 / 1024.0;
-    let mut unit = 0;
-    while v >= 1024.0 && unit < UNITS.len() - 1 {
-        v /= 1024.0;
-        unit += 1;
-    }
-    format!("{v:.1} {}", UNITS[unit])
+/// Queue a job on a session the screen holds, stamped with its generation. None when the
+/// screen has no session to talk to.
+fn submit(
+    ctx: &mut Ctx,
+    session: Option<&Session>,
+    generation: &Generation,
+    job: Job,
+) -> Option<JobId> {
+    Some(ctx.submit_to(session?, job, Some(generation)))
 }
 
 #[cfg(test)]

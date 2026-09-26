@@ -180,3 +180,72 @@ fn save_failure_is_a_write_error_with_path() {
     assert!(matches!(err, ConfigError::Write { .. }), "{err:?}");
     assert!(err.to_string().contains("blocker"), "{err}");
 }
+
+// ---- the inbox is checked when it loads (item 24) ----
+
+fn inbox_file(bucket: &str, prefix: &str) -> String {
+    format!("[inbox]\nprofile = \"work\"\nbucket = \"{bucket}\"\nprefix = \"{prefix}\"\n")
+}
+
+#[test]
+fn bad_inbox_is_a_parse_error_naming_the_path() {
+    let cases = [
+        ("mail-bucket", "inbound"),
+        ("mail-bucket", "a/b"),
+        ("mail/bucket", ""),
+        ("", ""),
+        ("mail bucket", ""),
+        ("mail-bucket\\n", ""),
+        ("-leading-dash", ""),
+        ("..", ""),
+    ];
+    for (bucket, prefix) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, inbox_file(bucket, prefix)).unwrap();
+        let err = AppConfig::load(&path).expect_err(&format!("{bucket:?} {prefix:?}"));
+        assert!(matches!(err, ConfigError::Parse { .. }), "{err:?}");
+        assert!(err.to_string().contains("config.toml"), "{err}");
+    }
+}
+
+#[test]
+fn good_inbox_loads() {
+    // Buckets made before March 2018 in us-east-1 may use capitals and underscores, and reses
+    // saves whatever ListBuckets returned, so those have to load too.
+    let cases = [
+        ("mail-bucket", ""),
+        ("mail-bucket", "inbound/"),
+        ("mail.bucket.example", "a/b/"),
+        ("Legacy_Bucket", "x/"),
+        ("abc", "/"),
+    ];
+    for (bucket, prefix) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, inbox_file(bucket, prefix)).unwrap();
+        let cfg = AppConfig::load(&path).unwrap_or_else(|e| panic!("{bucket:?} {prefix:?}: {e}"));
+        assert_eq!(cfg.inbox.unwrap().bucket, bucket);
+    }
+}
+
+#[test]
+fn save_refuses_an_inbox_that_would_not_load_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut cfg = sample();
+    cfg.inbox.as_mut().unwrap().prefix = "no-slash".into();
+    assert!(matches!(
+        cfg.save(&path).unwrap_err(),
+        ConfigError::Write { .. }
+    ));
+    assert!(!path.exists());
+}
+
+#[test]
+fn inbox_validate_is_usable_before_saving() {
+    let mut inbox = sample().inbox.unwrap();
+    assert_eq!(inbox.validate(), Ok(()));
+    inbox.bucket = "a/b".into();
+    assert!(inbox.validate().is_err());
+}
