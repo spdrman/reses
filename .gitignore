@@ -16,7 +16,7 @@
 *.exe
 *.pdb
 
-# Python (python/reses.py is the reference decoder)
+# Python (tests/profile_oracle.py runs in the tests)
 __pycache__/
 *.pyc
 

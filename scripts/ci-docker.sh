@@ -49,8 +49,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo check --all-targets --locked
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --no-deps --locked
-cargo test --locked --no-fail-fast
-(cd python && python3 -m unittest -q)'
+cargo test --locked --no-fail-fast'
 
 case "${1:-}" in
   "") run "$GATE" ;;

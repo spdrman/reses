@@ -1,5 +1,5 @@
 //! `scripts/ci-docker.sh` is the local mirror of `.github/workflows/ci.yml`. Nothing else ties
-//! them together, so these tests do: every cargo and python command one of them runs, the other
+//! them together, so these tests do: every cargo command one of them runs, the other
 //! runs too, and the toolchain the CI image pins is the MSRV that Cargo.toml and the README claim.
 
 use std::collections::BTreeSet;
@@ -11,19 +11,18 @@ fn read(rel: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
 }
 
-/// A command worth comparing: a cargo invocation or the python oracle suite, whitespace-folded.
+/// A command worth comparing: a cargo invocation, whitespace-folded.
 fn command_of(line: &str) -> Option<String> {
     let line = line.trim();
     let line = line.strip_prefix("- run:").unwrap_or(line).trim();
     let line = line.strip_prefix("run:").unwrap_or(line).trim();
     let is_cargo = line.starts_with("cargo ") || line.contains(" cargo ");
-    let is_python = line.contains("python3 -m unittest");
     // In ci-docker.sh the last command of a case arm ends with the closing quote and `;;`.
     let line = line
         .trim_end_matches(";;")
         .trim_end()
         .trim_end_matches('\'');
-    (is_cargo || is_python).then(|| line.split_whitespace().collect::<Vec<_>>().join(" "))
+    is_cargo.then(|| line.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 fn commands(text: &str) -> BTreeSet<String> {
