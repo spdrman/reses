@@ -559,3 +559,31 @@ fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
         "{footer}"
     );
 }
+
+#[test]
+fn a_section_without_keys_still_asks_before_keys_go_into_it() {
+    // Neither section is a complete profile, so get() finds nothing, but writing keys into
+    // either one changes a section the user already has.
+    const PARTIAL: &str = "\
+[work]
+region = eu-west-1
+
+[assumed]
+role_arn = arn:aws:iam::000000000000:role/fake
+source_profile = work
+";
+    for name in ["work", "assumed"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        let mut app = app(dir.path(), Some(PARTIAL), None);
+        press(&mut app, KeyCode::Char('a'));
+        fill_form(&mut app, name, "AKIAFAKEFAKE00000009", SECRET, "", "");
+        save(&mut app);
+        let s = screen(&mut app, 120, 20);
+        assert!(s.contains("already exists"), "{name}: {s}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), PARTIAL, "{name}");
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(fs::read_to_string(&path).unwrap(), PARTIAL, "{name}");
+        assert!(app.ctx.session.is_none(), "{name}");
+    }
+}
