@@ -1,0 +1,16 @@
+From: Alice Example <alice@example.com>
+Reply-To: 
+To: bob@example.org
+Cc: 
+Bcc: 
+Date: Fri, 25 Sep 2026 17:01:31 -0700
+Subject: Plain text, LF line endings
+Message-ID: <plain-lf-1@example.com>
+Message:
+
+Hi Bob,
+
+This one is plain text with bare LF line endings.
+
+  Indented line stays indented.
+Alice

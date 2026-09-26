@@ -1,0 +1,11 @@
+From: Sender Person <sender@example.com>
+Reply-To: 
+To: inbox@example.org
+Cc: 
+Bcc: Hidden.Person@example.org
+Date: Fri, 25 Sep 2026 17:01:55 -0700
+Subject: A message the way SES stores it
+Message-ID: <CAexample+abc=def@mail.example.com>
+Message:
+
+<div dir="ltr">Stored by SES with long folded Received headers.</div>
