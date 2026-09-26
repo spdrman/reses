@@ -18,6 +18,11 @@ fn command_of(line: &str) -> Option<String> {
     let line = line.strip_prefix("run:").unwrap_or(line).trim();
     let is_cargo = line.starts_with("cargo ") || line.contains(" cargo ");
     let is_python = line.contains("python3 -m unittest");
+    // In ci-docker.sh the last command of a case arm ends with the closing quote and `;;`.
+    let line = line
+        .trim_end_matches(";;")
+        .trim_end()
+        .trim_end_matches('\'');
     (is_cargo || is_python).then(|| line.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
@@ -39,8 +44,32 @@ fn every_ci_command_runs_locally_and_back() {
         "found too few commands in ci-docker.sh: {local:?}"
     );
 
-    let missing_locally: Vec<_> = ci.difference(&local).collect();
-    let missing_in_ci: Vec<_> = local.difference(&ci).collect();
+    // The one deliberate difference: CI builds the macOS binary natively on a macOS runner,
+    // and the local mirror cross-builds it from Linux with zigbuild.
+    const CI_ONLY: &[&str] = &["cargo build --release --locked"];
+    const LOCAL_ONLY: &[&str] =
+        &["cargo zigbuild --release --locked --target aarch64-apple-darwin"];
+    for c in CI_ONLY {
+        assert!(
+            ci.contains(*c),
+            "CI_ONLY names {c:?}, which ci.yml no longer runs"
+        );
+    }
+    for c in LOCAL_ONLY {
+        assert!(
+            local.contains(*c),
+            "LOCAL_ONLY names {c:?}, which ci-docker.sh no longer runs"
+        );
+    }
+
+    let missing_locally: Vec<_> = ci
+        .difference(&local)
+        .filter(|c| !CI_ONLY.contains(&c.as_str()))
+        .collect();
+    let missing_in_ci: Vec<_> = local
+        .difference(&ci)
+        .filter(|c| !LOCAL_ONLY.contains(&c.as_str()))
+        .collect();
     assert!(
         missing_locally.is_empty() && missing_in_ci.is_empty(),
         "ci.yml and scripts/ci-docker.sh have drifted\n  only in ci.yml: {missing_locally:#?}\n  only in ci-docker.sh: {missing_in_ci:#?}"

@@ -1,0 +1,118 @@
+name: CI
+
+# The same shape as libviprs's CI, cut down to a single binary crate with no features and no
+# unsafe code. scripts/ci-docker.sh is the local mirror of this file, and tests/ci_parity.rs
+# fails if the two stop running the same cargo and python commands.
+
+on:
+  # Branch pushes carry CI. A `pull_request` run builds the PR's merge ref, and GitHub drops
+  # the event entirely while the PR conflicts with main, so pushes are what can't go missing.
+  push:
+    branches: ['**']
+  # No `synchronize`: every push to an in-repo branch is already covered above, and adding it
+  # would run everything twice. These are the transitions no push comes with.
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  workflow_dispatch:
+
+# Only push runs cancel each other, because a newer push always reruns the same job names.
+# Branch protection reads the latest check run per name, so a cancelled row only blocks a
+# merge when nothing later reran that name. main is never cancelled: that run is the record.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' && (github.head_ref || github.ref_name) != 'main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  check:
+    name: Check & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  msrv:
+    # Keep the version out of this name. Branch protection matches a required check by its
+    # exact name, so a bump that renames the job strands every open PR on a context no run
+    # produces. tests/ci_parity.rs refuses a digit here.
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98"
+      - uses: Swatinem/rust-cache@v2
+      # Cargo.toml's rust-version, this toolchain, the CI image and the README all state the
+      # MSRV. tests/ci_parity.rs compares them; this line just makes the job say what it built.
+      - run: rustc --version && grep -m1 '^rust-version' Cargo.toml
+      - run: cargo check --all-targets --locked
+
+  docs:
+    name: Docs (deny broken, private and redundant intra-doc links)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The flags are inline rather than in `env:` so tests/ci_parity.rs can see them.
+      - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --no-deps --locked
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --no-fail-fast
+      # python/reses.py is the reference the Rust decoder is pinned to, so its own tests run too.
+      - run: (cd python && python3 -m unittest -q)
+
+  integration:
+    name: Integration (MinIO)
+    runs-on: ubuntu-latest
+    env:
+      RESES_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      RESES_TEST_S3_ACCESS_KEY: resesadmin
+      RESES_TEST_S3_SECRET_KEY: resesadmin-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Same pinned image as scripts/ci-docker.sh --integration. A service container can't be
+      # given a command, and this one needs `server <dir>`, so it's started by hand.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER="$RESES_TEST_S3_ACCESS_KEY" -e MINIO_ROOT_PASSWORD="$RESES_TEST_S3_SECRET_KEY" \
+            cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1 \
+            server /tmp/minio-data
+          for i in $(seq 1 60); do
+            curl -fs -o /dev/null "$RESES_TEST_S3_ENDPOINT/minio/health/live" && exit 0
+            sleep 1
+          done
+          docker logs minio
+          echo "::error::MinIO never came up"
+          exit 1
+      - run: cargo test --locked --no-fail-fast -- --ignored --test-threads=1
+
+  macos:
+    name: macOS build + goldens
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The local mirror cross-builds this with zigbuild; here it's a native build, which is
+      # the check that the zigbuild binary isn't hiding a real macOS problem.
+      - run: cargo build --release --locked
+      - run: scripts/check-goldens.sh target/release/reses
