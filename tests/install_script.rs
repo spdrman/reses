@@ -45,6 +45,13 @@ impl Fake {
             format!("[ \"$1\" = --print-architecture ] && echo {arch}"),
         );
         script("reses", "echo reses 9.9.9".into());
+        // The user id comes from FAKE_UID so a test can take the non-root path on any machine, and
+        // sudo just runs its command on this PATH, so the stub apt-get still answers it.
+        script("id", "[ \"$1\" = -u ] && echo \"${FAKE_UID:-0}\"".into());
+        script(
+            "sudo",
+            format!("echo \"sudo $*\" >> {}; exec \"$@\"", log.display()),
+        );
         script(
             "apt-get",
             format!("echo \"apt-get $*\" >> {}", log.display()),
@@ -230,4 +237,24 @@ fn a_mac_is_pointed_at_homebrew() {
     let (code, _, err) = fake.run(&[]);
     assert_ne!(code, 0);
     assert!(err.contains("brew install spdrman/reses/reses"), "{err}");
+}
+
+#[test]
+fn a_non_root_user_installs_through_sudo_and_root_does_not() {
+    let deb = "reses_9.9.9_amd64.deb";
+    for (uid, wants_sudo) in [("1000", true), ("0", false)] {
+        let fake = Fake::new("Linux", "amd64", &[(deb, "pkg")], &[(deb, &sha256("pkg"))]);
+        let (code, _, err) = fake.run(&[("FAKE_UID", uid)]);
+        assert_eq!(code, 0, "uid {uid}: {err}");
+        let calls = fake.calls();
+        assert!(
+            apt_line(&calls).is_some(),
+            "uid {uid}: apt-get never ran: {calls}"
+        );
+        assert_eq!(
+            calls.contains("sudo apt-get install"),
+            wants_sudo,
+            "uid {uid}: {calls}"
+        );
+    }
 }
