@@ -3,6 +3,17 @@
 //! Everything above this module talks to the `Store` trait, so the TUI can run against
 //! `MemoryStore` in tests.
 
+mod client;
+pub mod sigv4;
+pub mod transport;
+pub mod xml;
+
+pub use client::S3Client;
+pub use transport::{
+    BodyLimit, ERROR_BODY_LIMIT, HttpRequest, HttpResponse, LIST_BODY_LIMIT, MAX_GET_BYTES,
+    RANGE_SLACK, Transport, UreqTransport,
+};
+
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -44,6 +55,35 @@ pub struct Listing {
     pub next_token: Option<String>,
 }
 
+impl Listing {
+    /// The token to ask for the next page with, given the one this page was fetched with.
+    /// `None` when there are no more pages, and also when the server handed back an empty
+    /// token or the same token again, which would otherwise page forever.
+    pub fn next_page(&self, sent: Option<&str>) -> Option<&str> {
+        self.next_token
+            .as_deref()
+            .filter(|t| !t.is_empty() && Some(*t) != sent)
+    }
+}
+
+/// Whether `region` looks like a region name (`us-east-1`, `eu-west-2`, a MinIO region). The
+/// region goes into a hostname and the signing scope, so anything else is refused.
+pub fn valid_region(region: &str) -> bool {
+    (1..=63).contains(&region.len())
+        && region
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !region.starts_with('-')
+        && !region.ends_with('-')
+}
+
+fn describe_size(size: &Option<u64>) -> String {
+    match size {
+        Some(n) => format!("{n} bytes"),
+        None => "size unknown".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum S3Error {
     /// S3 answered with an error document.
@@ -57,6 +97,13 @@ pub enum S3Error {
     Transport(String),
     #[error("unexpected response: {0}")]
     Parse(String),
+    /// The object is bigger than the client will read in one go. `size` is the object's
+    /// length when the server said it, and `limit` the most the client reads.
+    #[error("the object is too large to open ({}, the limit is {limit} bytes)", describe_size(.size))]
+    TooLarge { size: Option<u64>, limit: u64 },
+    /// An empty object key, which S3 would read as the bucket itself.
+    #[error("an object key can't be empty")]
+    EmptyKey,
 }
 
 impl S3Error {
@@ -79,50 +126,11 @@ pub trait Store: Send + Sync {
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error>;
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error>;
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error>;
-}
-
-/// The real client. Handles buckets in other regions by following S3's region hint.
-pub struct S3Client {
-    creds: Credentials,
-    region: String,
-    endpoint: Option<String>,
-    path_style: bool,
-}
-
-impl S3Client {
-    pub fn new(creds: Credentials, region: &str) -> Self {
-        Self {
-            creds,
-            region: region.to_string(),
-            endpoint: None,
-            path_style: false,
-        }
-    }
-
-    /// Point at a non-AWS endpoint (MinIO in tests). `path_style` puts the bucket in the path.
-    pub fn with_endpoint(mut self, url: &str, path_style: bool) -> Self {
-        self.endpoint = Some(url.trim_end_matches('/').to_string());
-        self.path_style = path_style;
-        self
-    }
-}
-
-impl Store for S3Client {
-    fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
-        let _ = (&self.creds, &self.region, &self.endpoint, self.path_style);
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn list(&self, _: &str, _: &str, _: Option<&str>, _: Option<&str>) -> Result<Listing, S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
-    }
-    fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
-        Err(S3Error::Transport("S3 client is not built yet".into()))
+    /// The region the store learned for `bucket` from a redirect, if it did. The default
+    /// is `None`, for stores that have no regions.
+    fn bucket_region(&self, bucket: &str) -> Option<String> {
+        let _ = bucket;
+        None
     }
 }
 

@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>AuthorizationHeaderMalformed</Code><Message>The authorization header is malformed; the region 'us-east-1' is wrong; expecting 'eu-west-2'</Message><Region>eu-west-2</Region><RequestId>8QWN3M4F1Y1GJ5GC</RequestId><HostId>ZfFp1b9h1Q0c2+YRm6ZrZfJH1nPq3o8QZbq7mOcrgq0=</HostId></Error>
