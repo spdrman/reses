@@ -10,6 +10,11 @@ repository = "https://github.com/spdrman/reses"
 
 [dependencies]
 anyhow = "1"
+# The SDK does the S3 work: signing, retries, and credentials from the profile files (static
+# keys, session tokens, SSO, assume-role and credential_process). I turn off the default
+# features so only one HTTP stack gets built (the hyper 1 client), not the legacy one as well.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 hmac = "0.12"
@@ -28,10 +33,15 @@ serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
+# The runtime reses owns, so the S3 calls can stay synchronous for the views.
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 toml = "0.8"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
+# A scripted HTTP client for the SDK, so region redirects and odd listings get tested offline.
+aws-smithy-http-client = { version = "1", features = ["test-util"] }
+http = "1"
 # tests/tui_pty.rs runs the app on a real pty. 0.38 is the rustix ratatui-image already builds.
 rustix = { version = "0.38", features = ["pty", "process", "termios"] }
 tempfile = "3"

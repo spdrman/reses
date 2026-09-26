@@ -1,18 +1,19 @@
-//! A small S3 client: SigV4 signing over ureq, just the calls reses needs.
+//! S3 for reses: the `Store` trait the screens talk to, the SDK-backed `S3Client`, and the
+//! in-memory `MemoryStore` the tests use.
 //!
-//! Everything above this module talks to the `Store` trait, so the TUI can run against
-//! `MemoryStore` in tests.
+//! I keep the screens on a small synchronous trait so they never see async code or SDK types,
+//! and so every TUI test can run offline against `MemoryStore`. The real work (signing,
+//! retries, credentials, XML) is aws-sdk-s3's; `client.rs` only adapts it to this trait and
+//! adds the few guarantees reses makes on top.
 
 mod client;
-pub mod sigv4;
-pub mod transport;
-pub mod xml;
 
 pub use client::S3Client;
-pub use transport::{
-    BodyLimit, ERROR_BODY_LIMIT, HttpRequest, HttpResponse, LIST_BODY_LIMIT, MAX_GET_BYTES,
-    RANGE_SLACK, Transport, UreqTransport,
-};
+
+/// SES refuses messages over 40 MB, so a whole-object read stops a little past that.
+pub const MAX_GET_BYTES: u64 = 41 * 1024 * 1024;
+/// What a ranged read will take on top of the bytes it asked for, before it stops reading.
+pub const RANGE_SLACK: u64 = 4096;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
