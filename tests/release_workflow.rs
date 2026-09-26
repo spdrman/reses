@@ -361,3 +361,29 @@ fn the_linux_builds_ship_a_deb_that_apt_installs_before_publishing() {
         "the debs must be attached: {publish:#?}"
     );
 }
+
+#[test]
+fn the_debs_install_on_older_debian_and_order_prereleases_right() {
+    let text = workflow();
+    let build = job(&text, "build");
+    let package = step_with(&build, "dpkg-deb -Zxz");
+    // Newer dpkg-deb defaults to zstd, which dpkg on Debian 11 can't read.
+    assert!(
+        has(&package, "-Zxz"),
+        "the .deb must be xz-compressed: {package:#?}"
+    );
+    // A semver prerelease like 1.0.0-rc.1 becomes 1.0.0~rc.1, which dpkg sorts before 1.0.0.
+    assert!(
+        has(&package, "${VERSION/-/~}"),
+        "prereleases must map - to ~: {package:#?}"
+    );
+    let bullseye = step_with(&build, "debian:bullseye");
+    assert!(
+        has_line(&bullseye, "if: contains(matrix.target, 'musl')"),
+        "{bullseye:#?}"
+    );
+    assert!(
+        has(&bullseye, "reses --version"),
+        "the Debian 11 install must run the binary: {bullseye:#?}"
+    );
+}

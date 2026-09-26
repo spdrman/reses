@@ -138,13 +138,15 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: |
           case "$TARGET" in x86_64-*) arch=amd64 ;; aarch64-*) arch=arm64 ;; esac
+          # A semver prerelease (1.0.0-rc.1) becomes 1.0.0~rc.1, which dpkg sorts before 1.0.0.
+          debver="${VERSION/-/~}"
           pkg="reses_${VERSION}_$arch"
           mkdir -p "debroot/$pkg/DEBIAN" "debroot/$pkg/usr/bin" "debroot/$pkg/usr/share/doc/reses"
           install -m 0755 "target/$TARGET/release/reses" "debroot/$pkg/usr/bin/reses"
           install -m 0644 LICENSE "debroot/$pkg/usr/share/doc/reses/copyright"
           printf '%s\n' \
             "Package: reses" \
-            "Version: $VERSION" \
+            "Version: $debver" \
             "Architecture: $arch" \
             "Maintainer: Roman Goldmann <roman@devshell.org>" \
             "Section: mail" \
@@ -154,7 +156,8 @@ jobs:
             " re:SES opens an inbox over the S3 bucket where Amazon SES stores incoming" \
             " mail, and decodes stored messages into a readable form." \
             > "debroot/$pkg/DEBIAN/control"
-          dpkg-deb --root-owner-group --build "debroot/$pkg" "$pkg.deb"
+          # xz rather than the zstd newer dpkg-deb defaults to, so Debian 11 can install it too.
+          dpkg-deb -Zxz --root-owner-group --build "debroot/$pkg" "$pkg.deb"
           dpkg-deb --info "$pkg.deb"
       # Install the package the way a user would, then check the installed binary, so a broken
       # package can never be published.
@@ -164,6 +167,13 @@ jobs:
           sudo apt-get install -y "$PWD/reses_${VERSION}_$(dpkg --print-architecture).deb"
           reses --version
           scripts/check-goldens.sh /usr/bin/reses
+      # The runner's own dpkg is new; install on Debian 11 too, the oldest dpkg the package
+      # has to work with.
+      - name: Install the .deb on Debian 11
+        if: contains(matrix.target, 'musl')
+        run: |
+          docker run --rm -v "$PWD:/pkg:ro" debian:bullseye sh -c \
+            "dpkg -i /pkg/reses_${VERSION}_$(dpkg --print-architecture).deb && reses --version"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: reses-${{ matrix.target }}
@@ -214,7 +224,7 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/spdrman/reses/main/install.sh | sh
           \`\`\`
 
-          The installer checks the \`.deb\` against \`SHA256SUMS\` and installs it with apt, so \`apt remove reses\` uninstalls it. You can also install a downloaded \`reses_${VERSION}_<arch>.deb\` directly with \`sudo apt install ./reses_${VERSION}_amd64.deb\`.
+          The installer checks the \`.deb\` against \`SHA256SUMS\` and installs it with apt, so \`apt remove reses\` uninstalls it. There's no apt repository, so to upgrade, run the same command again. You can also install a downloaded \`reses_${VERSION}_amd64.deb\` or \`reses_${VERSION}_arm64.deb\` directly with \`sudo apt install ./reses_${VERSION}_<arch>.deb\`.
 
           **macOS**: \`brew install spdrman/reses/reses\`
 

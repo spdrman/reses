@@ -54,7 +54,10 @@ impl Fake {
         );
         script(
             "apt-get",
-            format!("echo \"apt-get $*\" >> {}", log.display()),
+            format!(
+                "echo \"apt-get $*\" >> {}; [ -z \"${{FAKE_APT_FAIL:-}}\" ]",
+                log.display()
+            ),
         );
         // curl: -I with -w %{{url_effective}} answers the "latest" redirect; -o FILE URL copies
         // the file of that name out of the served directory, or fails like a 404.
@@ -73,7 +76,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "curl $url" >> {log}
-if [ "$head" = 1 ]; then echo "https://github.com/spdrman/reses/releases/tag/{LATEST}"; exit 0; fi
+if [ "$head" = 1 ]; then [ -n "${{FAKE_NO_LATEST:-}}" ] && exit 6; echo "${{FAKE_LATEST:-https://github.com/spdrman/reses/releases/tag/{LATEST}}}"; exit 0; fi
 f="{served}/${{url##*/}}"
 [ -f "$f" ] || exit 22
 cp "$f" "$out""#,
@@ -227,7 +230,12 @@ fn an_unsupported_architecture_is_refused() {
     let fake = Fake::new("Linux", "riscv64", &[], &[]);
     let (code, _, err) = fake.run(&[]);
     assert_ne!(code, 0);
-    assert!(err.contains("riscv64"), "{err}");
+    assert!(err.contains("no reses package for riscv64"), "{err}");
+    assert!(
+        !fake.calls().contains("curl"),
+        "it downloaded for an unsupported arch: {}",
+        fake.calls()
+    );
     assert_eq!(apt_line(&fake.calls()), None);
 }
 
@@ -257,4 +265,152 @@ fn a_non_root_user_installs_through_sudo_and_root_does_not() {
             "uid {uid}: {calls}"
         );
     }
+}
+
+impl Fake {
+    fn remove_tool(&self, name: &str) {
+        fs::remove_file(self.dir.path().join("bin").join(name)).unwrap();
+    }
+}
+
+fn amd64_release() -> Fake {
+    let deb = "reses_9.9.9_amd64.deb";
+    Fake::new("Linux", "amd64", &[(deb, "pkg")], &[(deb, &sha256("pkg"))])
+}
+
+#[test]
+fn a_failed_install_is_reported_as_a_failure() {
+    let fake = amd64_release();
+    let (code, _, err) = fake.run(&[("FAKE_APT_FAIL", "1")]);
+    assert_ne!(code, 0, "apt failed but the installer succeeded: {err}");
+    assert!(!err.contains("installed"), "it claimed success: {err}");
+}
+
+#[test]
+fn no_answer_about_the_latest_release_installs_nothing() {
+    let fake = amd64_release();
+    let (code, _, err) = fake.run(&[("FAKE_NO_LATEST", "1")]);
+    assert_ne!(code, 0);
+    assert!(err.contains("latest release"), "{err}");
+    assert_eq!(apt_line(&fake.calls()), None);
+}
+
+#[test]
+fn a_latest_redirect_that_isnt_a_version_installs_nothing() {
+    let fake = amd64_release();
+    let (code, _, err) = fake.run(&[("FAKE_LATEST", "https://github.com/spdrman/reses/releases")]);
+    assert_ne!(code, 0);
+    assert!(err.contains("which release"), "{err}");
+    assert!(
+        !fake.calls().contains("releases/download"),
+        "it downloaded anyway: {}",
+        fake.calls()
+    );
+}
+
+#[test]
+fn a_version_that_could_steer_the_download_is_refused() {
+    let fake = amd64_release();
+    let (code, _, err) = fake.run(&[(
+        "RESES_VERSION",
+        "v1/../../../../evil/repo/releases/download/v1",
+    )]);
+    assert_ne!(code, 0);
+    assert!(err.contains("which release"), "{err}");
+    assert!(
+        !fake.calls().contains("evil"),
+        "it followed the crafted version: {}",
+        fake.calls()
+    );
+}
+
+#[test]
+fn a_version_without_the_v_is_accepted() {
+    let deb = "reses_1.2.3_amd64.deb";
+    let fake = Fake::new("Linux", "amd64", &[(deb, "old")], &[(deb, &sha256("old"))]);
+    let (code, _, err) = fake.run(&[("RESES_VERSION", "1.2.3")]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        fake.calls()
+            .contains("releases/download/v1.2.3/reses_1.2.3_amd64.deb"),
+        "{}",
+        fake.calls()
+    );
+}
+
+#[test]
+fn only_the_exact_package_line_in_the_checksums_counts() {
+    // A decoy line whose name only starts with the package name must not stand in for it.
+    let deb = "reses_9.9.9_amd64.deb";
+    let fake = Fake::new(
+        "Linux",
+        "amd64",
+        &[(deb, "tampered")],
+        &[
+            (&format!("{deb}.sig"), &sha256("tampered")),
+            (deb, &sha256("genuine")),
+        ],
+    );
+    let (code, _, err) = fake.run(&[]);
+    assert_ne!(code, 0, "{err}");
+    assert_eq!(apt_line(&fake.calls()), None);
+}
+
+#[test]
+fn a_machine_without_apt_is_told_so_and_nothing_is_downloaded() {
+    let fake = amd64_release();
+    fake.remove_tool("apt-get");
+    // Only the tools the script needs, so a real apt-get on this machine can't stand in.
+    let tools = fake.dir.path().join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    for t in [
+        "sh",
+        "grep",
+        "awk",
+        "mktemp",
+        "chmod",
+        "rm",
+        "cat",
+        "cp",
+        "sha256sum",
+        "printf",
+    ] {
+        if let Some(p) = ["/usr/bin", "/bin"]
+            .iter()
+            .map(|d| Path::new(d).join(t))
+            .find(|p| p.exists())
+        {
+            std::os::unix::fs::symlink(p, tools.join(t)).unwrap();
+        }
+    }
+    let path = format!(
+        "{}:{}",
+        fake.dir.path().join("bin").display(),
+        tools.display()
+    );
+    let (code, _, err) = fake.run(&[("PATH", &path)]);
+    assert_ne!(code, 0);
+    assert!(err.contains("apt and dpkg are needed"), "{err}");
+    assert!(
+        !fake.calls().contains("curl"),
+        "it downloaded before checking for apt: {}",
+        fake.calls()
+    );
+}
+
+#[test]
+fn a_checksum_listed_only_under_a_longer_name_doesnt_count() {
+    // With only `reses_..._amd64.deb.sig` listed, the package itself has no checksum. A prefix
+    // match would mistake the decoy for it; the exact match refuses it as unlisted.
+    let deb = "reses_9.9.9_amd64.deb";
+    let fake = Fake::new(
+        "Linux",
+        "amd64",
+        &[(deb, "pkg")],
+        &[(&format!("{deb}.sig"), &sha256("pkg"))],
+    );
+    let (code, _, err) = fake.run(&[]);
+    assert_ne!(code, 0);
+    assert!(err.contains("isn't in the release's checksums"), "{err}");
+    assert_eq!(apt_line(&fake.calls()), None);
 }

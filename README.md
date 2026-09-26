@@ -18,7 +18,14 @@ brew install spdrman/reses/reses
 curl -fsSL https://raw.githubusercontent.com/spdrman/reses/main/install.sh | sh
 ```
 
-The installer fetches the latest release's `.deb`, checks it against the release's `SHA256SUMS`, and installs it with apt, so `apt remove reses` takes it off again. `brew upgrade` keeps the Homebrew install current.
+The installer fetches the latest release's `.deb`, checks it against the release's `SHA256SUMS`, and installs it with apt.
+
+| | Homebrew | apt |
+|---|---|---|
+| Upgrade | `brew upgrade reses` | run the install command again (there's no apt repository, so `apt upgrade` won't update it) |
+| Uninstall | `brew uninstall reses` | `sudo apt remove reses` |
+
+Homebrew works on Linux too, with the same `brew install` command. Uninstalling leaves your settings (`~/.config/reses`) and your AWS credentials alone.
 
 Binaries for other Linux systems (static, x86_64 and arm64) are on the [releases page](https://github.com/spdrman/reses/releases).
 
