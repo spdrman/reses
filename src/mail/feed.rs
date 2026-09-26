@@ -5,7 +5,8 @@
 //! Parts live in an arena and refer to each other by index, which keeps the parser's
 //! `_cur`/`_last` bookkeeping the same shape as Python's.
 
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 
 use super::codec::{self, Errors};
 use super::{hvp, pystr, transfer};
@@ -23,6 +24,9 @@ pub(super) struct Part {
     headers: Vec<(String, String)>,
     pub(super) payload: Payload,
     default_type: &'static str,
+    /// Decoded values already asked for, by lowercased name. The same few headers
+    /// (Content-Type above all) get read many times per message.
+    decoded: RefCell<HashMap<String, Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -143,21 +147,68 @@ fn is_blank(line: &[u8]) -> bool {
 struct Input {
     lines: VecDeque<Vec<u8>>,
     eofstack: Vec<EofMatcher>,
+    /// The boundaries on `eofstack`, counted, and how many blank-line matchers it holds.
+    /// Whether a line ends the current part doesn't depend on which matcher fires, so with
+    /// these a line is checked in constant time however deep the nesting goes.
+    boundaries: HashMap<Vec<u8>, usize>,
+    blank_matchers: usize,
 }
 
 impl Input {
+    fn push_eof(&mut self, m: EofMatcher) {
+        match &m {
+            EofMatcher::Boundary(Some(b)) => *self.boundaries.entry(b.clone()).or_default() += 1,
+            EofMatcher::Boundary(None) => {}
+            EofMatcher::BlankLine => self.blank_matchers += 1,
+        }
+        self.eofstack.push(m);
+    }
+
+    fn pop_eof(&mut self) {
+        match self.eofstack.pop() {
+            Some(EofMatcher::Boundary(Some(b))) => {
+                if let Some(n) = self.boundaries.get_mut(&b) {
+                    *n -= 1;
+                    if *n == 0 {
+                        self.boundaries.remove(&b);
+                    }
+                }
+            }
+            Some(EofMatcher::BlankLine) => self.blank_matchers -= 1,
+            _ => {}
+        }
+    }
+
+    /// Whether any boundary on the stack matches `line`. A matching line is "--", the
+    /// boundary, maybe "--", maybe blanks, and at most one line ending, so peeling those off
+    /// leaves at most two strings the boundary could be.
+    fn at_boundary(&self, line: &[u8]) -> bool {
+        if self.boundaries.is_empty() || !line.starts_with(b"--") {
+            return false;
+        }
+        let mut rest = &line[2..];
+        if rest.ends_with(b"\r\n") {
+            rest = &rest[..rest.len() - 2];
+        } else if rest.ends_with(b"\r") || rest.ends_with(b"\n") {
+            rest = &rest[..rest.len() - 1];
+        }
+        let blanks = rest
+            .iter()
+            .rev()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+        rest = &rest[..rest.len() - blanks];
+        let hit =
+            |b: &[u8]| self.boundaries.contains_key(b) && boundary_match(line, Some(b)).is_some();
+        hit(rest) || (rest.ends_with(b"--") && hit(&rest[..rest.len() - 2]))
+    }
+
     /// BufferedSubFile.readline: `None` stands for the '' that ends the current part.
     fn readline(&mut self) -> Option<Vec<u8>> {
         let line = self.lines.pop_front()?;
-        for m in self.eofstack.iter().rev() {
-            let hit = match m {
-                EofMatcher::Boundary(b) => boundary_match(&line, b.as_deref()).is_some(),
-                EofMatcher::BlankLine => is_blank(&line),
-            };
-            if hit {
-                self.lines.push_front(line);
-                return None;
-            }
+        if (self.blank_matchers > 0 && is_blank(&line)) || self.at_boundary(&line) {
+            self.lines.push_front(line);
+            return None;
         }
         if line.is_empty() {
             return None;
@@ -217,6 +268,7 @@ impl Parser {
             headers: Vec::new(),
             payload: Payload::None,
             default_type,
+            decoded: RefCell::default(),
         });
         if let Some(&parent) = self.stack.last() {
             match &mut self.parts[parent].payload {
@@ -322,16 +374,16 @@ impl Parser {
             if maintype == "message" {
                 return Some(Frame::Message { started: false });
             }
-            if maintype == "multipart" {
-                if let Some(boundary) = get_boundary(&self.parts[cur]) {
-                    return Some(Frame::Multipart {
-                        id: cur,
-                        boundary: boundary_bytes(&boundary),
-                        capturing_preamble: true,
-                        preamble: Vec::new(),
-                        in_child: false,
-                    });
-                }
+            if maintype == "multipart"
+                && let Some(boundary) = get_boundary(&self.parts[cur])
+            {
+                return Some(Frame::Multipart {
+                    id: cur,
+                    boundary: boundary_bytes(&boundary),
+                    capturing_preamble: true,
+                    preamble: Vec::new(),
+                    in_child: false,
+                });
             }
         }
         let lines = self.read_rest();
@@ -347,7 +399,7 @@ impl Parser {
             Frame::DeliveryStatus { started } => {
                 if *started {
                     self.pop_message();
-                    self.input.eofstack.pop();
+                    self.input.pop_eof();
                     let _blank = self.input.readline();
                     match self.input.readline() {
                         None => return false,
@@ -355,7 +407,7 @@ impl Parser {
                     }
                 }
                 *started = true;
-                self.input.eofstack.push(EofMatcher::BlankLine);
+                self.input.push_eof(EofMatcher::BlankLine);
                 true
             }
             Frame::Message { started } => {
@@ -383,7 +435,7 @@ impl Parser {
                         let keep = strip_eol(p).len();
                         p.truncate(keep);
                     }
-                    self.input.eofstack.pop();
+                    self.input.pop_eof();
                     self.pop_message();
                     self.last = self.cur();
                 }
@@ -423,9 +475,7 @@ impl Parser {
                             }
                         }
                     }
-                    self.input
-                        .eofstack
-                        .push(EofMatcher::Boundary(boundary.clone()));
+                    self.input.push_eof(EofMatcher::Boundary(boundary.clone()));
                     *in_child = true;
                     return true;
                 }
@@ -500,7 +550,13 @@ impl Part {
 
     /// `msg.get(name)`, as the string the header object is.
     pub(super) fn get(&self, name: &str) -> Option<String> {
-        self.raw(name).map(|(k, v)| fetch(k, v))
+        let key = pystr::lower(name);
+        if let Some(hit) = self.decoded.borrow().get(&key) {
+            return hit.clone();
+        }
+        let value = self.raw(name).map(|(k, v)| fetch(k, v));
+        self.decoded.borrow_mut().insert(key, value.clone());
+        value
     }
 
     /// `msg.get_all(name, [])`.
@@ -620,31 +676,55 @@ fn unquote(s: &str) -> String {
 
 /// `_parseparam`: split on semicolons that aren't inside quotes.
 fn parse_param(s: &str) -> Vec<String> {
-    let mut s: String = format!(";{s}");
+    // Python rescans from the start of what's left for every ";" it tries; prefix counts of
+    // quotes and of backslash-quote pairs give the same parity test without rescanning.
+    let s = format!(";{s}");
+    let b = s.as_bytes();
+    let mut quotes = vec![0usize; b.len() + 1];
+    let mut escaped = vec![0usize; b.len() + 1];
+    for i in 0..b.len() {
+        quotes[i + 1] = quotes[i] + usize::from(b[i] == b'"');
+        escaped[i + 1] = escaped[i] + usize::from(b[i] == b'\\' && b.get(i + 1) == Some(&b'"'));
+    }
+    let semis: Vec<usize> = b
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c == b';')
+        .map(|(i, _)| i)
+        .collect();
+    let mut next_semi = 0;
     let mut plist = Vec::new();
-    while s.starts_with(';') {
-        s.remove(0);
-        let count_quotes =
-            |t: &str| t.matches('"').count() as i64 - t.matches("\\\"").count() as i64;
-        let mut end = s.find(';');
-        while let Some(e) = end {
-            if e > 0 && count_quotes(&s[..e]) % 2 != 0 {
-                end = s[e + 1..].find(';').map(|x| x + e + 1);
-            } else {
-                break;
-            }
+    let mut start = 0;
+    while b.get(start) == Some(&b';') {
+        start += 1;
+        while next_semi < semis.len() && semis[next_semi] < start {
+            next_semi += 1;
         }
-        let end = end.unwrap_or(s.len());
-        let mut f = s[..end].to_string();
-        if let Some(i) = f.find('=') {
-            f = format!(
+        // `s.count('"', 0, end) - s.count('\\"', 0, end)` over s[start..end].
+        let odd = |end: usize| {
+            let pairs = if end > start {
+                escaped[end - 1] - escaped[start]
+            } else {
+                0
+            };
+            (quotes[end] - quotes[start] - pairs) % 2 == 1
+        };
+        let mut k = next_semi;
+        while k < semis.len() && semis[k] > start && odd(semis[k]) {
+            k += 1;
+        }
+        let end = semis.get(k).copied().unwrap_or(b.len());
+        let f = &s[start..end];
+        let f = match f.find('=') {
+            Some(i) => format!(
                 "{}={}",
                 pystr::lower(pystr::strip(&f[..i])),
                 pystr::strip(&f[i + 1..])
-            );
-        }
+            ),
+            None => f.to_string(),
+        };
         plist.push(pystr::strip(&f).to_string());
-        s = s[end..].to_string();
+        start = end;
     }
     plist
 }
@@ -678,6 +758,8 @@ impl Message {
             input: Input {
                 lines: split_lines(data),
                 eofstack: Vec::new(),
+                boundaries: HashMap::new(),
+                blank_matchers: 0,
             },
             parts: Vec::new(),
             stack: Vec::new(),

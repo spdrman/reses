@@ -11,6 +11,8 @@
 //! Input strings carry raw 8-bit bytes as escape characters (see `pystr`), exactly as Python
 //! carries them as surrogates.
 
+use std::cell::RefCell;
+
 use super::codec::{self, Errors};
 use super::{date, pystr, transfer};
 
@@ -297,27 +299,6 @@ fn split_wsp(v: &str) -> (&str, &str) {
     }
 }
 
-/// The `rfc2047_matcher.search(tok)` test: `=\?[^?]*\?[qQbB]\?.*?\?=`.
-fn rfc2047_search(tok: &str) -> bool {
-    let b = tok.as_bytes();
-    let mut i = 0;
-    while let Some(off) = tok[i..].find("=?") {
-        let start = i + off + 2;
-        if let Some(q) = tok[start..].find('?') {
-            let j = start + q;
-            if j + 2 < b.len()
-                && matches!(b[j + 1], b'q' | b'Q' | b'b' | b'B')
-                && b[j + 2] == b'?'
-                && tok[j + 3..].contains("?=")
-            {
-                return true;
-            }
-        }
-        i += off + 1;
-    }
-    false
-}
-
 fn get_ptext_to_endchars<'a>(value: &'a str, endchars: &str) -> (String, &'a str, bool) {
     let (fragment, _) = split_wsp(value);
     let mut vchars = String::new();
@@ -377,37 +358,101 @@ fn ew_decode(ew_body: &str) -> Result<String, PErr> {
     })
 }
 
+thread_local! {
+    /// Where every "?=" sits in the header being decoded: (address, length, offsets). Encoded
+    /// words are tried at every "=?" and each try looks for the next "?=", so without this a
+    /// long header full of "=?" would be searched once per try.
+    static CLOSERS: RefCell<Option<(usize, usize, Vec<usize>)>> = const { RefCell::new(None) };
+}
+
+/// Indexes a header's "?=" positions for as long as it's alive.
+struct CloserIndex;
+
+impl CloserIndex {
+    fn install(value: &str) -> CloserIndex {
+        let positions = value.match_indices("?=").map(|(i, _)| i).collect();
+        CLOSERS.with(|c| *c.borrow_mut() = Some((value.as_ptr() as usize, value.len(), positions)));
+        CloserIndex
+    }
+}
+
+impl Drop for CloserIndex {
+    fn drop(&mut self) {
+        CLOSERS.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// `s[from..].find("?=")` as an offset into `s`, from the index when `s` lies inside the
+/// indexed header (the parser only ever hands it pieces of that header).
+fn find_closer(s: &str, from: usize) -> Option<usize> {
+    let start = s.as_ptr() as usize;
+    let indexed = CLOSERS.with(|c| {
+        let c = c.borrow();
+        let (base, len, positions) = c.as_ref()?;
+        if start < *base || start + s.len() > base + len {
+            return None;
+        }
+        let off = start - base;
+        let k = positions.partition_point(|&p| p < off + from);
+        Some(
+            positions
+                .get(k)
+                .map(|&p| p - off)
+                .filter(|&p| p + 2 <= s.len()),
+        )
+    });
+    match indexed {
+        Some(found) => found,
+        None => s.get(from..)?.find("?=").map(|i| i + from),
+    }
+}
+
+/// How many "?" `s` has, counting no further than `limit`.
+fn count_q(s: &str, limit: usize) -> usize {
+    s.bytes().filter(|&b| b == b'?').take(limit).count()
+}
+
 fn get_encoded_word(value: &str) -> R<'_> {
     if !value.starts_with("=?") {
         return Err(PErr::Parse);
     }
     let body = &value[2..];
-    let Some(i) = body.find("?=") else {
+    let Some(i) = find_closer(value, 2).map(|p| p - 2) else {
         return Err(PErr::Parse);
     };
-    let mut tok = body[..i].to_string();
-    let mut rest = &body[i + 2..];
+    let head = &body[..i];
+    let mut questions = count_q(head, 3);
+    let mut end = i; // where the encoded word's text stops, within body
+    let mut rest_at = i + 2; // where the rest of the value starts, within body
+    let rest = &body[rest_at..];
     let mut rc = rest.chars();
     if let (Some(a), Some(b)) = (rc.next(), rc.next())
         && a.is_ascii_hexdigit()
         && b.is_ascii_hexdigit()
-        && tok.matches('?').count() < 2
+        && questions < 2
     {
         // The ? after the CTE was followed by an =XX escape, so the real end is further on.
-        match rest.find("?=") {
+        match find_closer(value, 2 + rest_at) {
             Some(k) => {
-                tok.push_str("?=");
-                tok.push_str(&rest[..k]);
-                rest = &rest[k + 2..];
+                let k = k - 2;
+                questions += 1 + count_q(&body[rest_at..k], 3);
+                end = k;
+                rest_at = k + 2;
             }
             None => {
-                tok.push_str("?=");
-                tok.push_str(rest);
-                rest = "";
+                questions += 1 + count_q(rest, 3);
+                end = body.len();
+                rest_at = body.len();
             }
         }
     }
-    let mut text = ew_decode(&tok)?;
+    // _ew.decode needs exactly charset?cte?text; checking that first means a failed try
+    // costs nothing like the length of what it looked at.
+    if questions != 2 {
+        return Err(PErr::InvalidEw);
+    }
+    let rest = &body[rest_at..];
+    let mut text = ew_decode(&body[..end])?;
     let mut ew = List::new(Cls::Plain, "encoded-word");
     while !text.is_empty() {
         if starts_in(&text, WSP) {
@@ -423,13 +468,88 @@ fn get_encoded_word(value: &str) -> R<'_> {
     Ok((ew.into(), rest))
 }
 
-fn get_unstructured(mut value: &str) -> List {
+/// Lookup tables over an unstructured value so the per-token work in get_unstructured doesn't
+/// rescan the rest of the header each time round.
+struct Scan<'a> {
+    bytes: &'a [u8],
+    /// Next space or tab at or after each offset.
+    ws_next: Vec<usize>,
+    /// Next "?" at or after each offset.
+    q_next: Vec<usize>,
+    /// Offsets of every "=?" and every "?=".
+    openers: Vec<usize>,
+    closers: Vec<usize>,
+    /// For the whitespace-delimited token ending at `.0`, the last offset where
+    /// `rfc2047_matcher` could start a match inside it.
+    region: Option<(usize, Option<usize>)>,
+}
+
+impl<'a> Scan<'a> {
+    fn new(value: &'a str) -> Scan<'a> {
+        let bytes = value.as_bytes();
+        let n = bytes.len();
+        let mut ws_next = vec![n; n + 1];
+        let mut q_next = vec![n; n + 1];
+        for i in (0..n).rev() {
+            ws_next[i] = if matches!(bytes[i], b' ' | b'\t') {
+                i
+            } else {
+                ws_next[i + 1]
+            };
+            q_next[i] = if bytes[i] == b'?' { i } else { q_next[i + 1] };
+        }
+        Scan {
+            bytes,
+            ws_next,
+            q_next,
+            openers: value.match_indices("=?").map(|(i, _)| i).collect(),
+            closers: value.match_indices("?=").map(|(i, _)| i).collect(),
+            region: None,
+        }
+    }
+
+    /// `rfc2047_matcher.search(tok)` for the token starting at `pos`, which is
+    /// `=\?[^?]*\?[qQbB]\?.*?\?=` somewhere inside it.
+    fn has_encoded_word(&mut self, pos: usize) -> bool {
+        let end = self.ws_next[pos];
+        if self.region.is_none_or(|(e, _)| e != end) {
+            let last_closer = self.closers.partition_point(|&q| q + 2 <= end);
+            let last_closer = last_closer.checked_sub(1).map(|k| self.closers[k]);
+            let from = self.openers.partition_point(|&p| p < pos);
+            let mut best = None;
+            for &p in self.openers[from..].iter().take_while(|&&p| p < end) {
+                let j = self.q_next[(p + 2).min(self.bytes.len())];
+                if j + 2 < end
+                    && matches!(self.bytes[j + 1], b'q' | b'Q' | b'b' | b'B')
+                    && self.bytes[j + 2] == b'?'
+                    && last_closer.is_some_and(|q| q >= j + 3)
+                {
+                    best = Some(p);
+                }
+            }
+            self.region = Some((end, best));
+        }
+        self.region
+            .and_then(|(_, best)| best)
+            .is_some_and(|p| p >= pos)
+    }
+
+    fn first_opener(&self, pos: usize) -> Option<usize> {
+        let k = self.openers.partition_point(|&p| p < pos);
+        self.openers.get(k).copied()
+    }
+}
+
+fn get_unstructured(full: &str) -> List {
     let mut u = List::new(Cls::Plain, "unstructured");
-    while !value.is_empty() {
+    let mut scan = Scan::new(full);
+    let mut pos = 0;
+    while pos < full.len() {
+        let value = &full[pos..];
         if starts_in(value, WSP) {
             let (t, r) = get_fws(value);
             u.push(t);
-            value = r;
+            pos = full.len() - r.len();
             continue;
         }
         let mut valid_ew = true;
@@ -452,24 +572,21 @@ fn get_unstructured(mut value: &str) -> List {
                         };
                     }
                     u.push(tok);
-                    value = r;
+                    pos = full.len() - r.len();
                     continue;
                 }
             }
         }
-        let (mut tok, mut rem) = split_wsp(value);
-        if valid_ew && rfc2047_search(tok) {
-            let i = value.find("=?").expect("matcher found =?");
-            tok = &value[..i];
-            rem = &value[i..];
-            if tok.is_empty() {
+        let mut end = scan.ws_next[pos];
+        if valid_ew && scan.has_encoded_word(pos) {
+            end = scan.first_opener(pos).expect("the matcher found =?");
+            if end == pos {
                 // Python would loop forever here; take the "=" as text and move on.
-                tok = &value[..1];
-                rem = &value[1..];
+                end = pos + 1;
             }
         }
-        u.push(vt(tok, "vtext"));
-        value = rem;
+        u.push(vt(&full[pos..end], "vtext"));
+        pos = end;
     }
     u
 }
@@ -559,7 +676,11 @@ fn get_comment(value: &str) -> R<'_> {
     }
     let mut levels: Vec<String> = vec![String::from("(")];
     let mut value = rest1(value);
-    let escape = |s: &str| s.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)");
+    let escape = |s: &str| {
+        s.replace('\\', "\\\\")
+            .replace('(', "\\(")
+            .replace(')', "\\)")
+    };
     loop {
         if value.is_empty() {
             // End of header inside a comment: every open level still prints its ")".
@@ -1909,6 +2030,7 @@ fn value_stripped(v: &Tok) -> String {
 /// MimeParameters.params: RFC 2231 sections joined and decoded.
 fn mime_params(mp: &List) -> Vec<(String, String)> {
     let mut order: Vec<String> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut groups: Vec<Vec<(u64, &List)>> = Vec::new();
     for t in &mp.items {
         let Tok::L(p) = t else { continue };
@@ -1918,14 +2040,11 @@ fn mime_params(mp: &List) -> Vec<(String, String)> {
         match p.items.first() {
             Some(a) if a.tt() == "attribute" => {
                 let name = pystr::strip(&a.value()).to_string();
-                let idx = match order.iter().position(|n| *n == name) {
-                    Some(i) => i,
-                    None => {
-                        order.push(name);
-                        groups.push(Vec::new());
-                        order.len() - 1
-                    }
-                };
+                let idx = *index.entry(name.clone()).or_insert_with(|| {
+                    order.push(name);
+                    groups.push(Vec::new());
+                    order.len() - 1
+                });
                 groups[idx].push((p.section_number(), p));
             }
             _ => continue,
@@ -2197,6 +2316,7 @@ fn address_header(value: &str) -> String {
 /// What `str(msg[name])` is under policy.default for a header whose raw value (with line breaks
 /// already removed) is `value`. `name_lower` picks the header class, as the registry does.
 pub(super) fn decode_header(name_lower: &str, value: &str) -> String {
+    let _index = CloserIndex::install(value);
     let s = match name_lower {
         "date" | "resent-date" | "orig-date" => {
             if value.is_empty() {
@@ -2223,6 +2343,7 @@ pub(super) fn decode_header(name_lower: &str, value: &str) -> String {
 
 /// ContentDispositionHeader.content_disposition.
 pub(super) fn content_disposition(value: &str) -> Option<String> {
+    let _index = CloserIndex::install(value);
     parse_content_disposition_header(value)
         .1
         .map(pystr::sanitize)

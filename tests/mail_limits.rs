@@ -12,7 +12,9 @@ use std::time::Duration;
 use reses::mail::{format_message, looks_like_email, save_attachments, summarize};
 
 const STACK: usize = 1 << 20;
-const DEADLINE: Duration = Duration::from_secs(20);
+/// Generous on purpose: the slowest case takes a few seconds in a debug build on a busy CI box,
+/// while the quadratic versions these guard against took hours on the same input.
+const DEADLINE: Duration = Duration::from_secs(60);
 
 /// Run every decoder entry point on `raw` on a small stack, and return format_message's plain
 /// output. Fails if the work doesn't finish before the deadline.
@@ -57,7 +59,9 @@ fn nested_rfc822(n: usize) -> Vec<u8> {
 fn nested_multipart(n: usize) -> Vec<u8> {
     let mut s = String::from("From: a@example.com\nSubject: deep\n");
     for k in 0..n {
-        s.push_str(&format!("Content-Type: multipart/mixed; boundary=b{k}\n\n--b{k}\n"));
+        s.push_str(&format!(
+            "Content-Type: multipart/mixed; boundary=b{k}\n\n--b{k}\n"
+        ));
     }
     s.push_str("Content-Type: text/plain\n\nleaf\n");
     for k in (0..n).rev() {
@@ -83,11 +87,29 @@ fn twenty_thousand_parens_in_every_parsed_header() {
     let open = "(".repeat(20_000);
     let balanced = format!("{open}{}", ")".repeat(20_000));
     let cases = [
-        ("from unclosed", format!("From: x {open}\nTo: b@example.org\n\nbody\n")),
-        ("from balanced", format!("From: {balanced} <a@example.com>\n\nbody\n")),
-        ("to groups", format!("From: a@example.com\nTo: {}b@example.org\n\nbody\n", "g:".repeat(20_000))),
-        ("message-id", format!("From: a@example.com\nMessage-ID: {balanced}<i@example.com>\n\nbody\n")),
-        ("content-type", format!("From: a@example.com\nContent-Type: text/plain {open}\n\nbody\n")),
+        (
+            "from unclosed",
+            format!("From: x {open}\nTo: b@example.org\n\nbody\n"),
+        ),
+        (
+            "from balanced",
+            format!("From: {balanced} <a@example.com>\n\nbody\n"),
+        ),
+        (
+            "to groups",
+            format!(
+                "From: a@example.com\nTo: {}b@example.org\n\nbody\n",
+                "g:".repeat(20_000)
+            ),
+        ),
+        (
+            "message-id",
+            format!("From: a@example.com\nMessage-ID: {balanced}<i@example.com>\n\nbody\n"),
+        ),
+        (
+            "content-type",
+            format!("From: a@example.com\nContent-Type: text/plain {open}\n\nbody\n"),
+        ),
         (
             "content-disposition",
             format!(
@@ -95,9 +117,21 @@ fn twenty_thousand_parens_in_every_parsed_header() {
                  x\n--B\nContent-Disposition: attachment; filename=f {open}\n\ny\n--B--\n"
             ),
         ),
-        ("delivered-to comments", format!("From: a@example.com\nDelivered-To: {balanced} h@example.org\n\nb\n")),
-        ("delivered-to groups", format!("From: a@example.com\nDelivered-To: {}h@example.org\n\nb\n", "g:".repeat(20_000))),
-        ("received for", format!("From: a@example.com\nReceived: {open} for <{balanced}@example.org>\n\nb\n")),
+        (
+            "delivered-to comments",
+            format!("From: a@example.com\nDelivered-To: {balanced} h@example.org\n\nb\n"),
+        ),
+        (
+            "delivered-to groups",
+            format!(
+                "From: a@example.com\nDelivered-To: {}h@example.org\n\nb\n",
+                "g:".repeat(20_000)
+            ),
+        ),
+        (
+            "received for",
+            format!("From: a@example.com\nReceived: {open} for <{balanced}@example.org>\n\nb\n"),
+        ),
     ];
     for (label, raw) in cases {
         let out = decode_all(label, raw.into_bytes());
@@ -151,7 +185,8 @@ fn at_python_limit_fixtures_decode_on_a_small_stack() {
 fn scanners_stay_linear_on_large_input() {
     let big = 1_200_000;
     let html = |body: String| {
-        format!("From: a@example.com\nContent-Type: text/html; charset=utf-8\n\n{body}\n").into_bytes()
+        format!("From: a@example.com\nContent-Type: text/html; charset=utf-8\n\n{body}\n")
+            .into_bytes()
     };
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("unclosed style", html("<style".repeat(big / 6))),
@@ -162,22 +197,47 @@ fn scanners_stay_linear_on_large_input() {
         ("entities", html("&#&amp&".repeat(big / 7))),
         (
             "encoded-word lookalikes",
-            format!("From: a@example.com\nSubject: {}\n\nb\n", "=?a?q?".repeat(big / 6)).into_bytes(),
+            format!(
+                "From: a@example.com\nSubject: {}\n\nb\n",
+                "=?a?q?".repeat(big / 6)
+            )
+            .into_bytes(),
         ),
         (
             "glued encoded words",
-            format!("From: a@example.com\nSubject: {}\n\nb\n", "a=?utf-8?q?b?=".repeat(big / 14))
-                .into_bytes(),
+            format!(
+                "From: a@example.com\nSubject: {}\n\nb\n",
+                "a=?utf-8?q?b?=".repeat(big / 14)
+            )
+            .into_bytes(),
+        ),
+        (
+            "encoded words in an address",
+            format!("From: {}?= <a@example.com>\n\nb\n", "=?x ".repeat(big / 4)).into_bytes(),
+        ),
+        (
+            "encoded words in a quoted name",
+            format!(
+                "To: \"{}?=\" <a@example.com>\n\nb\n",
+                "=?x ".repeat(big / 4)
+            )
+            .into_bytes(),
         ),
         (
             "unterminated encoded words",
-            format!("From: a@example.com\nSubject: {}?=\n\nb\n", "=?x ".repeat(big / 4)).into_bytes(),
+            format!(
+                "From: a@example.com\nSubject: {}?=\n\nb\n",
+                "=?x ".repeat(big / 4)
+            )
+            .into_bytes(),
         ),
         (
             "many parameters",
             format!(
                 "From: a@example.com\nContent-Type: text/plain{}\n\nb\n",
-                (0..big / 12).map(|i| format!("; p{i}=\"v\"")).collect::<String>()
+                (0..big / 12)
+                    .map(|i| format!("; p{i}=\"v\""))
+                    .collect::<String>()
             )
             .into_bytes(),
         ),
@@ -185,7 +245,9 @@ fn scanners_stay_linear_on_large_input() {
             "many envelope recipients",
             format!(
                 "From: a@example.com\n{}\nb\n",
-                (0..20_000).map(|i| format!("Delivered-To: r{i}@example.org\n")).collect::<String>()
+                (0..20_000)
+                    .map(|i| format!("Delivered-To: r{i}@example.org\n"))
+                    .collect::<String>()
             )
             .into_bytes(),
         ),
