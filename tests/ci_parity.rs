@@ -44,9 +44,11 @@ fn every_ci_command_runs_locally_and_back() {
         "found too few commands in ci-docker.sh: {local:?}"
     );
 
-    // The one deliberate difference: CI builds the macOS binary natively on a macOS runner,
-    // and the local mirror cross-builds it from Linux with zigbuild.
-    const CI_ONLY: &[&str] = &["cargo build --release --locked"];
+    // The deliberate differences: CI builds the macOS binary natively on a macOS runner, and
+    // the local mirror cross-builds it from Linux with zigbuild. The macOS job also builds a
+    // debug binary as the "already ran" side of tests/macos-replace-binary.sh (#15); the local
+    // mirror runs that test with the release binary on both sides instead of a second build.
+    const CI_ONLY: &[&str] = &["cargo build --release --locked", "cargo build --locked"];
     const LOCAL_ONLY: &[&str] =
         &["cargo zigbuild --release --locked --target aarch64-apple-darwin"];
     for c in CI_ONLY {
