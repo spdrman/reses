@@ -11,14 +11,15 @@ RUN apt-get update \
       musl-tools file binutils \
  && rm -rf /var/lib/apt/lists/*
 
-# zig lets cargo-zigbuild link a native macOS binary from Linux without an SDK. Both musl
-# targets are installed so the gate can build whichever one matches the machine it runs on.
+# zig lets cargo-zigbuild link a native macOS binary from Linux without an SDK. The musl target
+# is the image's own arch (x86_64 on the NAS), which musl-gcc builds natively; the gate never
+# cross-builds the other one, since ci.yml and the release build each on its own runner.
 # cargo-deny is the version ci.yml's deny job installs (tests/ci_parity.rs compares them).
 RUN pip3 install --no-cache-dir --break-system-packages ziglang==0.14.1 \
  && cargo install --locked cargo-zigbuild@0.20.1 \
  && cargo install --locked cargo-deny@0.20.2 \
  && rustup component add rustfmt clippy \
  && rustup target add aarch64-apple-darwin x86_64-apple-darwin \
-      aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+      "$(uname -m)-unknown-linux-musl"
 
 ENV CARGO_TERM_COLOR=always

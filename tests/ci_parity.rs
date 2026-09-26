@@ -301,6 +301,8 @@ fn docker_env(text: &str) -> BTreeMap<String, String> {
             if pair[0] == "-e"
                 && let Some((k, v)) = pair[1].split_once('=')
             {
+                // The last word of a bash array ends with its closing `)`.
+                let v = v.strip_suffix(')').unwrap_or(v);
                 out.insert(k.to_string(), v.trim_matches('"').to_string());
             }
         }
@@ -517,16 +519,7 @@ fn every_advisory_exception_says_why_and_links_the_advisory() {
         assert!(reason.len() > 80, "{id}'s reason is too thin: {reason:?}");
         ids.insert(id.to_string());
     }
-    assert_eq!(
-        ids,
-        [
-            "RUSTSEC-2024-0436",
-            "RUSTSEC-2026-0002",
-            "RUSTSEC-2026-0253"
-        ]
-        .map(String::from)
-        .into(),
-    );
+    assert_eq!(ids, ["RUSTSEC-2024-0436"].map(String::from).into());
 }
 
 #[test]

@@ -192,8 +192,9 @@ fn every_check_is_real_and_runs_where_it_should() {
     );
     let script = read("scripts/check-static.sh");
     assert!(
-        script.contains("command -v readelf"),
-        "a missing readelf must fail, not pass"
+        script.contains("for tool in readelf file; do")
+            && script.contains("command -v \"$tool\" >/dev/null || {"),
+        "a missing readelf or file must fail, not pass"
     );
     assert!(
         script.contains("static-pie linked"),

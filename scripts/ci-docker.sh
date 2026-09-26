@@ -2,7 +2,8 @@
 # Run reses builds and tests in the CI image on the UGREEN NAS. Nothing here touches this Mac's
 # toolchain or its Docker.
 #
-#   scripts/ci-docker.sh                full gate: the Check, MSRV, Docs and Test jobs of ci.yml
+#   scripts/ci-docker.sh                full gate: the Check, MSRV, Docs, Test, Deny and Linux
+#                                       static build jobs of ci.yml
 #   scripts/ci-docker.sh --exec CMD     run CMD in the container (e.g. "cargo test mail")
 #   scripts/ci-docker.sh --shell        interactive shell
 #   scripts/ci-docker.sh --darwin       build the macOS release binary into dist/ on this Mac
@@ -21,6 +22,10 @@
 #
 # RESES_LANE names the scratch directory and the cargo target volume, so parallel worktrees
 # never share build output. RESES_NAS overrides the host.
+#
+# Every container gets RUSTFLAGS=-Dwarnings, the value ci.yml sets for all its jobs, so the gate
+# compiles exactly what CI compiles and a warning fails here the way it fails there.
+# tests/ci_parity.rs compares the two environments.
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -79,7 +84,7 @@ run() {
   local args=(docker run --rm ${tty[@]+"${tty[@]}"} --platform "$PLATFORM"
     --cpus "${RESES_CPUS:-2}" --memory "${RESES_MEMORY:-3g}"
     -e CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-auto}" -e CARGO_BUILD_JOBS="${RESES_CPUS:-2}"
-    -e CARGO_TARGET_DIR=/target
+    -e CARGO_TARGET_DIR=/target -e RUSTFLAGS=-Dwarnings
     -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*'
     ${EXTRA_DOCKER_ARGS[@]+"${EXTRA_DOCKER_ARGS[@]}"}
     -v "$REGISTRY_VOL:/usr/local/cargo/registry"
@@ -94,12 +99,20 @@ run() {
 }
 EXTRA_DOCKER_ARGS=()
 
+# The gate. cargo deny fetches the advisory database each run, so it needs the network. The
+# musl build is the static Linux binary the release ships, for the arch of the container (the
+# NAS image is x86_64; ci.yml builds both), checked the way the release checks it.
 GATE='set -e
 cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo check --all-targets --locked
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --no-deps --locked
-cargo test --locked --no-fail-fast'
+cargo test --locked --no-fail-fast
+cargo deny check advisories bans licenses sources
+MUSL_TARGET="$(uname -m)-unknown-linux-musl"
+TARGET_CC=musl-gcc cargo build --release --locked --target "$MUSL_TARGET"
+scripts/check-static.sh "/target/$MUSL_TARGET/release/reses"
+scripts/check-goldens.sh "/target/$MUSL_TARGET/release/reses"'
 
 case "${1:-}" in
   "") push; run "$GATE" ;;

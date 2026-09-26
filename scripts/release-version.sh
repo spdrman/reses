@@ -45,7 +45,7 @@ ci_passed() {
     runs=$(gh api --paginate "repos/$repo/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&per_page=100" \
       --jq '.workflow_runs[] | "\(.id) \(.status) \(.conclusion // "")"') ||
       die "couldn't ask GitHub for the CI runs on $sha, so I can't tell whether CI passed"
-    if ! awk '$2 != "completed" { found = 1 } END { exit !found }' <<<"$runs"; then
+    if ! awk 'NF && $2 != "completed" { found = 1 } END { exit !found }' <<<"$runs"; then
       break
     fi
     if [ "$SECONDS" -ge "$deadline" ]; then
@@ -61,7 +61,7 @@ ci_passed() {
 
   # Any finished run that isn't a pass or a cancellation stops the release.
   local bad
-  bad=$(awk '$3 != "success" && $3 != "cancelled" { print "run " $1 " ended " $3 }' <<<"$runs")
+  bad=$(awk 'NF && $3 != "success" && $3 != "cancelled" { print "run " $1 " ended " $3 }' <<<"$runs")
   [ -z "$bad" ] || die "CI didn't pass on $sha: $(echo "$bad" | paste -sd, -)"
 
   # Cancelled runs only count as nothing, so something has to have passed.
@@ -76,7 +76,7 @@ ci_passed() {
       --jq '.jobs[] | "\(.conclusion // "")\t\(.name)"') ||
       die "couldn't ask GitHub for the jobs of CI run $id"
     [ -n "$jobs" ] || die "CI run $id on $sha lists no jobs, so it proves nothing"
-    failed=$(awk -F'\t' '$1 != "success" { print $2 " was " ($1 == "" ? "unfinished" : $1) }' <<<"$jobs")
+    failed=$(awk -F'\t' 'NF && $1 != "success" { print $2 " was " ($1 == "" ? "unfinished" : $1) }' <<<"$jobs")
     [ -z "$failed" ] || die "CI run $id on $sha didn't pass every job: $(echo "$failed" | paste -sd, -)"
   done
   echo "CI passed on $sha" >&2

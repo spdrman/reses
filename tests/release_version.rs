@@ -105,7 +105,7 @@ case "$*" in
   *"/actions/workflows/ci.yml/runs?"*)
     if [ -e "$d/runs.$n" ]; then cat "$d/runs.$n"; elif [ -e "$d/runs" ]; then cat "$d/runs"; fi ;;
   *"/actions/runs/"*"/jobs"*)
-    id=${*#*/actions/runs/}; id=${id%%/*}
+    all="$*"; id=${all#*/actions/runs/}; id=${id%%/*}
     if [ -e "$d/jobs-$id" ]; then cat "$d/jobs-$id"; fi ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 3 ;;
 esac
