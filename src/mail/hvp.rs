@@ -41,7 +41,6 @@ enum TermKind {
 enum Cls {
     Plain,
     Ws,
-    Comment,
     Bare,
     LocalPart,
     AddrSpec,
@@ -172,23 +171,6 @@ impl Tok {
             } => String::new(),
             Tok::T { s, .. } => s.clone(),
             Tok::L(l) => match l.cls {
-                Cls::Comment => {
-                    let mut out = String::from("(");
-                    for x in &l.items {
-                        if x.tt() == "comment" {
-                            out.push_str(&x.to_str());
-                        } else {
-                            out.push_str(
-                                &x.to_str()
-                                    .replace('\\', "\\\\")
-                                    .replace('(', "\\(")
-                                    .replace(')', "\\)"),
-                            );
-                        }
-                    }
-                    out.push(')');
-                    out
-                }
                 Cls::Bare => quote_string(&join_str(&l.items)),
                 Cls::MimeParams => {
                     let params: Vec<String> = mime_params(l)
@@ -221,7 +203,7 @@ impl Tok {
                 TermKind::EwWs => String::new(),
             },
             Tok::L(l) => match l.cls {
-                Cls::Ws | Cls::Comment => " ".into(),
+                Cls::Ws => " ".into(),
                 Cls::Bare => join_str(&l.items),
                 Cls::LocalPart => match l.items.first() {
                     Some(q) if q.tt() == "quoted-string" => quoted_value(q),
@@ -566,27 +548,53 @@ fn get_bare_quoted_string(value: &str) -> R<'_> {
     Ok((bare.into(), &value[1..]))
 }
 
+/// `get_comment`. Python builds a Comment node per nesting level and recurses both to parse it
+/// and to print it. Nothing ever looks inside a comment except to print it, so I build its
+/// `str()` directly, one open level per stack entry, and return it as a single whitespace-valued
+/// terminal. The text is the same, and neither the parse nor any later walk over the tree
+/// recurses, however deep the parens go.
 fn get_comment(value: &str) -> R<'_> {
     if !value.is_empty() && !starts(value, '(') {
         return Err(PErr::Parse);
     }
-    let mut comment = List::new(Cls::Comment, "comment");
+    let mut levels: Vec<String> = vec![String::from("(")];
     let mut value = rest1(value);
-    while !value.is_empty() && !starts(value, ')') {
-        let tok;
-        if starts_in(value, WSP) {
-            (tok, value) = get_fws(value);
-        } else if starts(value, '(') {
-            (tok, value) = get_comment(value)?;
-        } else {
-            (tok, value) = get_qp_ctext(value);
+    let escape = |s: &str| s.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)");
+    loop {
+        if value.is_empty() {
+            // End of header inside a comment: every open level still prints its ")".
+            let mut done = String::new();
+            while let Some(mut level) = levels.pop() {
+                level.push_str(&done);
+                level.push(')');
+                done = level;
+            }
+            return Ok((wt(done, "comment"), value));
         }
-        comment.push(tok);
+        if starts(value, ')') {
+            value = &value[1..];
+            let mut level = levels.pop().expect("an open comment");
+            level.push(')');
+            match levels.last_mut() {
+                Some(parent) => parent.push_str(&level),
+                None => return Ok((wt(level, "comment"), value)),
+            }
+            continue;
+        }
+        let top = levels.last_mut().expect("an open comment");
+        if starts_in(value, WSP) {
+            let (tok, rest) = get_fws(value);
+            top.push_str(&tok.to_str());
+            value = rest;
+        } else if starts(value, '(') {
+            levels.push(String::from("("));
+            value = &value[1..];
+        } else {
+            let (tok, rest) = get_qp_ctext(value);
+            top.push_str(&escape(&tok.to_str()));
+            value = rest;
+        }
     }
-    if value.is_empty() {
-        return Ok((comment.into(), value));
-    }
-    Ok((comment.into(), &value[1..]))
 }
 
 fn get_cfws(mut value: &str) -> R<'_> {

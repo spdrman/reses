@@ -68,35 +68,67 @@ fn split_lines(data: &[u8]) -> VecDeque<Vec<u8>> {
 
 #[derive(Debug, Clone)]
 enum EofMatcher {
-    Boundary(Vec<char>),
+    /// `None` for a boundary that can never match a line (see `boundary_bytes`).
+    Boundary(Option<Vec<u8>>),
     BlankLine,
+}
+
+/// How deep messages may nest before the rest is read as flat text. Python's own recursion
+/// limit stops reses.py at 970 nested multiparts and 972 nested message/rfc822 parts, so
+/// anything it can decode stays well inside this.
+const MAX_DEPTH: usize = 1000;
+
+/// A multipart, message/* or delivery-status part whose body is still being read.
+enum Frame {
+    DeliveryStatus {
+        started: bool,
+    },
+    Message {
+        started: bool,
+    },
+    Multipart {
+        id: PartId,
+        boundary: Option<Vec<u8>>,
+        capturing_preamble: bool,
+        preamble: Vec<Vec<u8>>,
+        in_child: bool,
+    },
+}
+
+/// The boundary as the raw bytes a line would carry. Lines only ever hold ASCII and escaped
+/// bytes, so a boundary with any other character (one decoded from an encoded word, say)
+/// can't match, just as it can't in Python.
+fn boundary_bytes(boundary: &str) -> Option<Vec<u8>> {
+    boundary
+        .chars()
+        .map(|c| {
+            if c.is_ascii() {
+                Some(c as u8)
+            } else {
+                pystr::unescape_char(c)
+            }
+        })
+        .collect()
 }
 
 /// `boundaryre.match(line)`: `(--boundary)(--)?[ \t]*(\r\n|\r|\n)?$`, returning whether it was
 /// the close delimiter and whether a line ending followed.
-fn boundary_match(line: &[u8], boundary: &[char]) -> Option<(bool, bool)> {
-    let text: Vec<char> = line.iter().map(|&b| pystr::escape_byte(b)).collect();
+fn boundary_match(line: &[u8], boundary: Option<&[u8]>) -> Option<(bool, bool)> {
+    let boundary = boundary?;
     let n = boundary.len() + 2;
-    if text.len() < n || text[0] != '-' || text[1] != '-' || text[2..n] != *boundary {
+    if line.len() < n || !line.starts_with(b"--") || &line[2..n] != boundary {
         return None;
     }
-    let tail_ok = |t: &[char]| -> Option<bool> {
-        let mut i = 0;
-        while i < t.len() && (t[i] == ' ' || t[i] == '\t') {
-            i += 1;
-        }
-        match &t[i..] {
+    let tail_ok = |t: &[u8]| -> Option<bool> {
+        let ws = t.iter().take_while(|&&b| b == b' ' || b == b'\t').count();
+        match &t[ws..] {
             [] => Some(false),
-            ['\r', '\n'] | ['\r'] | ['\n'] => Some(true),
-            // `$` also matches just before a final newline.
-            ['\r', '\n', '\n'] | ['\r', '\r', '\n'] => None,
+            b"\r\n" | b"\r" | b"\n" => Some(true),
             _ => None,
         }
     };
-    let rest = &text[n..];
-    if rest.len() >= 2
-        && rest[0] == '-'
-        && rest[1] == '-'
+    let rest = &line[n..];
+    if rest.starts_with(b"--")
         && let Some(sep) = tail_ok(&rest[2..])
     {
         return Some((true, sep));
@@ -119,7 +151,7 @@ impl Input {
         let line = self.lines.pop_front()?;
         for m in self.eofstack.iter().rev() {
             let hit = match m {
-                EofMatcher::Boundary(b) => boundary_match(&line, b).is_some(),
+                EofMatcher::Boundary(b) => boundary_match(&line, b.as_deref()).is_some(),
                 EofMatcher::BlankLine => is_blank(&line),
             };
             if hit {
@@ -263,7 +295,10 @@ impl Parser {
         lines
     }
 
-    fn parsegen(&mut self) {
+    /// Start a new message at the current input position: new_message, then the header block.
+    /// Returns the frame that continues it, or `None` when it's a leaf whose body is already
+    /// read. Past MAX_DEPTH nested messages, every part is read as a leaf, however it's typed.
+    fn begin(&mut self) -> Option<Frame> {
         self.new_message();
         let cur = self.cur();
         let mut headers = Vec::new();
@@ -279,95 +314,149 @@ impl Parser {
         self.parse_headers(headers);
 
         let ctype = self.content_type(cur);
-        if ctype == "message/delivery-status" {
-            loop {
-                self.input.eofstack.push(EofMatcher::BlankLine);
-                self.parsegen();
-                self.pop_message();
-                self.input.eofstack.pop();
-                let _blank = self.input.readline();
-                match self.input.readline() {
-                    None => break,
-                    Some(l) => self.input.unreadline(l),
+        let maintype = ctype.split('/').next().unwrap_or("");
+        if self.stack.len() <= MAX_DEPTH {
+            if ctype == "message/delivery-status" {
+                return Some(Frame::DeliveryStatus { started: false });
+            }
+            if maintype == "message" {
+                return Some(Frame::Message { started: false });
+            }
+            if maintype == "multipart" {
+                if let Some(boundary) = get_boundary(&self.parts[cur]) {
+                    return Some(Frame::Multipart {
+                        id: cur,
+                        boundary: boundary_bytes(&boundary),
+                        capturing_preamble: true,
+                        preamble: Vec::new(),
+                        in_child: false,
+                    });
                 }
             }
-            return;
-        }
-        if ctype.split('/').next() == Some("message") {
-            self.parsegen();
-            self.pop_message();
-            return;
-        }
-        if ctype.split('/').next() == Some("multipart") {
-            let Some(boundary) = get_boundary(&self.parts[cur]) else {
-                let lines = self.read_rest();
-                self.set_payload(cur, lines);
-                return;
-            };
-            let boundary: Vec<char> = boundary.chars().collect();
-            let mut capturing_preamble = true;
-            let mut preamble: Vec<Vec<u8>> = Vec::new();
-            let mut close_boundary_seen = false;
-            let mut linesep = false;
-            while let Some(line) = self.input.readline() {
-                let Some((is_end, sep)) = boundary_match(&line, &boundary) else {
-                    preamble.push(line);
-                    continue;
-                };
-                if is_end {
-                    close_boundary_seen = true;
-                    linesep = sep;
-                    break;
-                }
-                if capturing_preamble {
-                    capturing_preamble = false;
-                    self.input.unreadline(line);
-                    continue;
-                }
-                // Skip any run of further boundary lines.
-                loop {
-                    match self.input.readline() {
-                        Some(l) if boundary_match(&l, &boundary).is_some() => {}
-                        Some(l) => {
-                            self.input.unreadline(l);
-                            break;
-                        }
-                        None => {
-                            self.input.unreadline(Vec::new());
-                            break;
-                        }
-                    }
-                }
-                self.input
-                    .eofstack
-                    .push(EofMatcher::Boundary(boundary.clone()));
-                self.parsegen();
-                // The newline before a boundary belongs to the boundary.
-                let last = self.last;
-                if content_type(&self.parts[last]).starts_with("multipart/") {
-                    // Only the epilogue would change, and nothing here reads it.
-                } else if let Payload::Text(p) = &mut self.parts[last].payload {
-                    let cut = p.len() - strip_eol(p).len();
-                    p.truncate(p.len() - cut);
-                }
-                self.input.eofstack.pop();
-                self.pop_message();
-                self.last = self.cur();
-            }
-            if capturing_preamble {
-                self.set_payload(cur, preamble);
-                let _ = self.read_rest();
-                return;
-            }
-            if !close_boundary_seen {
-                return;
-            }
-            let _ = linesep;
-            let _epilogue = self.read_rest();
-            return;
         }
         let lines = self.read_rest();
         self.set_payload(cur, lines);
+        None
+    }
+
+    /// Run a container frame until it needs a child message parsed (`true`) or is finished
+    /// (`false`). This is the body of Python's `_parsegen` after the headers, with each
+    /// recursive `self._parsegen()` turned into a return to the driver loop.
+    fn step(&mut self, frame: &mut Frame) -> bool {
+        match frame {
+            Frame::DeliveryStatus { started } => {
+                if *started {
+                    self.pop_message();
+                    self.input.eofstack.pop();
+                    let _blank = self.input.readline();
+                    match self.input.readline() {
+                        None => return false,
+                        Some(l) => self.input.unreadline(l),
+                    }
+                }
+                *started = true;
+                self.input.eofstack.push(EofMatcher::BlankLine);
+                true
+            }
+            Frame::Message { started } => {
+                if *started {
+                    self.pop_message();
+                    return false;
+                }
+                *started = true;
+                true
+            }
+            Frame::Multipart {
+                id,
+                boundary,
+                capturing_preamble,
+                preamble,
+                in_child,
+            } => {
+                if *in_child {
+                    *in_child = false;
+                    // The newline before a boundary belongs to the boundary.
+                    let last = self.last;
+                    if !content_type(&self.parts[last]).starts_with("multipart/")
+                        && let Payload::Text(p) = &mut self.parts[last].payload
+                    {
+                        let keep = strip_eol(p).len();
+                        p.truncate(keep);
+                    }
+                    self.input.eofstack.pop();
+                    self.pop_message();
+                    self.last = self.cur();
+                }
+                while let Some(line) = self.input.readline() {
+                    let Some((is_end, _)) = boundary_match(&line, boundary.as_deref()) else {
+                        preamble.push(line);
+                        continue;
+                    };
+                    if is_end {
+                        if *capturing_preamble {
+                            // A close delimiter before any opening one: Python keeps the
+                            // preamble as the payload.
+                            let lines = std::mem::take(preamble);
+                            self.set_payload(*id, lines);
+                        }
+                        // Everything after the close delimiter is epilogue, which nothing
+                        // here reads.
+                        let _epilogue = self.read_rest();
+                        return false;
+                    }
+                    if *capturing_preamble {
+                        *capturing_preamble = false;
+                        self.input.unreadline(line);
+                        continue;
+                    }
+                    // Skip any run of further boundary lines.
+                    loop {
+                        match self.input.readline() {
+                            Some(l) if boundary_match(&l, boundary.as_deref()).is_some() => {}
+                            Some(l) => {
+                                self.input.unreadline(l);
+                                break;
+                            }
+                            None => {
+                                self.input.unreadline(Vec::new());
+                                break;
+                            }
+                        }
+                    }
+                    self.input
+                        .eofstack
+                        .push(EofMatcher::Boundary(boundary.clone()));
+                    *in_child = true;
+                    return true;
+                }
+                if *capturing_preamble {
+                    let lines = std::mem::take(preamble);
+                    self.set_payload(*id, lines);
+                    let _ = self.read_rest();
+                }
+                false
+            }
+        }
+    }
+
+    /// Python's recursive `_parsegen`, driven from an explicit stack of frames so that nesting
+    /// depth never touches the call stack.
+    fn parse(&mut self) {
+        let mut frames: Vec<Frame> = Vec::new();
+        let mut start = true;
+        loop {
+            if start {
+                start = false;
+                if let Some(f) = self.begin() {
+                    frames.push(f);
+                }
+            }
+            let Some(mut top) = frames.pop() else { break };
+            if self.step(&mut top) {
+                frames.push(top);
+                start = true;
+            }
+        }
     }
 }
 
@@ -595,7 +684,7 @@ impl Message {
             cur: None,
             last: 0,
         };
-        p.parsegen();
+        p.parse();
         Message { parts: p.parts }
     }
 
@@ -614,7 +703,22 @@ impl Message {
         matches!(self.parts[id].payload, Payload::Parts(_))
     }
 
-    fn find_body(&self, part: PartId, prefs: &[&str], out: &mut Vec<(usize, PartId)>) {
+    /// `_find_body`: the candidates in the order Python's generator yields them, a depth-first
+    /// preorder walk. I keep my own stack so a deeply nested message can't exhaust the real one.
+    fn find_body(&self, root: PartId, prefs: &[&str], out: &mut Vec<(usize, PartId)>) {
+        let mut todo = vec![root];
+        while let Some(part) = todo.pop() {
+            self.find_body_step(part, prefs, out, &mut todo);
+        }
+    }
+
+    fn find_body_step(
+        &self,
+        part: PartId,
+        prefs: &[&str],
+        out: &mut Vec<(usize, PartId)>,
+        todo: &mut Vec<PartId>,
+    ) {
         let p = &self.parts[part];
         if p.is_attachment() {
             return;
@@ -632,9 +736,7 @@ impl Message {
             return;
         }
         if subtype != "related" {
-            for &sub in self.children(part) {
-                self.find_body(sub, prefs, out);
-            }
+            todo.extend(self.children(part).iter().rev());
             return;
         }
         if let Some(i) = prefs.iter().position(|x| *x == "related") {
@@ -654,9 +756,7 @@ impl Message {
         if candidate.is_none() {
             candidate = self.children(part).first().copied();
         }
-        if let Some(c) = candidate {
-            self.find_body(c, prefs, out);
-        }
+        todo.extend(candidate);
     }
 
     /// `msg.get_body(preferencelist)`.
@@ -751,12 +851,13 @@ mod tests {
 
     #[test]
     fn boundary_lines() {
-        let b: Vec<char> = "B".chars().collect();
-        assert_eq!(boundary_match(b"--B\r\n", &b), Some((false, true)));
-        assert_eq!(boundary_match(b"--B--", &b), Some((true, false)));
-        assert_eq!(boundary_match(b"--B-- \t\n", &b), Some((true, true)));
-        assert_eq!(boundary_match(b"--Bx\n", &b), None);
-        assert_eq!(boundary_match(b"-B\n", &b), None);
+        let b = boundary_bytes("B");
+        let b = b.as_deref();
+        assert_eq!(boundary_match(b"--B\r\n", b), Some((false, true)));
+        assert_eq!(boundary_match(b"--B--", b), Some((true, false)));
+        assert_eq!(boundary_match(b"--B-- \t\n", b), Some((true, true)));
+        assert_eq!(boundary_match(b"--Bx\n", b), None);
+        assert_eq!(boundary_match(b"-B\n", b), None);
     }
 
     #[test]
