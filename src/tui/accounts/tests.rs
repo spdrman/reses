@@ -620,3 +620,43 @@ fn connecting_from_a_pushed_accounts_screen_leaves_the_shared_session_alone() {
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "test");
 }
+
+#[test]
+fn a_refused_save_shows_why_and_changes_nothing() {
+    // The AWS CLI refuses a file with a section twice, so the save refuses to write it.
+    const DUPLICATED: &str = "\
+[work]
+aws_access_key_id = AKIAFAKEWORK00000002
+aws_secret_access_key = fakeWorkSecret
+
+[work]
+region = eu-west-1
+";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials");
+    let mut app = app(dir.path(), Some(DUPLICATED), None);
+    press(&mut app, KeyCode::Char('a'));
+    fill_form(&mut app, "fresh", "AKIAFAKEFAKE00000003", SECRET, "", "");
+    save(&mut app);
+    let err = status_error(&app);
+    assert!(!err.contains("QZX9"), "{err}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), DUPLICATED);
+    assert!(app.ctx.session.is_none(), "no connect after a failed save");
+    assert!(app.ctx.config.default_profile.is_none());
+    assert!(!dir.path().join("config.toml").exists());
+    let s = screen(&mut app, 120, 20);
+    assert!(s.contains("Profile name"), "the form stays open: {s}");
+}
+
+#[test]
+fn a_profile_named_default_in_capitals_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path(), None, None);
+    press(&mut app, KeyCode::Char('a'));
+    fill_form(&mut app, "DEFAULT", "AKIAFAKEFAKE00000003", SECRET, "", "");
+    save(&mut app);
+    let err = status_error(&app);
+    assert!(err.contains("DEFAULT"), "{err}");
+    assert!(!dir.path().join("credentials").exists());
+    assert!(app.ctx.session.is_none());
+}
