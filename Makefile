@@ -1,4 +1,4 @@
-# Every target runs through Docker. See CONTRIBUTING.md.
+# Every target runs in Docker on the host RESES_NAS names. See CONTRIBUTING.md.
 .PHONY: ci gate integration darwin install demo
 
 ci: gate integration darwin

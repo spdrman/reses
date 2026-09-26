@@ -1,10 +1,21 @@
 # Contributing
 
-## Everything runs in Docker
+## Everything runs in Docker, on a remote host
 
 Never build or test with the toolchain on your machine. `scripts/ci-docker.sh` (or `make gate`) runs the same checks as `.github/workflows/ci.yml` inside a pinned image, and `tests/ci_parity.rs` fails if the two drift. A red run should mean the code is wrong, not that a laptop updated its compiler overnight.
 
-If you work in more than one worktree at once, give each its own `RESES_LANE=<name>` so they don't share a cargo target volume.
+The containers don't run on your machine either. Every script sources `scripts/nas-lib.sh`, which sends the tree over ssh to an x86_64 Docker host and runs everything there. It defaults to my build box, so point `RESES_NAS=user@host` at your own. It needs:
+
+- x86_64 Linux with Docker, `tar`, and your user in the `docker` group. It doesn't need git or anything else, and it can be the machine you're on if that's x86_64 Linux running sshd.
+- ssh without a password prompt, and the host key already in `known_hosts`, since the scripts never answer ssh's first-connection question. Run `ssh user@host true` once by hand.
+- bash or zsh as the login shell there, because commands go over quoted by bash's `printf %q`.
+- Outbound access to Docker Hub, ghcr.io, cgr.dev and raw.githubusercontent.com, and a few GB of disk for the images and the cargo caches.
+
+Each run's tree lives in `~/workspace/reses-ci/<lane>` and is cleared when the run ends, Ctrl-C included. A lane is locked while a run uses it, so a second run in the same lane is turned away rather than pushing over the first one's tree. If a killed run leaves the lock behind, `scripts/ci-docker.sh --nas-unlock <lane>` clears it and stops any container that run left going. The per-lane cargo target volumes, the shared cargo home and the images stay between runs on purpose, so builds are fast. `scripts/ci-docker.sh --nas-clean` removes all of it: every reses container, network, volume, image and directory. It refuses while any lane is locked, unless you add `--force`. It leaves Docker's build cache alone, since other builds on the host share it, so run `docker builder prune` there yourself if you want that space back.
+
+Only the files git would see go over (tracked, plus untracked ones that aren't ignored). An untracked file that looks like a key or a credentials file, or whose first lines look like a stored mail message (raw SES mail has no extension), stops the push. Fake mail belongs in `tests/fixtures/`.
+
+If you work in more than one worktree at once, give each its own `RESES_LANE=<name>` so they don't share a scratch directory or a cargo target volume.
 
 ## Every PR closes an issue
 
@@ -43,9 +54,9 @@ Tests never read or write the real `~/.aws` or `~/.config/reses`; they use temp 
 
 ## macOS binaries in dist/
 
-Every binary written into `dist/` goes through `scripts/place-binary.sh`, which copies beside the destination and renames over it. `tests/ci_parity.rs` fails if a `cp` or `mv` into `dist/` appears anywhere else in the Makefile or `scripts/ci-docker.sh`. The reason is #15: on Apple Silicon, overwriting a binary that has already run, in place, while any process holds it open, makes macOS kill it on every later exec, and Docker Desktop holds everything under a mounted folder.
+Every binary written into `dist/` goes through `scripts/place-binary.sh`, which copies beside the destination and renames over it. `tests/ci_parity.rs` fails if a `cp` or `mv` into `dist/` appears anywhere else in the Makefile or `scripts/ci-docker.sh`. The reason is #15: on Apple Silicon, overwriting a binary that has already run, in place, while any process holds it open, makes macOS kill it on every later exec, and Docker Desktop used to hold everything under a mounted folder. Builds run remotely now, but the rule stays, since a running `reses` holds its binary just the same.
 
-Two side effects are expected. Docker Desktop keeps the old, now unlinked binaries open, so each `make darwin` leaves a few MB on disk that comes back when Docker restarts. And a build killed partway through can leave a `dist/*.tmp.XXXXXX` file behind; nothing ever runs it, and it's safe to delete.
+One side effect is expected: a build killed partway through can leave a `dist/*.tmp.XXXXXX` file behind; nothing ever runs it, and it's safe to delete.
 
 ## Releasing
 
