@@ -1,0 +1,21 @@
+From: a@example.com
+To: b@example.com
+Subject: folded filename
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: text/plain
+
+body
+--B
+Content-Type: application/pdf;
+	name="=?utf-8?Q?Quarterly_report_for_the_period_ending_September_2026_?=
+ =?utf-8?Q?final_version.pdf?="
+Content-Disposition: attachment;
+	filename="=?utf-8?Q?Quarterly_report_for_the_period_ending_September_2026_?=
+ =?utf-8?Q?final_version.pdf?="
+Content-Transfer-Encoding: base64
+
+JVBERg==
+--B--

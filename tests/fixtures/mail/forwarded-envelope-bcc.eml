@@ -1,0 +1,8 @@
+Received: from inbound by inbound-smtp.us-east-1.example.net with SMTP id q1 for me@example.com; Tue, 22 Sep 2026 10:00:01 +0000
+Received: from mx.old.example by fwd.old.example with ESMTP id z for <me@old.example>; Tue, 22 Sep 2026 10:00:00 +0000
+X-Forwarded-To: me@example.com
+From: a@example.org
+To: me@old.example
+Subject: forwarded by old host
+
+x

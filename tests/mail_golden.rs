@@ -1,6 +1,7 @@
 //! Golden tests: every tests/fixtures/mail/NAME.eml has committed expected outputs next to it,
-//! first captured from the original Python version of reses. The decoder has to match them byte for
-//! byte; see CONTRIBUTING.md for how an intended change updates them.
+//! and the decoder has to match them byte for byte. The goldens come from tests/mail_oracle.py
+//! (Python's standard email package), except the few pinned by hand in HAND-PINNED, and
+//! tests/mail_oracle.rs keeps them honest; regen-goldens.sh rewrites them after an intended change.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,7 +47,7 @@ fn check_all(prefer_html: bool, suffix: &str) {
     let all = fixtures();
     // A glob that silently matches nothing would make this test pass vacuously.
     assert!(
-        all.len() >= 19,
+        all.len() >= 60,
         "expected the full fixture set, found {}",
         all.len()
     );
@@ -111,7 +112,7 @@ fn saved_attachments_match_the_goldens() {
         checked += paths.len();
     }
     assert!(
-        checked >= 12,
-        "expected at least 12 saved attachments, saw {checked}"
+        checked >= 30,
+        "expected at least 30 saved attachments, saw {checked}"
     );
 }

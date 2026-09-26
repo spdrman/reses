@@ -1,0 +1,8 @@
+From: a@example.com
+To: b@example.com
+Subject: charset mismatch utf-8 declared latin1 bytes
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+café

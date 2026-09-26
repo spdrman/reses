@@ -1,0 +1,15 @@
+From: a@example.com
+To: b@example.com
+Subject: unquoted boundary
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary=----=_NextPart_000_0001_01D9
+
+------=_NextPart_000_0001_01D9
+Content-Type: text/plain
+
+plain here
+------=_NextPart_000_0001_01D9
+Content-Type: text/html
+
+<p>html here</p>
+------=_NextPart_000_0001_01D9--

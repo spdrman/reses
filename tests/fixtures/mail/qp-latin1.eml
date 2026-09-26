@@ -1,0 +1,10 @@
+From: a@example.com
+To: b@example.com
+Subject: qp
+MIME-Version: 1.0
+Content-Type: text/plain; charset=iso-8859-1
+Content-Transfer-Encoding: quoted-printable
+
+line one=20
+soft=
+break caf=E9 =3D ok=

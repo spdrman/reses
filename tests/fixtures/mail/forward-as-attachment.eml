@@ -1,0 +1,24 @@
+From: Alice <alice@example.com>
+To: bob@example.com
+Subject: Fwd as attachment
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER"
+
+--OUTER
+Content-Type: text/plain; charset="UTF-8"
+
+See attached.
+
+--OUTER
+Content-Type: message/rfc822; name="Original subject.eml"
+Content-Disposition: attachment; filename="Original subject.eml"
+
+From: Carol <carol@example.com>
+To: alice@example.com
+Subject: Original subject
+Date: Mon, 21 Sep 2026 09:00:00 +0000
+
+This is the original message body, which is not empty.
+
+--OUTER--

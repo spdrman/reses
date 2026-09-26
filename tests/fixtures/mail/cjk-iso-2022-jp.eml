@@ -1,0 +1,8 @@
+From: a@example.com
+To: b@example.com
+Subject: =?ISO-2022-JP?B?GyRCJDMkcyRLJEEkTxsoQg==?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=ISO-2022-JP
+Content-Transfer-Encoding: 7bit
+
+こんにちは

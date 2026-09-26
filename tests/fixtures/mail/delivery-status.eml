@@ -1,0 +1,31 @@
+From: Mail Delivery Subsystem <MAILER-DAEMON@example.com>
+To: alice@example.com
+Subject: Delivery Status Notification (Failure)
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status; boundary="R"
+
+--R
+Content-Type: text/plain; charset=us-ascii
+
+An error occurred while trying to deliver the mail to the following recipients:
+nobody@example.org
+
+--R
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; mx.example.com
+
+Final-Recipient: rfc822; nobody@example.org
+Action: failed
+Status: 5.1.1
+
+--R
+Content-Type: message/rfc822
+
+From: alice@example.com
+To: nobody@example.org
+Subject: hello
+
+original text
+--R--

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use reses::mail::{looks_like_email, save_attachments, summarize};
+use reses::mail::{looks_like_email, save_attachments, save_attachments_report, summarize};
 use time::macros::datetime;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -213,10 +213,11 @@ fn save_attachments_never_overwrites() {
             "logo é-1.png",
             "evil-1.bin",
             "notes-3.txt",
+            "attachment-7-1.zip",
             "a-very-long-filename-in-parts-1.dat",
         ]
     );
-    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 15);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 17);
 }
 
 #[test]
@@ -322,4 +323,98 @@ fn save_attachments_replaces_control_and_bidi_characters() {
             "marks___.txt"
         ]
     );
+}
+
+/// Real mail the panel found hidden (N31): odd but harmless header syntax, a byte order mark, a
+/// blank line in front. Hiding a message costs more than showing a stray file, so these pass.
+#[test]
+fn tolerant_header_syntax_still_looks_like_email() {
+    for name in [
+        "space-before-colon.eml",
+        "line-without-colon.eml",
+        "byte-order-mark.eml",
+        "leading-blank-line.eml",
+        "smtputf8-no-charset.eml",
+        "resent.eml",
+    ] {
+        assert!(looks_like_email(&fixture(name)), "{name}");
+    }
+}
+
+/// Files that look a little like headers but aren't mail (N31), and the SES setup notice with its
+/// subject either plain or encoded.
+#[test]
+fn header_like_files_and_the_setup_notice_do_not_look_like_email() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail/sniff/reject");
+    let mut seen = 0;
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let raw = fs::read(&path).unwrap();
+        assert!(!looks_like_email(&raw), "{} was taken for an email", path.display());
+        seen += 1;
+    }
+    assert_eq!(seen, 5, "expected five reject fixtures");
+}
+
+/// A prefix that stops before the headers end gets the benefit of the doubt: one real mail header
+/// and nothing that isn't a header is enough, since the anchor header may simply come later.
+#[test]
+fn a_short_prefix_needs_only_one_mail_header() {
+    assert!(looks_like_email(b"Date: Tue, 22 Sep 2026 10:00:00 +0000\r\nX-Mailer: x"));
+    assert!(looks_like_email(b"Subject: hi\r\nTo: b@exa"));
+    // Once the header block is complete, the full rule applies.
+    assert!(!looks_like_email(b"Date: Tue, 22 Sep 2026 10:00:00 +0000\r\nSubject: x\r\n\r\nbody"));
+    assert!(looks_like_email(b"From: a@example.com\r\nSubject: x\r\n\r\nbody"));
+    // A From that isn't an address doesn't anchor anything.
+    assert!(!looks_like_email(b"From: tool\r\nSubject: x\r\n\r\nbody"));
+}
+
+#[test]
+fn summarize_reads_zone_names() {
+    let s = summarize(&fixture("date-zone-name-cest.eml"));
+    assert_eq!(s.date, Some(datetime!(2026-09-22 10:00:00 +02:00)));
+    // A zone nobody can pin down is "-0000" in RFC 5322 terms; the inbox sorts it as UTC.
+    let s = summarize(&fixture("date-gmt-plus-hours.eml"));
+    assert_eq!(s.date, Some(datetime!(2026-09-22 10:00:00 +00:00)));
+    let s = summarize(&fixture("date-iso-8601.eml"));
+    assert_eq!(s.date, None);
+    assert_eq!(s.date_raw, "2026-09-22T10:00:00Z");
+}
+
+#[test]
+fn summarize_counts_attachments_the_panel_found_missing() {
+    for name in [
+        "forward-as-attachment.eml",
+        "apple-inline-pdf.eml",
+        "smime-signed.eml",
+        "mailman-wrap.eml",
+        "single-part-pdf.eml",
+        "attachment-without-name.eml",
+        "delivery-status.eml",
+        "inline-named-text.eml",
+        "calendar-only.eml",
+    ] {
+        assert!(summarize(&fixture(name)).has_attachments, "{name}");
+    }
+    assert!(!summarize(&fixture("plain-lf.eml")).has_attachments);
+}
+
+/// A message with more attachments than one save writes (N18): the rest are counted, not lost
+/// silently, and still nothing is overwritten.
+#[test]
+fn save_reports_what_the_cap_skipped() {
+    let names: Vec<String> = (0..1_200).map(|i| format!("f{}.txt", i % 3)).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let raw = one_attachment_each(&refs);
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("f0.txt"), b"mine").unwrap();
+    let report = save_attachments_report(&raw, dir.path()).unwrap();
+    assert_eq!(report.saved.len(), 1_000);
+    assert_eq!(report.skipped, 200);
+    assert_eq!(fs::read(dir.path().join("f0.txt")).unwrap(), b"mine");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1_001);
+    // The per-name suffixes carry on from where each name's run left off.
+    assert_eq!(report.saved[0].file_name().unwrap(), "f0-1.txt");
+    assert_eq!(report.saved[3].file_name().unwrap(), "f0-2.txt");
+    assert_eq!(report.saved[4].file_name().unwrap(), "f1-1.txt");
 }

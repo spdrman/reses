@@ -8,23 +8,21 @@ Subject: HTML only
 Message-ID: <html-only-1@example.com>
 Message:
 
-Receipt
-
-Thanks for your order
+# Thanks for your order
 
 Order #1234 — total €10,00 ☺ ¬it; &amp; &bogus; <tag>
 
-ItemQty
-Widget2
-
-one
-two
-
+──────┬───
+Item  │Qty
+──────┼───
+Widget│2  
+──────┴───
+* one
+* two
 Line
 break
 and
 more
-
 after many blank lines
 
 café in latin-1

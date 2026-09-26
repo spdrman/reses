@@ -1,0 +1,32 @@
+From: Alice <alice@example.com>
+To: bob@example.com
+Subject: Signed with attachment
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/signed; protocol="application/x-pkcs7-signature"; micalg=sha-256; boundary="SIG"
+
+--SIG
+Content-Type: multipart/mixed; boundary="MIX"
+
+--MIX
+Content-Type: text/plain; charset="us-ascii"
+
+Invoice attached.
+
+--MIX
+Content-Type: application/pdf; name="invoice.pdf"
+Content-Disposition: attachment; filename="invoice.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcfsj6IKZmFrZSBwZGYK
+
+--MIX--
+
+--SIG
+Content-Type: application/x-pkcs7-signature; name="smime.p7s"
+Content-Disposition: attachment; filename="smime.p7s"
+Content-Transfer-Encoding: base64
+
+MIAGCSqGSIb3DQEHAqCAMIACAQExDzANBglghkgBZQMEAgEFADCABgkqhkiG9w0BBwEAAKCA
+
+--SIG--

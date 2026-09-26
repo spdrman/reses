@@ -1,0 +1,25 @@
+From: "=?utf-8?q?J=C3=B6rg_M=C3=BCller?=" <j@example.com>
+To: b@example.com
+Subject: quoted ew
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: text/plain
+
+body
+--B
+Content-Type: application/pdf; name="=?UTF-8?B?UmVjaG51bmcgw6QucGRm?="
+Content-Disposition: attachment; filename="=?UTF-8?B?UmVjaG51bmcgw6QucGRm?="
+Content-Transfer-Encoding: base64
+
+JVBERg==
+--B
+Content-Type: application/pdf
+Content-Disposition: attachment;
+ filename*0*=UTF-8%27%27%E2%82%AC%20long%20;
+ filename*1*=name.pdf
+Content-Transfer-Encoding: base64
+
+JVBERg==
+--B--

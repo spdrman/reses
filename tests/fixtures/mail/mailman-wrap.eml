@@ -1,0 +1,33 @@
+From: Alice <alice@example.com>
+To: list@example.com
+Subject: [list] minutes
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============LIST=="
+
+--===============LIST==
+Content-Type: multipart/mixed; boundary="ORIG"
+
+--ORIG
+Content-Type: text/plain; charset="us-ascii"
+
+Minutes attached.
+
+--ORIG
+Content-Type: application/pdf; name="minutes.pdf"
+Content-Disposition: attachment; filename="minutes.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcfsj6IKZmFrZSBwZGYK
+
+--ORIG--
+
+--===============LIST==
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+_______________________________________________
+list mailing list
+list@example.com
+
+--===============LIST==--

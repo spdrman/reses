@@ -1,0 +1,8 @@
+From: a@example.com
+To: b@example.com
+Subject: =?gb18030?B?1tDOxNPKvP6y4srUIJUygjY=?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=gb18030
+Content-Transfer-Encoding: 8bit
+
+中文邮件测试 𠀀

@@ -5,7 +5,7 @@ Cc:
 Bcc: 
 Date: sometime last tuesday, probably
 Subject: Unparseable Date
-Message-ID: <bad-date-1@example.com>
+Message-ID: <bad-date-1@example.com> trailing junk
 Message:
 
 The Date header can't be parsed, so it prints as written.

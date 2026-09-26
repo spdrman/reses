@@ -1,0 +1,16 @@
+From: a@example.com
+To: b@example.com
+Subject: truncated
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: text/plain
+
+still here
+--B
+Content-Type: application/pdf; name=a.pdf
+Content-Disposition: attachment; filename=a.pdf
+Content-Transfer-Encoding: base64
+
+JVBERi0x

@@ -1,0 +1,40 @@
+# Goldens that tests/mail_oracle.py does not write. One per line: FILE SCOPE REASON.
+# SCOPE "body" means the oracle still checks everything down to "Message:" and only the body is
+# pinned; "all" means the oracle's version is known to be wrong somewhere above the body too.
+# tests/mail_oracle.rs fails if a pinned file agrees with the oracle, so a pin can't go stale.
+#
+# Bodies converted from HTML: Python has no HTML-to-text converter, so the body is html2text's own
+# rendering of the HTML part as Python decoded it (mail_oracle.py html-source), read over by hand.
+html-alternative-attach.out body the body comes from the HTML part
+html-edges.out body the body comes from the HTML part
+html-less-than-and-title.out body the body comes from the HTML part; "<" survives and the title and Outlook-only comment don't, as in a browser
+html-only.out body the body comes from the HTML part
+html-then-named-text.out body the body comes from the HTML part, since the named text part is an attachment
+html-unclosed.out body the body comes from the HTML part; an unclosed <style> runs to the end, as HTML5 parsing says
+#
+# Where Python's parser and the standards disagree, the golden follows the standard.
+base64-padded-chunks.out body RFC 2045 6.8 lets "=" end the data, but the panel's case is chunks padded one by one, and every decoder the panel checked keeps all of them: "hello world!"
+base64-padded-chunks.html.out body same as the plain render
+base64-stray-character.out all a lone base64 character after the last full group can't make a byte, so it's dropped and the other 33 bytes decode; Python gives up and saves the undecoded text
+base64-stray-character.html.out all same as the plain render
+base64-stray-character.saved all same, for the saved file
+cte-comment.out body RFC 2045 headers allow comments, so "base64 (encoded)" is base64; Python compares the whole string
+cte-comment.html.out body same as the plain render
+cte-uppercase-trailing-space.out body the mechanism is a token, so neither the case nor the trailing blank matters; Python keeps the blank and doesn't decode
+cte-uppercase-trailing-space.html.out body same as the plain render
+encoded-word-display-names.out all RFC 2047 6.2 drops the white space between adjacent encoded words; Python keeps it inside display names ("Müller,  Hans", "山田 太郎")
+encoded-word-display-names.html.out all same as the plain render
+encoded-word-split-character.out all RFC 2047 6.2 as above for "Jörg"; and RFC 2047 5 says an encoded word holds whole characters, so a character split across two words decodes to two replacement characters, where Python glues the bytes back together
+encoded-word-split-character.html.out all same as the plain render
+encoded-word-in-quotes.out all the second name's RFC 2231 section percent-encodes its own charset'language' quotes, which RFC 2231 doesn't allow; I keep the value literally ("UTF-8''€ long name.pdf") rather than drop the section as Python does
+encoded-word-in-quotes.html.out all same as the plain render
+encoded-word-in-quotes.saved all same, for the saved file name
+line-without-colon.out all one header line without a colon doesn't end the header block; Python starts the body there and loses To and Subject
+line-without-colon.html.out all same as the plain render
+qp-soft-break-trailing-space.out body RFC 2045 6.7 rule 3: white space a transport added after "=" is deleted, so "= " at a line end is still a soft break
+qp-soft-break-trailing-space.html.out body same as the plain render
+space-before-colon.out all RFC 5322 4.5 obsolete syntax allows blanks before the colon ("Subject : spaced"); Python ends the headers there
+space-before-colon.html.out all same as the plain render
+unquoted-boundary-with-equals.out all Outlook's unquoted boundary=----=_NextPart_... is taken whole, as every mail client does; Python cuts it at the "=" and finds no parts
+unquoted-boundary-with-equals.html.out all same as the plain render
+unquoted-boundary-with-equals.saved all same, for the saved files (none)

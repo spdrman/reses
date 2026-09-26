@@ -8,12 +8,12 @@ Received: by mail-yw1-f170.example.com with SMTP id 00721157ae682-6f2b8a0c2d1so1
 X-SES-Spam-Verdict: PASS
 X-SES-Virus-Verdict: PASS
 Received-SPF: pass (spfCheck: domain of example.com designates 192.0.2.170 as permitted sender) client-ip=192.0.2.170; envelope-from=sender@example.com; helo=mail-yw1-f170.example.com;
-Authentication-Results: amazonses.example.net;
+Authentication-Results: mx.example.net;
  spf=pass (spfCheck: domain of example.com designates 192.0.2.170 as permitted sender) client-ip=192.0.2.170; envelope-from=sender@example.com; helo=mail-yw1-f170.example.com;
  dkim=pass header.i=@example.com;
  dmarc=pass header.from=example.com;
 X-SES-RECEIPT: AEFBQUFBQUFBQUFFQ0ZQd2ZzZUNXRzZ5b3N0dUpQbnVUZUQ5cGVKUnh5Wk9hS3dNZmdXMEVSWG9oeDlWNUtZN1ZPWWRkVXl0UmVDbXN0cGhZ
-X-SES-DKIM-SIGNATURE: a=rsa-sha256; q=dns/txt; b=AAAAexampleexampleexample=; c=relaxed/simple; s=224i4yxa5dv7c2xz3womw6peuasteono; d=amazonses.com; t=1790380928; v=1; bh=AAAAexample=; h=From:To:Cc:Bcc:Subject:Date:Message-ID:MIME-Version:Content-Type:X-SES-RECEIPT;
+X-SES-DKIM-SIGNATURE: a=rsa-sha256; q=dns/txt; b=AAAAexampleexampleexample=; c=relaxed/simple; s=224i4yxa5dv7c2xz3womw6peuasteono; d=example.net; t=1790380928; v=1; bh=AAAAexample=; h=From:To:Cc:Bcc:Subject:Date:Message-ID:MIME-Version:Content-Type:X-SES-RECEIPT;
 DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
         d=example.com; s=20230601; t=1790380927; x=1790985727; darn=example.org;
         h=to:subject:message-id:date:from:mime-version:from:to:cc:subject

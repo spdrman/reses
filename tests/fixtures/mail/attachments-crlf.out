@@ -6,7 +6,7 @@ Bcc:
 Date: Sat, 10 Oct 2026 14:00:00 +0000
 Subject: Attachments of every shape
 Message-ID: <att-1@example.com>
-Attachments: report.pdf (82 bytes), notes.txt (19 bytes), résumé data.csv (8 bytes), logo é.png (70 bytes), ../../etc/evil.bin (5 bytes), notes.txt (17 bytes), a-very-long-filename-in-parts.dat (5 bytes)
+Attachments: report.pdf (82 bytes), notes.txt (19 bytes), résumé data.csv (8 bytes), logo é.png (70 bytes), ../../etc/evil.bin (5 bytes), notes.txt (17 bytes), attachment-7.zip (22 bytes), a-very-long-filename-in-parts.dat (5 bytes)
 Message:
 
 See the attached files.
