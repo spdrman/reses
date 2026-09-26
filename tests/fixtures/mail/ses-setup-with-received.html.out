@@ -1,0 +1,11 @@
+From: Amazon Web Services <no-reply-aws@example.com>
+Reply-To: 
+To: inbox@example.org
+Cc: 
+Bcc: 
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Subject: Amazon SES Setup Notification
+Message-ID: <setup-1@example.com>
+Message:
+
+Someone sent this with the notice's subject, so it came in through SES like any other message.

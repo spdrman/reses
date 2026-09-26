@@ -1,0 +1,11 @@
+Delivered-To: copied@example.org
+Delivered-To: hidden@example.org
+Received: from relay.example.com by mx.example.org with ESMTP id abc
+	for <Copied@Example.org>; Tue, 22 Sep 2026 10:00:00 +0000
+From: sender@example.com
+To: someone@example.org
+Cc: Copied Person <copied@example.org>
+Subject: envelope recipient already in Cc
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+
+The Cc recipient reached the mailbox too, but only hidden@example.org is a blind copy.

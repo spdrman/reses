@@ -1,0 +1,11 @@
+From: a@example.com
+Reply-To: 
+To: b@example.com
+Cc: 
+Bcc: 
+Date: Wed, 22 Sep 2049 10:00:00 +0000
+Subject: year 49
+Message-ID: 
+Message:
+
+RFC 5322 4.3 reads 49 as 2049.

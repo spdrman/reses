@@ -1,0 +1,20 @@
+From: a@example.com
+To: b@example.com
+Subject: 2231 sections out of order
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: text/plain
+
+body
+--B
+Content-Type: application/pdf
+Content-Disposition: attachment;
+ filename*2="three.pdf";
+ filename*0*=UTF-8''%E2%82%AC%20one%20;
+ filename*1="two ";
+Content-Transfer-Encoding: base64
+
+JVBERg==
+--B--
