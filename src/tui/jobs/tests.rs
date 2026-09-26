@@ -477,3 +477,95 @@ fn finish_on_inline_jobs_has_nothing_to_wait_for() {
     jobs.submit(Arc::new(store), delete("k"));
     assert!(jobs.finish(Duration::ZERO).is_empty());
 }
+
+/// A store that records the byte ranges it was asked for, so a test can see how far a header
+/// peek read, not only what it decided.
+struct Ranges {
+    inner: MemoryStore,
+    asked: Mutex<Vec<(u64, u64)>>,
+}
+
+impl Ranges {
+    /// One object under `k`, and no requests yet.
+    fn holding(raw: &[u8]) -> Self {
+        let inner = MemoryStore::new();
+        inner.put(B, "k", raw);
+        Self {
+            inner,
+            asked: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Run a header peek of `k` and return the summary's subject with the ranges it read.
+    fn peek_head(&self) -> (Option<String>, Vec<(u64, u64)>) {
+        let out = execute(
+            self,
+            &Job::PeekHead {
+                bucket: B.into(),
+                key: "k".into(),
+            },
+        );
+        let subject = match out {
+            Ok(Outcome::Head(h)) => h.summary.map(|s| s.subject),
+            other => panic!("{other:?}"),
+        };
+        (subject, self.asked.lock().unwrap().clone())
+    }
+}
+
+impl Store for Ranges {
+    fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
+        self.inner.list_buckets()
+    }
+    fn list(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        delimiter: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<Listing, S3Error> {
+        self.inner.list(bucket, prefix, delimiter, token)
+    }
+    fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
+        self.asked.lock().unwrap().push((start, end));
+        self.inner.get_range(bucket, key, start, end)
+    }
+    fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
+        self.inner.get(bucket, key)
+    }
+    fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
+        self.inner.delete(bucket, key)
+    }
+}
+
+#[test]
+fn a_crlf_header_that_ends_in_the_first_peek_stops_there() {
+    // SES stores mail with CRLF line endings. When the blank line ending the header block is in
+    // the first peek, the peek is done, however big the body behind it is; reading on would
+    // fetch up to 32 times as much for every row of the inbox.
+    let mut raw = email("Short header, long body");
+    raw.extend(std::iter::repeat_n(b'x', 3 * FIRST_PEEK as usize));
+    let store = Ranges::holding(&raw);
+    let (subject, asked) = store.peek_head();
+    assert_eq!(subject.as_deref(), Some("Short header, long body"));
+    assert_eq!(
+        asked,
+        [(0, FIRST_PEEK - 1)],
+        "the peek read past the header"
+    );
+}
+
+#[test]
+fn an_object_smaller_than_the_peek_is_read_once() {
+    // A short object with no blank line (a header block on its own) came back whole in the
+    // first peek, so asking again for more of it can't find anything new.
+    let raw = b"From: A <a@example.com>\r\nTo: b@example.com\r\nSubject: Header only\r\n";
+    let store = Ranges::holding(raw);
+    let (subject, asked) = store.peek_head();
+    assert_eq!(subject.as_deref(), Some("Header only"));
+    assert_eq!(
+        asked,
+        [(0, FIRST_PEEK - 1)],
+        "the whole object was read more than once"
+    );
+}

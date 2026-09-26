@@ -3,8 +3,9 @@ name: Release
 # Pushing main to `release` publishes a GitHub release: three binaries, each built natively on
 # its own platform and checked against the mail goldens there before anything goes out. The tag
 # is `v<version>` from Cargo.toml. scripts/release-version.sh refuses a version whose tag already
-# exists and a commit that isn't on main. tests/release_workflow.rs pins this contract and
-# tests/release_version.rs tests the script.
+# exists, a commit that isn't on main, and a commit whose ci.yml runs didn't all pass, so
+# nothing CI hasn't passed can ship. The MinIO suite runs here too. tests/release_workflow.rs
+# pins this contract and tests/release_version.rs tests the script.
 #
 # Every action is pinned to a full commit SHA, because these jobs build what gets shipped, and a
 # moved tag could swap the binary before it's uploaded.
@@ -12,20 +13,22 @@ name: Release
 on:
   push:
     branches: [release]
-  # A PR that changes anything a release run executes gets a dry run: every build and check,
-  # no publish.
+  # A PR that changes anything a release run executes or builds from gets a dry run: every
+  # build and check, no publish. That includes the source, the lockfile and the tests, since
+  # the release builds the one against the other and runs all of the third.
   pull_request:
     paths:
       - .github/workflows/release.yml
-      - tests/release_workflow.rs
-      - tests/release_version.rs
+      - .python-version
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - tests/**
+      - install.sh
       - scripts/release-version.sh
       - scripts/check-goldens.sh
+      - scripts/check-static.sh
       - scripts/place-binary.sh
-      - tests/macos-replace-binary.sh
-      - install.sh
-      - tests/install_script.rs
-      - Cargo.toml
 
 permissions:
   contents: read
@@ -42,29 +45,71 @@ jobs:
   version:
     name: Version
     runs-on: ubuntu-latest
+    # The script reads ci.yml's runs on the commit through the API, which needs `actions:
+    # read`. The run's own token does that; it's only ever in the environment.
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # The "is this commit on main" check needs history. The repo is public, so reading
           # tags and main needs no token.
           fetch-depth: 0
           persist-credentials: false
       - id: v
-        name: Read the version, refuse an existing tag or a commit not on main
+        name: Read the version, refuse an existing tag, a commit not on main or one CI didn't pass
         run: scripts/release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The configparser oracle runs on the Python .python-version pins, as it does in CI.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version-file: .python-version
       - run: cargo test --locked --no-fail-fast
+
+  # The S3 client is what the inbox stands on, and only this suite drives it against a real
+  # server, so it runs here as it does in ci.yml (tests/release_workflow.rs compares the two).
+  integration:
+    name: Integration (MinIO)
+    runs-on: ubuntu-latest
+    env:
+      RESES_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      RESES_TEST_S3_ACCESS_KEY: resesadmin
+      RESES_TEST_S3_SECRET_KEY: resesadmin-secret
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER="$RESES_TEST_S3_ACCESS_KEY" -e MINIO_ROOT_PASSWORD="$RESES_TEST_S3_SECRET_KEY" \
+            cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1 \
+            server /tmp/minio-data
+          for i in $(seq 1 60); do
+            curl -fs -o /dev/null "$RESES_TEST_S3_ENDPOINT/minio/health/live" && exit 0
+            sleep 1
+          done
+          docker logs minio
+          echo "::error::MinIO never came up"
+          exit 1
+      - run: cargo test --locked --no-fail-fast -- --ignored --test-threads=1
 
   build:
     name: Build ${{ matrix.target }}
@@ -81,13 +126,13 @@ jobs:
       TARGET: ${{ matrix.target }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.target }}
       # The Linux binaries are static musl builds, so they run on any distro. ring compiles some
@@ -103,27 +148,18 @@ jobs:
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: cargo build --release --locked --target "$TARGET"
-      # Static means no program interpreter and no NEEDED libraries. x86_64 musl comes out
-      # static-pie, which file(1) words differently from aarch64's "statically linked", so the
-      # ELF header is the real check, and the file(1) wording is a positive control on top.
+      # The same staticness check ci.yml's musl job and the local gate run.
       - name: Check the Linux binary is static
         if: contains(matrix.target, 'musl')
-        run: |
-          bin="target/$TARGET/release/reses"
-          command -v readelf >/dev/null || { echo "::error::readelf is missing, so staticness can't be checked"; exit 1; }
-          file "$bin"
-          file "$bin" | grep -Eq 'statically linked|static-pie linked' || { echo "::error::file(1) doesn't call $bin static"; exit 1; }
-          if readelf -lW "$bin" | grep -q 'program interpreter'; then
-            echo "::error::$bin has a program interpreter, so it is dynamically linked"
-            exit 1
-          fi
-          if readelf -dW "$bin" | grep -q NEEDED; then
-            echo "::error::$bin needs shared libraries"
-            exit 1
-          fi
+        run: scripts/check-static.sh "target/$TARGET/release/reses"
       - run: scripts/check-goldens.sh "target/$TARGET/release/reses"
+      # The #15 test itself must pass. Its positive control only warns here: a runner image
+      # whose kernel stops reproducing #15 says nothing about this binary, and ci.yml still
+      # fails on it, so it gets noticed without stopping a release.
       - name: The #15 replace test
         if: runner.os == 'macOS'
+        env:
+          RESES_REPLACE_CONTROL: warn
         run: tests/macos-replace-binary.sh "target/$TARGET/release/reses"
       - name: Package
         run: |
@@ -148,7 +184,7 @@ jobs:
             "Package: reses" \
             "Version: $debver" \
             "Architecture: $arch" \
-            "Maintainer: Roman Goldmann <roman@devshell.org>" \
+            "Maintainer: spdrman <https://github.com/spdrman>" \
             "Section: mail" \
             "Priority: optional" \
             "Homepage: https://github.com/spdrman/reses" \
@@ -174,7 +210,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/pkg:ro" debian:bullseye sh -c \
             "dpkg -i /pkg/reses_${VERSION}_$(dpkg --print-architecture).deb && reses --version"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: reses-${{ matrix.target }}
           path: |
@@ -184,7 +220,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [version, test, build]
+    needs: [version, test, integration, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
     permissions:
@@ -194,7 +230,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: reses-*
           path: dist

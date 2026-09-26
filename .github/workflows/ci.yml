@@ -2,17 +2,27 @@ name: CI
 
 # The same shape as libviprs's CI, cut down to a single binary crate with no features and no
 # unsafe code. scripts/ci-docker.sh is the local mirror of this file, and tests/ci_parity.rs
-# fails if the two stop running the same cargo commands.
+# fails if the two stop running the same cargo commands or building with the same env. Every
+# action is pinned to a commit, and tests/release_workflow.rs checks each against its table.
+#
+# No job may be skipped or allowed to fail, apart from the one fork gate every job carries (see
+# `on:`), because a skipped or soft-failing job still shows a green row. tests/ci_parity.rs
+# enforces that too. release.yml reads this workflow's push runs on a commit before it releases
+# it, so a red row here stops a release.
 
 on:
   # Branch pushes carry CI. A `pull_request` run builds the PR's merge ref, and GitHub drops
   # the event entirely while the PR conflicts with main, so pushes are what can't go missing.
+  # release is left out: it only ever holds a commit main already ran, and release.yml runs
+  # its own tests and then checks this workflow's results on that commit.
   push:
-    branches: ['**']
-  # No `synchronize`: every push to an in-repo branch is already covered above, and adding it
-  # would run everything twice. These are the transitions no push comes with.
+    branches: ['**', '!release']
+  # `push` only fires for branches in this repo, so a fork's follow-up commits only reach CI
+  # through `synchronize`. For a PR from this repo that would run every job twice on one
+  # commit, so each job's `if:` skips `synchronize` unless the PR's head is a fork. The other
+  # types are the transitions no push comes with.
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
   workflow_dispatch:
 
 # Only push runs cancel each other, because a newer push always reruns the same job names.
@@ -22,6 +32,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'push' && (github.head_ref || github.ref_name) != 'main' }}
 
+# RUSTFLAGS changes what gets compiled, so scripts/ci-docker.sh passes the same value.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -29,13 +40,16 @@ env:
 jobs:
   check:
     name: Check & Lint
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --locked -- -D warnings
 
@@ -44,13 +58,19 @@ jobs:
     # exact name, so a bump that renames the job strands every open PR on a context no run
     # produces. tests/ci_parity.rs refuses a digit here.
     name: MSRV
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          toolchain: "1.98"
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      # rust-version = "1.98" promises 1.98.0, and "1.98" alone would install the newest 1.98
+      # patch release, so the full version is named. tests/ci_parity.rs checks it against
+      # Cargo.toml, and the pin table in tests/support/workflows.rs checks the SHA.
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: "1.98.0"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Cargo.toml's rust-version, this toolchain, the CI image and the README all state the
       # MSRV. tests/ci_parity.rs compares them; this line just makes the job say what it built.
       - run: rustc --version && grep -m1 '^rust-version' Cargo.toml
@@ -58,34 +78,110 @@ jobs:
 
   docs:
     name: Docs (deny broken, private and redundant intra-doc links)
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # The flags are inline rather than in `env:` so tests/ci_parity.rs can see them.
       - run: RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --no-deps --locked
 
   test:
     name: Test
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # tests/profile_oracle.rs compares reses with configparser, which can change between
+      # Python releases, so the oracle runs on the release .python-version names.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version-file: .python-version
       - run: cargo test --locked --no-fail-fast
+
+  macos-test:
+    # The goldens alone don't reach the file modes, paths and terminal code a Mac runs, so the
+    # whole suite runs here too.
+    name: macOS tests
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version-file: .python-version
+      - run: cargo test --locked --no-fail-fast
+
+  deny:
+    # Advisories, licences, duplicate or banned crates, and where crates come from, against the
+    # committed deny.toml. The version matches the one the CI image builds.
+    name: Deny (advisories, licenses, bans, sources)
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check advisories bans licenses sources
+
+  musl:
+    # The release's Linux binaries are static musl builds, made exactly like this. Without it
+    # the first musl build of a changed Cargo.lock would be the release itself.
+    name: Linux static build (${{ matrix.target }})
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    env:
+      MUSL_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.target }}
+      # ring compiles some C for the target, which needs musl's compiler wrapper.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - run: TARGET_CC=musl-gcc cargo build --release --locked --target "$MUSL_TARGET"
+      - run: scripts/check-static.sh "target/$MUSL_TARGET/release/reses"
+      - run: scripts/check-goldens.sh "target/$MUSL_TARGET/release/reses"
 
   integration:
     name: Integration (MinIO)
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     env:
       RESES_TEST_S3_ENDPOINT: http://127.0.0.1:9000
       RESES_TEST_S3_ACCESS_KEY: resesadmin
       RESES_TEST_S3_SECRET_KEY: resesadmin-secret
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Same pinned image as scripts/ci-docker.sh --integration. A service container can't be
       # given a command, and this one needs `server <dir>`, so it's started by hand.
       - name: Start MinIO
@@ -105,16 +201,20 @@ jobs:
 
   macos:
     name: macOS build + goldens
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.head.repo.fork
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # The local mirror cross-builds this with zigbuild; here it's a native build, which is
       # the check that the zigbuild binary isn't hiding a real macOS problem.
       - run: cargo build --release --locked
       - run: scripts/check-goldens.sh target/release/reses
       # #15: a rebuilt binary placed over one that already ran, while it is held open, must still
       # run. Identical bytes are killed too, so the release build on both sides is a full test,
-      # and the test fails here if the runner ever stops reproducing the kill.
+      # and the test fails here if the runner ever stops reproducing the kill. (release.yml only
+      # warns on that, since a runner kernel change says nothing about the binary it releases.)
       - run: tests/macos-replace-binary.sh target/release/reses

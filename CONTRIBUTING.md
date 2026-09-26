@@ -63,7 +63,8 @@ One side effect is expected: a build killed partway through can leave a `dist/*.
 A push to the `release` branch publishes a release (`.github/workflows/release.yml`). It builds Linux x86_64 and arm64 (static musl) and macOS arm64, checks each binary against the mail goldens on its own platform, and attaches the three archives and a `SHA256SUMS` file to a release tagged `v<version>`.
 
 1. On main, bump `version` in `Cargo.toml` and run `scripts/ci-docker.sh --exec 'cargo update -p reses'` so `Cargo.lock` agrees, then merge that the usual way.
-2. `git push origin main:release`. That's a fast-forward, so `release` never carries commits of its own. The very first release is just the first push, which creates the branch.
-3. Watch the Release run. A red **Version** job means the version wasn't bumped (its tag already exists), or the commit isn't on main. Fix that on main and push again.
+2. Wait for CI on that main commit to finish green. The release checks it: it refuses a commit unless every `ci.yml` push run on it passed, every job included, and it waits up to an hour for runs still going.
+3. `git push origin main:release`. That's a fast-forward, so `release` never carries commits of its own. The very first release is just the first push, which creates the branch.
+4. Watch the Release run. A red **Version** job means the version wasn't bumped (its tag already exists), the commit isn't on main, or CI didn't pass on it. Fix that on main and push again.
 
-The `release` branch is protected by a ruleset: it can't be deleted or force-pushed. The workflow also refuses any commit that isn't on main. If a publish fails partway through, the run removes the tag and draft it created, so pushing again after the fix starts clean.
+The `release` branch is protected by a ruleset: it can't be deleted or force-pushed. The workflow also refuses any commit that isn't on main or that CI didn't pass, and runs the tests and the MinIO suite itself before building anything it publishes. If a publish fails partway through, the run removes the tag and draft it created, so pushing again after the fix starts clean.

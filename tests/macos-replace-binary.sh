@@ -51,7 +51,8 @@ echo "a binary placed over one that already ran, while it was held open, still r
 # Positive control, so a macOS that stops killing in-place overwrites is noticed rather than
 # silently making this test unable to fail. Locally it is a notice. In CI it fails, because a
 # step that cannot fail is worth knowing about there, and the message says the kernel changed,
-# not reses.
+# not reses. RESES_REPLACE_CONTROL=warn turns that failure into a warning: release.yml sets it,
+# because a runner image with a new kernel says nothing about the binary being released.
 cp "$first" "$dir/control"
 run "$dir/control" >/dev/null
 exec 8<"$dir/control"
@@ -59,7 +60,9 @@ cp "$second" "$dir/control"
 rc="$(run "$dir/control")"
 if [ "$rc" -eq 0 ]; then
   msg="a plain in-place cp under a holder now runs on this macOS: the kernel behaviour behind #15 has changed, so this test can no longer catch it (reses itself is fine)"
-  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  if [ -n "${GITHUB_ACTIONS:-}" ] && [ "${RESES_REPLACE_CONTROL:-}" = warn ]; then
+    echo "::warning::$msg" >&2
+  elif [ -n "${GITHUB_ACTIONS:-}" ]; then
     echo "::error::$msg" >&2
     exit 1
   fi

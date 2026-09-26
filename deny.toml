@@ -1,0 +1,54 @@
+# cargo-deny's policy for reses: which advisories stop a build, which licences a dependency may
+# carry, which duplicate or unknown crates are refused, and where crates may come from. The
+# local gate (scripts/ci-docker.sh) and ci.yml's deny job both run
+#
+#   cargo deny check advisories bans licenses sources
+#
+# against this file. Every advisory exception names why it can't be fixed yet and links the
+# advisory, and tests/ci_parity.rs pins the set of exceptions, so adding one is a visible change.
+
+[graph]
+# reses has no features of its own, so the default feature set is the only one that ships.
+all-features = false
+
+[advisories]
+# Any advisory, including unmaintained and unsound crates, fails the check unless it's listed
+# below. yanked crates fail too.
+#
+# lru 0.12.5 (through ratatui 0.29) needs no exception: the current advisory database no longer
+# matches it against RUSTSEC-2026-0002 or RUSTSEC-2026-0253, and cargo-deny warns about an
+# exception that matches nothing, so listing them would only hide a real match later. An
+# exception that stops matching fails the check, so a stale one can't linger either.
+yanked = "deny"
+unused-ignored-advisory = "deny"
+ignore = [
+  # paste 1.0.15, only through ratatui 0.29's Stylize macros.
+  # https://rustsec.org/advisories/RUSTSEC-2024-0436
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable: it's a proc macro that ratatui 0.29 runs at compile time to write its Stylize methods, and nothing of it ends up in the binary. I review it again with the move to ratatui 0.30. https://rustsec.org/advisories/RUSTSEC-2024-0436" },
+]
+
+[licenses]
+# Permissive licences only, so the MIT binary can be shipped without extra conditions.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of one crate only cost build time (ratatui 0.29 pulls in some), so they warn.
+# A wildcard version requirement could resolve to anything, so it's refused.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# crates.io only: no other registry and no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"

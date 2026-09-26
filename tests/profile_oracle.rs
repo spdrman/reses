@@ -649,3 +649,22 @@ fn adding_a_key_after_a_continued_value_does_not_split_it() {
         ]
     );
 }
+
+#[test]
+fn the_oracle_runs_on_the_pinned_python() {
+    // configparser is the reference here, and its behaviour can change between Python
+    // releases, so the oracle only counts on the minor release .python-version names. CI
+    // installs that one, and the CI image's Debian ships it.
+    let pinned = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".python-version"))
+        .expect(".python-version names the oracle's Python");
+    let out = Command::new("python3")
+        .args(["-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
+        .output()
+        .expect("python3 must be on PATH for the configparser oracle");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        pinned.trim(),
+        "the oracle is running on a different Python than .python-version pins"
+    );
+}

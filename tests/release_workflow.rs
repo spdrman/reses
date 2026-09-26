@@ -4,8 +4,14 @@
 //! `release` can publish. Each check is written against a specific way the workflow could
 //! quietly break, and was mutated to make sure it goes red.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+
+#[path = "support/workflows.rs"]
+mod workflows;
+
+use workflows::{PINS, load, scalar, scalar_map, uses_lines};
 
 fn read(rel: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
@@ -75,22 +81,32 @@ fn it_runs_on_a_push_to_release_and_on_prs_that_touch_what_it_depends_on() {
         "push must be limited to release: {on:#?}"
     );
     assert!(has_line(&on, "pull_request:"), "no dry run on PRs: {on:#?}");
-    // Everything the release run executes, so a PR that breaks any of it gets a dry run.
+    // Everything the release run executes or builds from, so a PR that breaks any of it gets
+    // a dry run. The release builds src/ against Cargo.lock and runs the whole test suite, so
+    // those count as much as the scripts do.
+    let wf = load(".github/workflows/release.yml");
+    let paths: BTreeSet<String> = wf.on()["pull_request"]["paths"]
+        .as_vec()
+        .expect("the dry run lists its paths")
+        .iter()
+        .map(scalar)
+        .collect();
     for path in [
         ".github/workflows/release.yml",
-        "tests/release_workflow.rs",
-        "tests/release_version.rs",
+        ".python-version",
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/**",
+        "tests/**",
+        "install.sh",
         "scripts/release-version.sh",
         "scripts/check-goldens.sh",
+        "scripts/check-static.sh",
         "scripts/place-binary.sh",
-        "tests/macos-replace-binary.sh",
-        "install.sh",
-        "tests/install_script.rs",
-        "Cargo.toml",
     ] {
         assert!(
-            has_line(&on, &format!("- {path}")),
-            "the dry run doesn't cover {path}: {on:#?}"
+            paths.contains(path),
+            "the dry run doesn't cover {path}: {paths:#?}"
         );
     }
 }
@@ -140,7 +156,7 @@ fn every_check_is_real_and_runs_where_it_should() {
             if has(&step, "check-goldens")
                 || has(&step, "macos-replace")
                 || has(&step, "cargo test")
-                || has(&step, "readelf")
+                || has(&step, "check-static")
             {
                 assert!(
                     !has(&step, "|| true"),
@@ -167,18 +183,22 @@ fn every_check_is_real_and_runs_where_it_should() {
         "{replace:#?}"
     );
 
-    let stat = step_with(&build, "readelf");
+    // The staticness check is scripts/check-static.sh, which ci.yml's musl job and the local
+    // gate run too, so all three check the same way.
+    let stat = step_with(&build, "scripts/check-static.sh");
     assert!(
         has_line(&stat, "if: contains(matrix.target, 'musl')"),
         "{stat:#?}"
     );
+    let script = read("scripts/check-static.sh");
     assert!(
-        has(&stat, "command -v readelf"),
-        "a missing readelf must fail, not pass: {stat:#?}"
+        script.contains("for tool in readelf file; do")
+            && script.contains("command -v \"$tool\" >/dev/null || {"),
+        "a missing readelf or file must fail, not pass"
     );
     assert!(
-        has(&stat, "static-pie linked"),
-        "no positive check of what file(1) says: {stat:#?}"
+        script.contains("static-pie linked"),
+        "no positive check of what file(1) says"
     );
 }
 
@@ -187,7 +207,7 @@ fn publish_waits_for_everything_and_only_a_push_to_release_publishes() {
     let text = workflow();
     let publish = job(&text, "publish");
     assert!(
-        has_line(&publish, "needs: [version, test, build]"),
+        has_line(&publish, "needs: [version, test, integration, build]"),
         "{publish:#?}"
     );
     // The exact guard. A substring check let `||` and `always() ||` through.
@@ -260,62 +280,218 @@ fn the_version_check_is_the_tested_script_and_sees_main() {
 }
 
 #[test]
-fn every_action_is_pinned_to_a_commit_and_holds_no_token_on_disk() {
-    let text = workflow();
-    for line in text
-        .lines()
-        .filter(|l| l.trim_start().starts_with("- uses:") || l.trim_start().starts_with("uses:"))
-    {
-        let spec = line.split("uses:").nth(1).unwrap().trim();
-        let (_, rest) = spec
-            .split_once('@')
-            .unwrap_or_else(|| panic!("unpinned action: {line}"));
-        let sha: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
-        assert!(
-            sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
-            "actions must be pinned to a full commit SHA: {line}"
+fn every_action_in_both_workflows_is_a_row_of_the_pin_table() {
+    // A comment is only a claim about the SHA before it, so each (action, SHA, version) has
+    // to be a row of the table in tests/support/workflows.rs, which I checked against GitHub.
+    let mut used = BTreeSet::new();
+    for rel in [".github/workflows/release.yml", ".github/workflows/ci.yml"] {
+        let wf = load(rel);
+        let lines = uses_lines(&wf.text);
+        // The raw lines and the parser have to agree on how many actions there are, so a
+        // `uses:` the line reader misses can't slip past the table.
+        assert_eq!(
+            lines.len(),
+            wf.all_uses().len(),
+            "{rel}: the line reader and the YAML parser count different actions"
         );
-        assert!(rest.contains('#'), "say which version the SHA is: {line}");
+        assert!(lines.len() >= 5, "{rel}: found too few actions");
+        for (action, sha, version) in &lines {
+            let row = PINS
+                .iter()
+                .find(|(a, s, _)| a == action && s == sha)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{rel}: {action}@{sha} isn't in the pin table (a tag, or an unknown SHA)"
+                    )
+                });
+            assert_eq!(
+                version, row.2,
+                "{rel}: {action}@{sha} is {}, but the comment says {version:?}",
+                row.2
+            );
+            used.insert((row.0, row.1));
+        }
+
+        // Every checkout drops its token, so no later step can push with it.
+        let checkouts = lines
+            .iter()
+            .filter(|(a, _, _)| a == "actions/checkout")
+            .count();
+        assert!(checkouts >= 3, "{rel}: expected a checkout per job");
+        assert_eq!(
+            wf.text.matches("persist-credentials: false").count(),
+            checkouts,
+            "{rel}: every checkout must drop its token"
+        );
     }
-    let checkouts = text.matches("actions/checkout@").count();
-    assert!(
-        checkouts >= 3,
-        "expected a checkout per job that builds or tests"
-    );
-    assert_eq!(
-        text.matches("persist-credentials: false").count(),
-        checkouts,
-        "every checkout must drop its token"
-    );
+    // A row nothing uses is a pin nobody is checking any more.
+    for (a, s, v) in PINS {
+        assert!(
+            used.contains(&(*a, *s)),
+            "the pin table's {a} {v} row is unused"
+        );
+    }
 }
 
 #[test]
 fn releases_and_ci_build_with_the_pinned_rust() {
+    // Every Rust toolchain is the CI image's, except the MSRV job's, which is the declared
+    // rust-version's first release.
     let dockerfile = read("docker/ci.Dockerfile");
-    let pinned = dockerfile
+    let image = dockerfile
         .lines()
         .find_map(|l| l.strip_prefix("FROM rust:"))
         .and_then(|l| l.split('-').next())
         .expect("the CI image is FROM rust:<version>");
-    let release = workflow();
-    let toolchains: Vec<&str> = release
+    let declared = read("Cargo.toml")
         .lines()
-        .filter(|l| l.contains("dtolnay/rust-toolchain@"))
-        .collect();
-    assert!(!toolchains.is_empty());
-    for l in &toolchains {
-        assert!(
-            l.contains(&format!("# {pinned}")),
-            "release builds must use Rust {pinned}: {l}"
-        );
+        .find_map(|l| l.strip_prefix("rust-version = \""))
+        .and_then(|l| l.strip_suffix('"'))
+        .map(|v| format!("{v}.0"))
+        .expect("Cargo.toml declares rust-version");
+    for rel in [".github/workflows/release.yml", ".github/workflows/ci.yml"] {
+        let wf = load(rel);
+        let mut seen = 0;
+        for (id, job) in wf.jobs() {
+            for step in workflows::steps(job) {
+                let Some(uses) = step["uses"].as_str() else {
+                    continue;
+                };
+                let Some(sha) = uses.strip_prefix("dtolnay/rust-toolchain@") else {
+                    continue;
+                };
+                let version = PINS
+                    .iter()
+                    .find(|(a, s, _)| *a == "dtolnay/rust-toolchain" && *s == sha)
+                    .map(|r| r.2)
+                    .unwrap_or_else(|| panic!("{rel} `{id}`: unknown toolchain pin {sha}"));
+                let want = if id == "msrv" {
+                    declared.as_str()
+                } else {
+                    image
+                };
+                assert_eq!(version, want, "{rel} `{id}` builds with Rust {version}");
+                seen += 1;
+            }
+        }
+        assert!(seen >= 2, "{rel}: found only {seen} toolchain steps");
     }
-    let ci = read(".github/workflows/ci.yml");
-    for l in ci.lines().filter(|l| l.contains("dtolnay/rust-toolchain@")) {
+}
+
+#[test]
+fn only_publish_can_be_skipped_and_nothing_may_fail_quietly() {
+    // A skipped or soft-failing job reads as green, so the only job-level `if:` is publish's,
+    // and nothing anywhere carries continue-on-error.
+    let wf = load(".github/workflows/release.yml");
+    for (id, job) in wf.jobs() {
+        if id != "publish" {
+            assert!(job["if"].is_badvalue(), "job `{id}` has an if:");
+        }
         assert!(
-            !l.contains("@stable"),
-            "CI must build with the same pinned Rust as releases: {l}"
+            job["continue-on-error"].is_badvalue(),
+            "job `{id}` has continue-on-error"
         );
+        for step in workflows::steps(job) {
+            assert!(
+                step["continue-on-error"].is_badvalue(),
+                "a step in `{id}` has continue-on-error: {step:?}"
+            );
+        }
     }
+}
+
+#[test]
+fn the_version_job_can_read_ci_results_with_the_run_token() {
+    // scripts/release-version.sh asks GitHub whether every ci.yml run on the commit passed.
+    // The run's own token reads that with `actions: read` added to what the workflow grants,
+    // and it only ever lives in the environment.
+    let wf = load(".github/workflows/release.yml");
+    let version = wf.job("version");
+    let perms = scalar_map(&version["permissions"]);
+    assert_eq!(
+        perms,
+        [("actions", "read"), ("contents", "read")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .into(),
+        "the version job's permissions"
+    );
+    let env = scalar_map(&version["env"]);
+    assert_eq!(
+        env.get("GH_TOKEN").map(String::as_str),
+        Some("${{ github.token }}")
+    );
+    assert_eq!(
+        env.get("GH_REPO").map(String::as_str),
+        Some("${{ github.repository }}")
+    );
+}
+
+#[test]
+fn the_release_runs_the_minio_suite_the_way_ci_does() {
+    // The S3 client is what the inbox stands on, and only the MinIO suite drives it against a
+    // real server, so a release doesn't publish without it.
+    let release = load(".github/workflows/release.yml");
+    let ci = load(".github/workflows/ci.yml");
+    let (r, c) = (release.job("integration"), ci.job("integration"));
+    assert_eq!(
+        scalar_map(&r["env"]),
+        scalar_map(&c["env"]),
+        "the MinIO settings differ"
+    );
+    let (rr, cr) = (workflows::runs(r).join("\n"), workflows::runs(c).join("\n"));
+    assert!(
+        rr.contains("cargo test --locked --no-fail-fast -- --ignored --test-threads=1"),
+        "the release doesn't run the MinIO suite"
+    );
+    let digest = |s: &str| {
+        s.split_whitespace()
+            .find(|w| w.starts_with("cgr.dev/chainguard/minio@sha256:"))
+            .map(str::to_string)
+    };
+    assert!(
+        digest(&rr).is_some(),
+        "the release doesn't start a pinned MinIO"
+    );
+    assert_eq!(
+        digest(&rr),
+        digest(&cr),
+        "the release and CI start different MinIO images"
+    );
+}
+
+#[test]
+fn the_deb_names_its_maintainer_by_github_account() {
+    let text = workflow();
+    let package = step_with(&job(&text, "build"), "dpkg-deb");
+    assert!(
+        has(
+            &package,
+            "\"Maintainer: spdrman <https://github.com/spdrman>\""
+        ),
+        "{package:#?}"
+    );
+    assert_eq!(
+        text.matches("Maintainer:").count(),
+        1,
+        "exactly one Maintainer field"
+    );
+}
+
+#[test]
+fn the_15_control_only_warns_in_the_release() {
+    // A macOS runner image whose kernel stops reproducing #15 says nothing about reses, so it
+    // shouldn't stop a release. ci.yml still fails on it (tests/ci_parity.rs).
+    let wf = load(".github/workflows/release.yml");
+    let step = workflows::step_with(wf.job("build"), "tests/macos-replace-binary.sh");
+    assert_eq!(
+        step["env"]["RESES_REPLACE_CONTROL"].as_str(),
+        Some("warn"),
+        "{step:?}"
+    );
+    assert!(
+        read("tests/macos-replace-binary.sh").contains("RESES_REPLACE_CONTROL"),
+        "the #15 script ignores RESES_REPLACE_CONTROL"
+    );
 }
 
 #[test]
