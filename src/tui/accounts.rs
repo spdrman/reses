@@ -18,6 +18,9 @@ pub struct AccountsScreen {
     /// Region shown for each profile: its own, else the one in ~/.aws/config.
     regions: Vec<Option<String>>,
     file_exists: bool,
+    /// First screen of the app, where q quits. Anywhere else (pushed from the inbox with `u`)
+    /// a session is already open when this is built, and q goes back to it.
+    root: bool,
     selected: usize,
     form: Option<AccountForm>,
     connect: Connector,
@@ -29,6 +32,7 @@ impl AccountsScreen {
             profiles: Vec::new(),
             regions: Vec::new(),
             file_exists: false,
+            root: ctx.session.is_none(),
             selected: 0,
             form: None,
             connect: Box::new(|p| Session::connect(p, None)),
@@ -66,6 +70,14 @@ impl AccountsScreen {
             })
             .collect();
         self.selected = self.selected.min(self.profiles.len().saturating_sub(1));
+    }
+
+    fn q_hint(&self) -> (&'static str, &'static str) {
+        if self.root {
+            ("q", "quit")
+        } else {
+            ("q", "back")
+        }
     }
 
     fn open_browser(&self, profile: Profile, ctx: &mut Ctx) -> Transition {
@@ -274,13 +286,13 @@ impl View for AccountsScreen {
                 ("ctrl-r", "reveal"),
                 ("esc", "cancel"),
             ],
-            None if self.profiles.is_empty() => vec![("a", "add account"), ("q", "quit")],
+            None if self.profiles.is_empty() => vec![("a", "add account"), self.q_hint()],
             None => vec![
                 ("enter", "connect"),
                 ("a", "add"),
                 ("d", "make default"),
                 ("r", "reload"),
-                ("q", "quit"),
+                self.q_hint(),
             ],
         }
     }
@@ -288,6 +300,7 @@ impl View for AccountsScreen {
 
 // ---- the add-account form ----
 
+const MASK: &str = "********";
 const NAME: usize = 0;
 const KEY_ID: usize = 1;
 const SECRET: usize = 2;
@@ -420,7 +433,12 @@ impl AccountForm {
             let value = &self.values[i];
             let masked = (i == SECRET || i == TOKEN) && !self.reveal;
             let shown = if masked {
-                "*".repeat(value.chars().count())
+                // Fixed width, so the mask says a value is there without saying how long it is.
+                if value.is_empty() {
+                    String::new()
+                } else {
+                    MASK.to_string()
+                }
             } else {
                 value.clone()
             };

@@ -22,6 +22,45 @@ const PEEK_BYTES: u64 = 4096;
 const SEARCH_IN_FLIGHT: usize = 16;
 /// Lines above the list: the path and the counts.
 const HEADER_LINES: u16 = 2;
+/// Most pages one listing or search follows (10 million keys at S3's 1000 a page).
+const MAX_PAGES: usize = 10_000;
+
+/// Guards a run of continuation tokens against a server that never stops handing them out.
+struct Paging {
+    pages: usize,
+    last: Option<String>,
+    max: usize,
+}
+
+impl Paging {
+    fn new(max: usize) -> Self {
+        Self {
+            pages: 0,
+            last: None,
+            max,
+        }
+    }
+
+    /// Count a page that just arrived. Ok(Some) is the token to follow, Ok(None) means that
+    /// was the last page, and Err says why following it would never end.
+    fn next(&mut self, token: Option<&String>, what: &str) -> Result<Option<String>, String> {
+        self.pages += 1;
+        let Some(token) = token else {
+            return Ok(None);
+        };
+        if self.last.as_ref() == Some(token) {
+            return Err(format!(
+                "S3 sent the same continuation token twice, so I stopped {what} after {} pages",
+                self.pages
+            ));
+        }
+        if self.pages >= self.max {
+            return Err(format!("stopped {what} after {} pages", self.pages));
+        }
+        self.last = Some(token.clone());
+        Ok(Some(token.clone()))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Location {
@@ -67,6 +106,8 @@ pub struct BrowserScreen {
     loading: bool,
     list_job: Option<JobId>,
     list_error: Option<String>,
+    paging: Paging,
+    max_pages: usize,
     /// Peek jobs for the current folder, by object index.
     peeks: HashMap<JobId, usize>,
     filter: String,
@@ -91,6 +132,8 @@ impl BrowserScreen {
             loading: false,
             list_job: None,
             list_error: None,
+            paging: Paging::new(MAX_PAGES),
+            max_pages: MAX_PAGES,
             peeks: HashMap::new(),
             filter: String::new(),
             editing_filter: false,
@@ -112,6 +155,7 @@ impl BrowserScreen {
         self.editing_filter = false;
         self.list_error = None;
         self.loading = true;
+        self.paging = Paging::new(self.max_pages);
         let job = match &self.location {
             Location::Buckets => Job::ListBuckets,
             Location::Folder { bucket, prefix } => Job::List {
@@ -311,7 +355,7 @@ impl BrowserScreen {
             ctx.error("open a bucket first, then press s to search it");
             return;
         };
-        let mut search = Search::new(bucket.clone(), prefix.clone());
+        let mut search = Search::new(bucket.clone(), prefix.clone(), self.max_pages);
         search.list(None, ctx);
         self.search = Some(search);
     }
@@ -349,7 +393,8 @@ impl BrowserScreen {
                 self.filter.clear();
                 self.rebuild_rows();
             }
-            KeyCode::Esc => return Transition::Pop,
+            KeyCode::Esc if self.location == Location::Buckets => return Transition::Pop,
+            KeyCode::Esc => self.up(ctx),
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::PageDown => self.move_by(page),
@@ -441,15 +486,23 @@ impl BrowserScreen {
                         }),
                 );
                 self.list_job = None;
-                match (&listing.next_token, &self.location) {
-                    (Some(token), Location::Folder { bucket, prefix }) => {
+                let what = format!("listing {}", self.path());
+                match (
+                    self.paging.next(listing.next_token.as_ref(), &what),
+                    &self.location,
+                ) {
+                    (Ok(Some(token)), Location::Folder { bucket, prefix }) => {
                         self.list_job = ctx.submit(Job::List {
                             bucket: bucket.clone(),
                             prefix: prefix.clone(),
                             delimiter: true,
-                            token: Some(token.clone()),
+                            token: Some(token),
                         });
                         self.loading = self.list_job.is_some();
+                    }
+                    (Err(msg), _) => {
+                        self.loading = false;
+                        ctx.error(msg);
                     }
                     _ => self.loading = false,
                 }
@@ -622,8 +675,8 @@ impl BrowserScreen {
 impl BrowserScreen {
     /// Lower the page cap so a test can reach it.
     #[cfg(test)]
-    pub(crate) fn with_max_pages(self, n: usize) -> Self {
-        let _ = n;
+    pub(crate) fn with_max_pages(mut self, n: usize) -> Self {
+        self.max_pages = n;
         self
     }
 }
@@ -703,7 +756,7 @@ impl View for BrowserScreen {
                 ("/", "filter"),
                 ("s", "search"),
                 ("i", "inbox"),
-                ("esc", "back"),
+                ("esc", "up"),
             ],
         }
     }
@@ -724,14 +777,19 @@ struct Search {
     folders: BTreeMap<String, usize>,
     stopped: bool,
     error: Option<String>,
+    /// Why the listing ended early, when it did.
+    note: Option<String>,
+    paging: Paging,
     selected: usize,
     offset: usize,
     visible: usize,
 }
 
 impl Search {
-    fn new(bucket: String, prefix: String) -> Self {
+    fn new(bucket: String, prefix: String, max_pages: usize) -> Self {
         Self {
+            note: None,
+            paging: Paging::new(max_pages),
             bucket,
             prefix,
             list_job: None,
@@ -816,9 +874,16 @@ impl Search {
                             self.queue.push_back(o.key.clone());
                         }
                     }
-                    match &listing.next_token {
-                        Some(t) => self.list(Some(t.clone()), ctx),
-                        None => self.listing_done = true,
+                    let what = format!("the search of {}/{}", self.bucket, self.prefix);
+                    match self.paging.next(listing.next_token.as_ref(), &what) {
+                        Ok(Some(t)) => self.list(Some(t), ctx),
+                        Ok(None) => self.listing_done = true,
+                        Err(msg) => {
+                            // Keep checking what did arrive, and say why it is not everything.
+                            self.listing_done = true;
+                            ctx.error(msg.clone());
+                            self.note = Some(msg);
+                        }
                     }
                 }
                 Ok(_) => self.listing_done = true,
@@ -859,8 +924,11 @@ impl Search {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let [head, body] =
-            Layout::vertical([Constraint::Length(HEADER_LINES), Constraint::Min(1)]).areas(area);
+        let [head, body] = Layout::vertical([
+            Constraint::Length(HEADER_LINES + u16::from(self.note.is_some())),
+            Constraint::Min(1),
+        ])
+        .areas(area);
         let dim = Style::default().fg(Color::DarkGray);
         let state = if let Some(e) = &self.error {
             Span::styled(format!("failed: {e}"), Style::default().fg(Color::Red))
@@ -868,6 +936,11 @@ impl Search {
             Span::styled("stopped", Style::default().fg(Color::Yellow))
         } else if self.running() {
             Span::styled("searching...", Style::default().fg(Color::Cyan))
+        } else if self.note.is_some() {
+            Span::styled(
+                "done, but only partly (see below)".to_string(),
+                Style::default().fg(Color::Yellow),
+            )
         } else {
             Span::styled("done", Style::default().fg(Color::Green))
         };
@@ -877,24 +950,33 @@ impl Search {
             format!("{}+", self.listed)
         };
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    format!(" Email under {}/{}", self.bucket, self.prefix),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-                Line::from(vec![
-                    Span::styled(
-                        format!(
-                            " checked {} of {listed} objects · {} in {} · ",
-                            self.checked,
-                            plural(self.emails, "email"),
-                            plural(self.folders.len(), "folder"),
+            Paragraph::new(
+                vec![
+                    Line::from(Span::styled(
+                        format!(" Email under {}/{}", self.bucket, self.prefix),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(vec![
+                        Span::styled(
+                            format!(
+                                " checked {} of {listed} objects · {} in {} · ",
+                                self.checked,
+                                plural(self.emails, "email"),
+                                plural(self.folders.len(), "folder"),
+                            ),
+                            dim,
                         ),
-                        dim,
-                    ),
-                    state,
-                ]),
-            ]),
+                        state,
+                    ]),
+                ]
+                .into_iter()
+                .chain(
+                    self.note
+                        .iter()
+                        .map(|n| Line::styled(format!(" {n}"), Style::default().fg(Color::Yellow))),
+                )
+                .collect::<Vec<_>>(),
+            ),
             head,
         );
 

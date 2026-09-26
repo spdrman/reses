@@ -493,7 +493,10 @@ fn pasted_values_are_trimmed_before_saving() {
 fn the_mask_does_not_give_away_the_length() {
     let dir = tempfile::tempdir().unwrap();
     let mut masks = Vec::new();
-    for secret in ["FAKEx", "FAKEsecretQZX9fakeFAKE0000FAKEsecretQZX9fakeFAKE0000"] {
+    for secret in [
+        "FAKEx",
+        "FAKEsecretQZX9fakeFAKE0000FAKEsecretQZX9fakeFAKE0000",
+    ] {
         let mut app = app(dir.path(), None, None);
         press(&mut app, KeyCode::Char('a'));
         fill_form(&mut app, "fake", "AKIAFAKEFAKE00000003", secret, secret, "");
@@ -505,7 +508,10 @@ fn the_mask_does_not_give_away_the_length() {
         assert!(secret_line.contains('*'), "{s}");
         masks.push((secret_line, token_line));
     }
-    assert_eq!(masks[0], masks[1], "a 5 and a 52 character secret look the same");
+    assert_eq!(
+        masks[0], masks[1],
+        "a 5 and a 52 character secret look the same"
+    );
 }
 
 #[test]
@@ -524,7 +530,10 @@ fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
     let mut root = app(dir.path(), Some(TWO_PROFILES), None);
     let s = screen(&mut root, 100, 12);
     let footer = s.lines().last().unwrap();
-    assert!(footer.contains("quit") && !footer.contains("back"), "{footer}");
+    assert!(
+        footer.contains("quit") && !footer.contains("back"),
+        "{footer}"
+    );
 
     // Pushed from the inbox with `u`, a session is already open and q goes back.
     fs::write(dir.path().join("credentials"), TWO_PROFILES).unwrap();
@@ -533,7 +542,10 @@ fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
     let mut pushed = App::with_view(ctx, Box::new(screen_view));
     let s = screen(&mut pushed, 100, 12);
     let footer = s.lines().last().unwrap();
-    assert!(footer.contains("back") && !footer.contains("quit"), "{footer}");
+    assert!(
+        footer.contains("back") && !footer.contains("quit"),
+        "{footer}"
+    );
 
     // The empty-file hint follows the same rule.
     let empty = tempfile::tempdir().unwrap();
@@ -542,5 +554,8 @@ fn the_footer_says_back_not_quit_when_pushed_over_another_screen() {
     let mut pushed = App::with_view(ctx, Box::new(screen_view));
     let s = screen(&mut pushed, 100, 12);
     let footer = s.lines().last().unwrap();
-    assert!(footer.contains("back") && !footer.contains("quit"), "{footer}");
+    assert!(
+        footer.contains("back") && !footer.contains("quit"),
+        "{footer}"
+    );
 }

@@ -93,7 +93,11 @@ impl Store for Spy {
                     size: TEXT.len() as u64,
                     last_modified: None,
                 }],
-                next_token: Some(if mode == 1 { "same".into() } else { format!("t{n}") }),
+                next_token: Some(if mode == 1 {
+                    "same".into()
+                } else {
+                    format!("t{n}")
+                }),
             });
         }
         self.inner.list(bucket, prefix, delimiter, token)
@@ -295,7 +299,10 @@ fn esc_goes_up_one_level_and_pops_only_at_the_bucket_list() {
     let s = screen(&mut app, 100, 20);
     assert!(s.contains("mail/inbound/"), "{s}");
     assert!(!s.contains("mail/inbound/2025"), "{s}");
-    assert!(selected_row(&s).contains("2025/"), "back on the folder it came out of: {s}");
+    assert!(
+        selected_row(&s).contains("2025/"),
+        "back on the folder it came out of: {s}"
+    );
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
     assert!(!app.quit, "still at the bucket list");
@@ -679,7 +686,11 @@ fn a_listing_stops_at_the_page_cap() {
     let mut app = loop_app(dir.path(), &spy, 2, 7);
     open(&mut app, "loop");
     assert_eq!(loop_lists(&spy, Some("/")), 7);
-    assert!(status_error(&app).contains("7 pages"), "{:?}", app.ctx.status);
+    assert!(
+        status_error(&app).contains("7 pages"),
+        "{:?}",
+        app.ctx.status
+    );
     let s = screen(&mut app, 100, 20);
     assert!(!s.contains("loading"), "{s}");
 }
