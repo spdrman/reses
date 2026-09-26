@@ -1,7 +1,7 @@
-//! Decoding raw RFC 5322 messages. `format_message` must produce exactly what
-//! `python/reses.py` prints, byte for byte; the golden files in tests/fixtures pin that.
+//! Decoding raw RFC 5322 messages. The expected output for each test message is committed next
+//! to it in tests/fixtures/mail, and tests/mail_golden.rs pins `format_message` to it byte for byte.
 //!
-//! reses.py leans on Python's `email` package with `policy.default`, and a lot of what it prints
+//! The original Python reses leaned on Python's `email` package with `policy.default`, and a lot of what it prints
 //! comes from that package's quirks: how address headers are re-rendered, which Date strings
 //! survive, how encoded words are joined, how the parser trims the newline before a boundary.
 //! So rather than approximate it with a different parser, the submodules port the parts of
@@ -177,7 +177,8 @@ fn body(msg: &Message, prefer_html: bool) -> String {
 }
 
 /// The readable form: From, Reply-To, To, Cc, Bcc, Date, Subject, Message-ID, optional
-/// Attachments line, "Message:", a blank line, then the body. See python/reses.py.
+/// Attachments line, "Message:", a blank line, then the body. The goldens in tests/fixtures/mail
+/// show it exactly.
 pub fn format_message(raw: &[u8], prefer_html: bool) -> String {
     let msg = Message::parse(raw);
     let root = msg.part(ROOT);

@@ -218,30 +218,21 @@ fn make_darwin_checks_the_build_before_it_becomes_dist_reses() {
     );
 }
 
-/// Every file in the repo, relative to its root, skipping build output and git's own files.
+/// Every file git tracks, relative to the repo root. Only tracked files count, so local scratch
+/// files and symlinks can't change the answer.
 fn repo_files() -> Vec<String> {
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
-        for entry in fs::read_dir(dir).unwrap().flatten() {
-            let path = entry.path();
-            let rel = path
-                .strip_prefix(root)
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            if [".git", "target", "dist", "demo/.work"].contains(&rel.as_str()) {
-                continue;
-            }
-            if path.is_dir() {
-                walk(root, &path, out);
-            } else {
-                out.push(rel);
-            }
-        }
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut out = Vec::new();
-    walk(root, root, &mut out);
-    out
+    let out = std::process::Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("running git ls-files");
+    assert!(out.status.success(), "git ls-files failed");
+    String::from_utf8(out.stdout)
+        .expect("tracked paths are UTF-8")
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]
