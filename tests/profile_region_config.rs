@@ -110,3 +110,11 @@ fn missing_config_file_is_none() {
         None
     );
 }
+
+#[test]
+fn profile_prefix_needs_a_space_before_the_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config");
+    fs::write(&path, "[profilework]\nregion = xx-wrong-1\n").unwrap();
+    assert_eq!(region_from_config_file(&path, "work"), None);
+}

@@ -518,3 +518,20 @@ fn unreadable_path_reports_read_error_with_path() {
     assert!(matches!(err, ProfileError::Read { .. }), "{err:?}");
     assert!(err.to_string().contains("credentials"));
 }
+
+#[test]
+fn clearing_the_last_line_of_the_file_keeps_no_trailing_newline() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "[a]\r\naws_access_key_id=AKIDEXAMPLE\r\n\
+                aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\r\n\
+                region=us-east-1";
+    let path = write(dir.path(), text);
+    let mut p = CredentialsFile::load(&path).unwrap().get("a").unwrap();
+    p.region = None;
+    let out = upsert_and_save(&path, &p);
+    assert_eq!(
+        out,
+        "[a]\r\naws_access_key_id=AKIDEXAMPLE\r\n\
+         aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    );
+}
