@@ -19,7 +19,7 @@ ratatui = "0.29"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = "2"
-time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
 toml = "0.8"
 ureq = "3"
 
