@@ -35,6 +35,10 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # tests/tui_pty.rs runs the app on a real pty. 0.38 is the rustix ratatui-image already builds.
 rustix = { version = "0.38", features = ["pty", "process", "termios"] }
 tempfile = "3"
+# The workflow tests read .github/workflows as YAML rather than grepping lines, so a job-level
+# `if:` or an `env:` can't hide from them. yaml-rust2 is the maintained YAML 1.2 parser; its
+# default feature only adds input-encoding detection, which UTF-8 workflow files never need.
+yaml-rust2 = { version = "0.13", default-features = false }
 
 [profile.release]
 strip = true

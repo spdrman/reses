@@ -323,3 +323,17 @@ fn save_attachments_replaces_control_and_bidi_characters() {
         ]
     );
 }
+
+#[test]
+fn bcc_leaves_out_visible_recipients_whatever_their_case() {
+    // Addresses are case-insensitive in practice, so the envelope's alice@example.com is the
+    // same person as To's Alice@Example.COM and not a blind copy. The fixture is hand-written
+    // (tests/fixtures/bcc/mixed-case.eml) and so is the expected line: only hidden@example.net
+    // reached the mailbox without being named in To or Cc.
+    let raw =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bcc/mixed-case.eml"))
+            .unwrap();
+    let out = reses::mail::format_message(&raw, false);
+    let bcc: Vec<&str> = out.lines().filter(|l| l.starts_with("Bcc:")).collect();
+    assert_eq!(bcc, ["Bcc: hidden@example.net"], "{out}");
+}

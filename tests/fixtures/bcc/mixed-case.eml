@@ -1,0 +1,13 @@
+Delivered-To: alice@example.com
+X-Original-To: BOB@example.org
+Envelope-To: hidden@example.net
+Received: from relay.example.com by mx.example.org with ESMTP id jkl
+	for <ALICE@EXAMPLE.com>; Sat, 26 Sep 2026 08:00:00 +0000
+From: Sender <sender@example.com>
+To: Alice Example <Alice@Example.COM>
+Cc: Bob@Example.Org
+Subject: Recipients in mixed case
+Date: Sat, 26 Sep 2026 08:00:00 +0000
+Message-ID: <bcc-case-1@example.com>
+
+Only hidden@example.net was a blind copy.
