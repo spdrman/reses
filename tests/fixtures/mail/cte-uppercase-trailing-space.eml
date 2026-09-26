@@ -1,0 +1,8 @@
+From: a@example.com
+To: b@example.com
+Subject: cte case
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: BASE64 
+
+aGVsbG8gd29ybGQ=

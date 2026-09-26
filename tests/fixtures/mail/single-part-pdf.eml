@@ -1,0 +1,10 @@
+From: Scanner <scanner@example.com>
+To: bob@example.com
+Subject: Scanned document
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: application/pdf; name="scan0001.pdf"
+Content-Disposition: attachment; filename="scan0001.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcfsj6IKZmFrZSBwZGYK

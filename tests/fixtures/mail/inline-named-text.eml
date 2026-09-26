@@ -1,0 +1,24 @@
+From: a@example.com
+To: b@example.com
+Subject: inline txt
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: multipart/alternative; boundary=C
+
+--C
+Content-Type: text/plain
+
+plain body
+--C
+Content-Type: text/html
+
+<p>html body</p>
+--C--
+--B
+Content-Type: text/plain; name=server.log
+Content-Disposition: inline; filename=server.log
+
+ERROR line 1
+--B--

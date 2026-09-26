@@ -1,0 +1,13 @@
+From: Mail Delivery Subsystem <MAILER-DAEMON@example.com>
+Reply-To: 
+To: alice@example.com
+Cc: 
+Bcc: 
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Subject: Delivery Status Notification (Failure)
+Message-ID: 
+Attachments: attachment-1.txt (114 bytes), attachment-2.eml (80 bytes)
+Message:
+
+An error occurred while trying to deliver the mail to the following recipients:
+nobody@example.org

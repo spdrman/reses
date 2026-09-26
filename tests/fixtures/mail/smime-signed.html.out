@@ -1,0 +1,12 @@
+From: Alice <alice@example.com>
+Reply-To: 
+To: bob@example.com
+Cc: 
+Bcc: 
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Subject: Signed with attachment
+Message-ID: 
+Attachments: invoice.pdf (24 bytes), smime.p7s (54 bytes)
+Message:
+
+Invoice attached.

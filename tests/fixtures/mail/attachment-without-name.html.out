@@ -1,0 +1,12 @@
+From: Alice <alice@example.com>
+Reply-To: 
+To: bob@example.com
+Cc: 
+Bcc: 
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Subject: Attachment without a name
+Message-ID: 
+Attachments: attachment-1.bin (10 bytes), attachment-2.png (8 bytes)
+Message:
+
+body

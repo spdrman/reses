@@ -1,15 +1,17 @@
-//! Hostile input: nesting deep enough to overflow the stack, and inputs that make a naive
-//! scanner quadratic. Everything runs on a thread with a 1 MiB stack (half what the inbox's
+//! Hostile input: nesting deep enough to overflow the stack, huge and broken headers, boundaries
+//! that never close, invalid UTF-8, and inputs that make a naive scanner quadratic. mail-parser
+//! keeps its part stack on the heap and stops unpacking nested messages after three levels, and
+//! these tests hold the whole decoder, HTML conversion and saving included, to the same standard. Everything runs on a thread with a 1 MiB stack (half what the inbox's
 //! worker threads get) and under a deadline, so a stack overflow or a hang fails this binary on
 //! its own instead of taking the other test binaries with it.
 
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use reses::mail::{format_message, looks_like_email, save_attachments, summarize};
+use reses::mail::{
+    format_message, looks_like_email, save_attachments, save_attachments_report, summarize,
+};
 
 const STACK: usize = 1 << 20;
 /// Generous on purpose: the slowest case takes a few seconds in a debug build on a busy CI box,
@@ -42,11 +44,13 @@ fn decode_all(label: &str, raw: Vec<u8>) -> String {
     }
 }
 
+/// A render still has the layout: headers first, then "Message:" and the body.
 fn assert_shape(label: &str, out: &str) {
     assert!(out.starts_with("From: "), "{label}: {out:.200}");
     assert!(out.contains("\nMessage:\n\n"), "{label}: {out:.200}");
 }
 
+/// A message with `n` forwarded messages each inside the last.
 fn nested_rfc822(n: usize) -> Vec<u8> {
     let mut s = String::from("From: a@example.com\nSubject: deep\n");
     for _ in 0..n {
@@ -56,6 +60,7 @@ fn nested_rfc822(n: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// A message with `n` multiparts each inside the last, all closed properly.
 fn nested_multipart(n: usize) -> Vec<u8> {
     let mut s = String::from("From: a@example.com\nSubject: deep\n");
     for k in 0..n {
@@ -70,18 +75,21 @@ fn nested_multipart(n: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// Forwards nested 50,000 deep.
 #[test]
 fn fifty_thousand_nested_rfc822_parts() {
     let out = decode_all("rfc822", nested_rfc822(50_000));
     assert_shape("rfc822", &out);
 }
 
+/// Multiparts nested 50,000 deep.
 #[test]
 fn fifty_thousand_nested_multiparts() {
     let out = decode_all("multipart", nested_multipart(50_000));
     assert_shape("multipart", &out);
 }
 
+/// Twenty thousand parens or groups in each header that gets parsed.
 #[test]
 fn twenty_thousand_parens_in_every_parsed_header() {
     let open = "(".repeat(20_000);
@@ -139,48 +147,7 @@ fn twenty_thousand_parens_in_every_parsed_header() {
     }
 }
 
-fn beyond_python() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail/beyond-python");
-    let mut found: Vec<PathBuf> = fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "eml"))
-        .collect();
-    found.sort();
-    found
-}
-
-/// One level past each depth reses.py survives. Python dies there, so there's no golden; the
-/// decoder just has to come back with a normal-looking message.
-#[test]
-fn one_level_past_python_still_decodes() {
-    let all = beyond_python();
-    assert_eq!(all.len(), 8, "expected one fixture per nesting shape");
-    for path in all {
-        let label = path.file_name().unwrap().to_string_lossy().into_owned();
-        let out = decode_all(&label, fs::read(&path).unwrap());
-        assert_shape(&label, &out);
-    }
-}
-
-#[test]
-fn at_python_limit_fixtures_decode_on_a_small_stack() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail");
-    let mut seen = 0;
-    for entry in fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        if name.starts_with("limit-") && name.ends_with(".eml") {
-            let out = decode_all(&name, fs::read(&path).unwrap());
-            let want = fs::read_to_string(path.with_extension("out")).unwrap();
-            assert_eq!(out, want, "{name}");
-            seen += 1;
-        }
-    }
-    assert_eq!(seen, 8);
-}
-
-/// About 1.2 MB of each input that used to take quadratic time.
+/// About a megabyte of each input that makes a naive scanner quadratic.
 #[test]
 fn scanners_stay_linear_on_large_input() {
     let big = 1_200_000;
@@ -256,4 +223,122 @@ fn scanners_stay_linear_on_large_input() {
         let out = decode_all(label, raw);
         assert_shape(label, &out);
     }
+}
+
+/// Headers far bigger than any real one: a megabyte on one line, a hundred thousand
+/// continuation lines, and a hundred thousand headers.
+#[test]
+fn huge_headers() {
+    let long = format!(
+        "From: a@example.com\r\nSubject: {}\r\n\r\nbody\r\n",
+        "x".repeat(1 << 20)
+    );
+    let folded = format!(
+        "From: a@example.com\r\nSubject: start{}\r\n\r\nbody\r\n",
+        "\r\n more".repeat(100_000)
+    );
+    let many = format!(
+        "From: a@example.com\r\n{}\r\nbody\r\n",
+        (0..100_000)
+            .map(|i| format!("X-H{i}: v\r\n"))
+            .collect::<String>()
+    );
+    for (label, raw) in [
+        ("one long line", long),
+        ("folded", folded),
+        ("many headers", many),
+    ] {
+        assert_shape(label, &decode_all(label, raw.into_bytes()));
+    }
+}
+
+/// Boundaries that open and never close, nested and not, and one that never appears at all.
+#[test]
+fn boundaries_that_never_close() {
+    let mut nested = String::from("From: a@example.com\r\n");
+    for k in 0..10_000 {
+        nested.push_str(&format!(
+            "Content-Type: multipart/mixed; boundary=b{k}\r\n\r\n--b{k}\r\n"
+        ));
+    }
+    nested.push_str("Content-Type: text/plain\r\n\r\nleaf\r\n");
+    let missing = "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=nowhere\r\n\r\n\
+                   text with no boundary line at all\r\n"
+        .to_string()
+        + &"filler line\r\n".repeat(50_000);
+    let open_attachment = format!(
+        "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n--B\r\n\
+         Content-Type: application/pdf; name=a.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n{}",
+        "QUJD".repeat(250_000)
+    );
+    for (label, raw) in [
+        ("nested", nested),
+        ("missing", missing),
+        ("open attachment", open_attachment),
+    ] {
+        assert_shape(label, &decode_all(label, raw.into_bytes()));
+    }
+}
+
+/// Bytes that aren't UTF-8 in every place they can go.
+#[test]
+fn invalid_utf8_everywhere() {
+    let mut raw = b"From: \xff\xfe <a@example.com>\r\nTo: \xc3\r\nSubject: =?utf-8?b?/w==?= \x80\x81\r\n\
+Content-Type: multipart/mixed; boundary=\xff\r\n\r\n--\xff\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>\xe2\x28\xa1</p>\r\n\
+--\xff\r\nContent-Type: text/plain; name=\"\xff\xfe.txt\"\r\n\r\n\xc0\xaf\r\n--\xff--\r\n"
+        .to_vec();
+    // Then a megabyte of every byte value, over and over.
+    raw.extend((0..(1u32 << 20)).map(|i| (i % 256) as u8));
+    let out = decode_all("invalid utf-8", raw);
+    assert_shape("invalid utf-8", &out);
+    let noise: Vec<u8> = (0..(1u32 << 20))
+        .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+        .collect();
+    let _ = decode_all("noise", noise);
+}
+
+/// HTML nested deep enough to exhaust a recursive tree walk.
+#[test]
+fn deeply_nested_html() {
+    for (label, open, close) in [
+        ("divs", "<div>", "</div>"),
+        ("tables", "<table><tr><td>", "</td></tr></table>"),
+        ("unclosed", "<b><i>", ""),
+    ] {
+        let body = format!("{}deep{}", open.repeat(50_000), close.repeat(50_000));
+        let raw = format!("From: a@example.com\r\nContent-Type: text/html\r\n\r\n{body}\r\n");
+        assert_shape(label, &decode_all(label, raw.into_bytes()));
+    }
+}
+
+/// The panel's 32k parts with one name (N18): the old save rescanned the names already taken for
+/// every part and took twenty minutes. With a per-name suffix and a cap it has to finish fast,
+/// write only the cap, count the rest, and still refuse to overwrite anything.
+#[test]
+fn thirty_two_thousand_attachments_with_one_name() {
+    let mut raw =
+        String::from("From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n");
+    for _ in 0..32_000 {
+        raw.push_str("--B\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=same.bin\r\n\r\nx\r\n");
+    }
+    raw.push_str("--B--\r\n");
+    let (tx, rx) = mpsc::channel();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("same.bin"), b"keep").unwrap();
+    let path = dir.path().to_path_buf();
+    thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(move || {
+            let _ = tx.send(
+                save_attachments_report(raw.as_bytes(), &path).map(|r| (r.saved.len(), r.skipped)),
+            );
+        })
+        .unwrap();
+    let (saved, skipped) = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("saving 32k same-named attachments took more than 20 s")
+        .unwrap();
+    assert_eq!((saved, skipped), (1_000, 31_000));
+    assert_eq!(std::fs::read(dir.path().join("same.bin")).unwrap(), b"keep");
+    assert!(dir.path().join("same-1000.bin").exists());
 }

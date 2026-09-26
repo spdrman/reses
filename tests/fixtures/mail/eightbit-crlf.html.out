@@ -6,7 +6,7 @@ Bcc:
 Date: Thu, 15 Oct 2026 11:11:11 +0000
 Subject: Raw UTF-8 subject: naïve café ✓ and a bad byte � here
 Message-ID: <eightbit-1@example.com>
-Attachments: trailing-space-cte.txt (8 bytes), junk-base64.txt (11 bytes), qp-edge.txt (52 bytes)
+Attachments: trailing-space-cte.txt (5 bytes), junk-base64.txt (11 bytes), qp-edge.txt (53 bytes)
 Message:
 
 Smart quotes “” and a euro € and undefined � byte.

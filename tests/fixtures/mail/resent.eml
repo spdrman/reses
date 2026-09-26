@@ -1,0 +1,8 @@
+Resent-From: Bob <bob@example.com>
+Resent-To: me@example.com
+Received: by mx.example.com for <me@example.com>; Tue, 22 Sep 2026 10:00:00 +0000
+From: Alice <alice@example.org>
+To: bob@example.com
+Subject: redirected
+
+hi

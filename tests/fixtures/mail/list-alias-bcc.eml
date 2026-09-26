@@ -1,0 +1,11 @@
+Return-Path: <list-bounces@example.org>
+Received: from mx.example.org by inbound-smtp.us-east-1.example.net with SMTP id abc for me@example.com; Tue, 22 Sep 2026 10:00:00 +0000
+Delivered-To: me@example.com
+From: Alice <alice@example.org>
+To: Team <team@example.org>
+Subject: to a group alias
+List-Id: <team.example.org>
+MIME-Version: 1.0
+Content-Type: text/plain
+
+hi

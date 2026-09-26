@@ -1,0 +1,16 @@
+From: a@example.com
+To: b@example.com
+Subject: html then txt
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: text/html
+
+<p>the real message</p>
+--B
+Content-Type: text/plain; name=notes.txt
+Content-Disposition: inline; filename=notes.txt
+
+contents of notes.txt
+--B--

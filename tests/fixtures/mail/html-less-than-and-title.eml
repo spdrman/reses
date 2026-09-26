@@ -1,0 +1,7 @@
+From: a@example.com
+To: b@example.com
+Subject: html only
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><head><title>Newsletter title</title></head><body><p>If x < 5 and y > 3 then ok</p><!--[if mso]><p>Outlook only text</p><![endif]--><p>a&nbsp;b &amp; c</p></body></html>

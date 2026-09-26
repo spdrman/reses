@@ -1,0 +1,40 @@
+From: Alice <alice@example.com>
+To: bob@example.com
+Subject: Apple inline pdf
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Mime-Version: 1.0 (Mac OS X Mail 16.0 \(3731.500.231\))
+Content-Type: multipart/alternative; boundary="Apple-Mail=_A"
+
+--Apple-Mail=_A
+Content-Transfer-Encoding: 7bit
+Content-Type: text/plain; charset=us-ascii
+
+Here is the report.
+
+[attachment]
+
+Thanks, see you later.
+
+--Apple-Mail=_A
+Content-Type: multipart/mixed; boundary="Apple-Mail=_B"
+
+--Apple-Mail=_B
+Content-Transfer-Encoding: 7bit
+Content-Type: text/html; charset=us-ascii
+
+<html><body><div>Here is the report.</div></body></html>
+--Apple-Mail=_B
+Content-Disposition: inline; filename=report.pdf
+Content-Type: application/pdf; name="report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcfsj6IKZmFrZSBwZGYK
+
+--Apple-Mail=_B
+Content-Transfer-Encoding: 7bit
+Content-Type: text/html; charset=us-ascii
+
+<html><body><div>Thanks, see you later.</div></body></html>
+--Apple-Mail=_B--
+
+--Apple-Mail=_A--

@@ -1,0 +1,11 @@
+From: a@example.com
+Reply-To: 
+To: b@example.com
+Cc: 
+Bcc: 
+Date: 
+Subject: charset mismatch utf-8 declared latin1 bytes
+Message-ID: 
+Message:
+
+caf�

@@ -238,7 +238,8 @@ fn repo_files() -> Vec<String> {
 #[test]
 fn the_only_python_left_is_the_configparser_oracle() {
     // The Python version of reses used to be the reference the goldens came from. It's gone
-    // (#24); the one Python file that stays reads credentials the way the AWS CLI does.
+    // (#24). Two test oracles stay: one reads credentials the way the AWS CLI does, and one reads
+    // mail with Python's standard email package to vouch for the mail goldens (#26).
     let files = repo_files();
     assert!(
         files.iter().any(|f| f == "Cargo.toml"),
@@ -247,7 +248,7 @@ fn the_only_python_left_is_the_configparser_oracle() {
     let python: Vec<_> = files.iter().filter(|f| f.ends_with(".py")).collect();
     assert_eq!(
         python,
-        vec!["tests/profile_oracle.py"],
+        vec!["tests/mail_oracle.py", "tests/profile_oracle.py"],
         "unexpected Python files"
     );
     for f in ["python/reses.py", "tests/fixtures/mail/regen.sh"] {

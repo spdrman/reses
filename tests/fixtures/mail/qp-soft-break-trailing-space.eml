@@ -1,0 +1,11 @@
+From: a@example.com
+To: b@example.com
+Subject: qp trailing ws
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+This line is soft broken= 
+here and also=	
+here. Caf=C3=A9 =
+end

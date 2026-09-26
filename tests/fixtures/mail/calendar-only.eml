@@ -1,0 +1,13 @@
+From: a@example.com
+To: b@example.com
+Subject: Invitation: sync
+MIME-Version: 1.0
+Content-Type: text/calendar; charset=utf-8; method=REQUEST
+
+BEGIN:VCALENDAR
+METHOD:REQUEST
+BEGIN:VEVENT
+SUMMARY:Sync
+DTSTART:20260930T100000Z
+END:VEVENT
+END:VCALENDAR

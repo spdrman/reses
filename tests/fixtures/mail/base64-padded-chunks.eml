@@ -1,0 +1,10 @@
+From: a@example.com
+To: b@example.com
+Subject: b64 chunks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+aGVsbG8=
+IHdvcmxk
+IQ==

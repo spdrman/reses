@@ -1,0 +1,8 @@
+From: a@example.com
+To: b@example.com
+Subject: cte quoted
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: "quoted-printable"
+
+caf=C3=A9

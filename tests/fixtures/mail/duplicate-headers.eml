@@ -1,0 +1,12 @@
+From: First Sender <first@example.com>
+From: Second Sender <second@example.com>
+To: to-one@example.org
+To: to-two@example.org
+Subject: the first subject
+Subject: the second subject
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Date: Wed, 23 Sep 2026 11:00:00 +0000
+Message-ID: <first@example.com>
+Message-ID: <second@example.com>
+
+When a header repeats, the first one counts.

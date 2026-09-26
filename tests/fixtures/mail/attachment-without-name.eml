@@ -1,0 +1,24 @@
+From: Alice <alice@example.com>
+To: bob@example.com
+Subject: Attachment without a name
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+body
+
+--B
+Content-Type: application/octet-stream
+Content-Disposition: attachment
+Content-Transfer-Encoding: base64
+
+AAECAwQFBgcICQ==
+--B
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgo=
+--B--

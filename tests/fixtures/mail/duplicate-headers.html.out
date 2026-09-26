@@ -1,0 +1,11 @@
+From: First Sender <first@example.com>
+Reply-To: 
+To: to-one@example.org
+Cc: 
+Bcc: 
+Date: Tue, 22 Sep 2026 10:00:00 +0000
+Subject: the first subject
+Message-ID: <first@example.com>
+Message:
+
+When a header repeats, the first one counts.

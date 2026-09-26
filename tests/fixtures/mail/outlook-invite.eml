@@ -1,0 +1,20 @@
+From: a@example.com
+To: b@example.com
+Subject: Outlook invite
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary=B
+
+--B
+Content-Type: text/plain; charset=utf-8
+
+When: Wednesday
+--B
+Content-Type: text/html; charset=utf-8
+
+<p>When: Wednesday</p>
+--B
+Content-Type: text/calendar; charset="utf-8"; method=REQUEST
+Content-Transfer-Encoding: base64
+
+QkVHSU46VkNBTEVOREFSDQpFTkQ6VkNBTEVOREFSDQo=
+--B--

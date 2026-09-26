@@ -46,7 +46,7 @@ A bug in the terminal UI comes with an animated recording of it in the issue bod
 
 ## The mail decoder
 
-Each `tests/fixtures/mail/NAME.eml` has its expected output next to it (`NAME.out`, `NAME.html.out` and `NAME.saved`). The goldens were first captured from the original Python version of reses, which is gone now. If a decoding change is intended, edit the goldens by hand to what the output should be and commit them with the change. Never regenerate them by running reses itself, because a golden made by the code under test can't catch that code being wrong. Fixtures are synthetic (`example.com` addresses): never commit real mail.
+Each `tests/fixtures/mail/NAME.eml` has its expected output next to it (`NAME.out`, `NAME.html.out` and `NAME.saved`). The goldens come from `tests/mail_oracle.py`, which reads each fixture with Python's standard `email` package, and `tests/mail_oracle.rs` checks them against it on every test run. `tests/fixtures/mail/regen-goldens.sh` rewrites them in the CI container after an intended change. A few are pinned by hand where the standards and Python disagree, or where the body comes from HTML; `tests/fixtures/mail/HAND-PINNED` lists them with the reason for each. Never regenerate a golden by running reses itself, because a golden made by the code under test can't catch that code being wrong. Fixtures are synthetic (`example.com` addresses): never commit real mail.
 
 ## Secrets
 

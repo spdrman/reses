@@ -1,0 +1,7 @@
+Return-Path: <a@example.com>
+Received: from x by y; Tue, 22 Sep 2026 10:00:00 +0000
+From: a@example.com
+Subject : spaced
+To: b@example.com
+
+body

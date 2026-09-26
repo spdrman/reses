@@ -1,0 +1,8 @@
+Return-Path: <a@example.com>
+Received: from x by y; Tue, 22 Sep 2026 10:00:00 +0000
+From: a@example.com
+X-Broken-Mailer v1.0
+Subject: header line without colon
+To: b@example.com
+
+body

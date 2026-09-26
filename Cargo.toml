@@ -22,11 +22,12 @@ aws-runtime = "1"
 aws-types = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
+html2text = "0.17.1"
 # reses asks for PNG only: the header logo is the one image it decodes. ratatui-image turns on
 # image's jpeg feature regardless, so zune-jpeg and moxcms (colour management) get built too.
 # Both are pure Rust and only add build time; I accept that rather than patch the dependency.
 image = { version = "0.25", default-features = false, features = ["png"] }
-mail-parser = "0.11"
+mail-parser = { version = "0.11", features = ["full_encoding"] }
 # The profile loader is async but never waits when it reads from memory, so a minimal
 # executor is all it needs.
 pollster = "0.4"

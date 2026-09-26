@@ -3,9 +3,10 @@
 use std::fs;
 use std::path::Path;
 
-use reses::mail::{looks_like_email, save_attachments, summarize};
+use reses::mail::{looks_like_email, save_attachments, save_attachments_report, summarize};
 use time::macros::datetime;
 
+/// A mail fixture's bytes.
 fn fixture(name: &str) -> Vec<u8> {
     fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -15,6 +16,7 @@ fn fixture(name: &str) -> Vec<u8> {
     .unwrap()
 }
 
+/// Every field of the summary is filled from a message that has them all.
 #[test]
 fn summarize_fills_every_field() {
     let s = summarize(&fixture("attachments-crlf.eml"));
@@ -28,6 +30,7 @@ fn summarize_fills_every_field() {
     assert!(s.has_attachments);
 }
 
+/// The summary decodes headers the same way the full view does.
 #[test]
 fn summarize_decodes_headers_like_format_message() {
     let s = summarize(&fixture("encoded-words.eml"));
@@ -39,18 +42,21 @@ fn summarize_decodes_headers_like_format_message() {
     assert_eq!(s.cc, "\"Ann \\\"A\\\"\" <ann@example.org>");
     assert_eq!(
         s.subject,
-        "Café menu for Friday and ✓ done plus raw end badtail"
+        // mail-parser's reading of a glued encoded word; see HAND-PINNED for encoded-words.out.
+        "Café menu for Friday and ✓ done plus raw end bad tail"
     );
     assert_eq!(s.date, Some(datetime!(2026-10-07 10:00:00 +01:00)));
     assert!(!s.has_attachments);
 }
 
+/// A half-hour zone survives into the parsed date.
 #[test]
 fn summarize_keeps_the_offset_of_the_date() {
     let s = summarize(&fixture("base64-body.eml"));
     assert_eq!(s.date, Some(datetime!(2026-10-08 23:59:59 +05:30)));
 }
 
+/// Missing, unparseable and impossible dates have no parsed value but keep what was written.
 #[test]
 fn summarize_handles_missing_and_bad_dates() {
     let s = summarize(&fixture("missing-date.eml"));
@@ -66,6 +72,7 @@ fn summarize_handles_missing_and_bad_dates() {
     assert_eq!(s.date_raw, "Mon, 31 Feb 2026 25:61:00 +0000");
 }
 
+/// A -0000 zone sorts as UTC.
 #[test]
 fn summarize_treats_a_naive_date_as_utc() {
     let s = summarize(&fixture("explicit-bcc.eml"));
@@ -73,6 +80,7 @@ fn summarize_treats_a_naive_date_as_utc() {
     assert_eq!(s.date_raw, "Fri, 9 Oct 2026 07:07:07 -0000");
 }
 
+/// A prefix cut anywhere never panics, and every header it holds in full is right.
 #[test]
 fn summarize_works_on_a_prefix_that_stops_inside_the_headers() {
     let raw = fixture("ses-received-crlf.eml");
@@ -99,6 +107,7 @@ fn summarize_works_on_a_prefix_that_stops_inside_the_headers() {
     }
 }
 
+/// A folded header that's complete is read whole; the cut line after it is left out.
 #[test]
 fn summarize_on_a_prefix_that_stops_in_a_folded_header() {
     let raw = b"From: a@example.com\r\nSubject: first half\r\n second half\r\nTo: b@exam";
@@ -108,6 +117,7 @@ fn summarize_on_a_prefix_that_stops_in_a_folded_header() {
     assert_eq!(s.to, "");
 }
 
+/// Every fixture message, and a short prefix of each, looks like mail.
 #[test]
 fn every_fixture_looks_like_email() {
     for entry in
@@ -127,6 +137,7 @@ fn every_fixture_looks_like_email() {
     }
 }
 
+/// Objects the way SES stores them, and an mbox envelope line, look like mail.
 #[test]
 fn ses_objects_starting_with_transport_headers_look_like_email() {
     assert!(looks_like_email(
@@ -143,6 +154,7 @@ fn ses_objects_starting_with_transport_headers_look_like_email() {
     ));
 }
 
+/// Other kinds of file in a bucket don't.
 #[test]
 fn other_objects_do_not_look_like_email() {
     let cases: &[(&str, &[u8])] = &[
@@ -181,6 +193,7 @@ fn other_objects_do_not_look_like_email() {
     }
 }
 
+/// Saving twice into the same place moves names along and leaves every earlier file alone.
 #[test]
 fn save_attachments_never_overwrites() {
     let raw = fixture("attachments-crlf.eml");
@@ -213,12 +226,14 @@ fn save_attachments_never_overwrites() {
             "logo é-1.png",
             "evil-1.bin",
             "notes-3.txt",
+            "attachment-7-1.zip",
             "a-very-long-filename-in-parts-1.dat",
         ]
     );
-    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 15);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 17);
 }
 
+/// Names can't climb out of the directory, whichever path separator they use.
 #[test]
 fn save_attachments_strips_path_components() {
     let raw = b"From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n\
@@ -255,6 +270,7 @@ fn save_attachments_strips_path_components() {
     assert_eq!(fs::read(dir.path().join("passwd")).unwrap(), b"x");
 }
 
+/// The target directory is made if it's missing.
 #[test]
 fn save_attachments_creates_the_directory() {
     let raw = fixture("html-alternative-attach.eml");
@@ -264,6 +280,7 @@ fn save_attachments_creates_the_directory() {
     assert_eq!(saved, [target.join("readme.txt")]);
 }
 
+/// A message with a text body and one small attachment for each name, in order.
 fn one_attachment_each(names: &[&str]) -> Vec<u8> {
     let mut raw = String::from(
         "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n\
@@ -279,6 +296,7 @@ fn one_attachment_each(names: &[&str]) -> Vec<u8> {
     raw.into_bytes()
 }
 
+/// A name past the length limit is shortened, extension kept, and later attachments still save.
 #[test]
 fn save_attachments_shortens_long_names_and_keeps_going() {
     let long = format!("{}.pdf", "é".repeat(150)); // 304 bytes
@@ -299,6 +317,7 @@ fn save_attachments_shortens_long_names_and_keeps_going() {
     assert!(name.len() <= 210 && name.ends_with("-1.pdf"), "{name}");
 }
 
+/// Characters that could disguise a name are replaced.
 #[test]
 fn save_attachments_replaces_control_and_bidi_characters() {
     let raw = one_attachment_each(&[
@@ -322,4 +341,110 @@ fn save_attachments_replaces_control_and_bidi_characters() {
             "marks___.txt"
         ]
     );
+}
+
+/// Real mail the panel found hidden (N31): odd but harmless header syntax, a byte order mark, a
+/// blank line in front. Hiding a message costs more than showing a stray file, so these pass.
+#[test]
+fn tolerant_header_syntax_still_looks_like_email() {
+    for name in [
+        "space-before-colon.eml",
+        "line-without-colon.eml",
+        "byte-order-mark.eml",
+        "leading-blank-line.eml",
+        "smtputf8-no-charset.eml",
+        "resent.eml",
+    ] {
+        assert!(looks_like_email(&fixture(name)), "{name}");
+    }
+}
+
+/// Files that look a little like headers but aren't mail (N31), and the SES setup notice with its
+/// subject either plain or encoded.
+#[test]
+fn header_like_files_and_the_setup_notice_do_not_look_like_email() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail/sniff/reject");
+    let mut seen = 0;
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let raw = fs::read(&path).unwrap();
+        assert!(
+            !looks_like_email(&raw),
+            "{} was taken for an email",
+            path.display()
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, 5, "expected five reject fixtures");
+}
+
+/// A prefix that stops before the headers end gets the benefit of the doubt: one real mail header
+/// and nothing that isn't a header is enough, since the anchor header may simply come later.
+#[test]
+fn a_short_prefix_needs_only_one_mail_header() {
+    assert!(looks_like_email(
+        b"Date: Tue, 22 Sep 2026 10:00:00 +0000\r\nX-Mailer: x"
+    ));
+    assert!(looks_like_email(b"Subject: hi\r\nTo: b@exa"));
+    // Once the header block is complete, the full rule applies.
+    assert!(!looks_like_email(
+        b"Date: Tue, 22 Sep 2026 10:00:00 +0000\r\nSubject: x\r\n\r\nbody"
+    ));
+    assert!(looks_like_email(
+        b"From: a@example.com\r\nSubject: x\r\n\r\nbody"
+    ));
+    // A From that isn't an address doesn't anchor anything.
+    assert!(!looks_like_email(b"From: tool\r\nSubject: x\r\n\r\nbody"));
+}
+
+/// Zone names read with their real offsets (N33), and a zone nobody knows sorts as UTC.
+#[test]
+fn summarize_reads_zone_names() {
+    let s = summarize(&fixture("date-zone-name-cest.eml"));
+    assert_eq!(s.date, Some(datetime!(2026-09-22 10:00:00 +02:00)));
+    // A zone nobody can pin down is "-0000" in RFC 5322 terms; the inbox sorts it as UTC.
+    let s = summarize(&fixture("date-gmt-plus-hours.eml"));
+    assert_eq!(s.date, Some(datetime!(2026-09-22 10:00:00 +00:00)));
+    let s = summarize(&fixture("date-iso-8601.eml"));
+    assert_eq!(s.date, None);
+    assert_eq!(s.date_raw, "2026-09-22T10:00:00Z");
+}
+
+/// Each attachment shape the panel found hidden now counts (N30).
+#[test]
+fn summarize_counts_attachments_the_panel_found_missing() {
+    for name in [
+        "forward-as-attachment.eml",
+        "apple-inline-pdf.eml",
+        "smime-signed.eml",
+        "mailman-wrap.eml",
+        "single-part-pdf.eml",
+        "attachment-without-name.eml",
+        "delivery-status.eml",
+        "inline-named-text.eml",
+        "calendar-only.eml",
+    ] {
+        assert!(summarize(&fixture(name)).has_attachments, "{name}");
+    }
+    assert!(!summarize(&fixture("plain-lf.eml")).has_attachments);
+}
+
+/// A message with more attachments than one save writes (N18): the rest are counted, not lost
+/// silently, and still nothing is overwritten.
+#[test]
+fn save_reports_what_the_cap_skipped() {
+    let names: Vec<String> = (0..1_200).map(|i| format!("f{}.txt", i % 3)).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let raw = one_attachment_each(&refs);
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("f0.txt"), b"mine").unwrap();
+    let report = save_attachments_report(&raw, dir.path()).unwrap();
+    assert_eq!(report.saved.len(), 1_000);
+    assert_eq!(report.skipped, 200);
+    assert_eq!(fs::read(dir.path().join("f0.txt")).unwrap(), b"mine");
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1_001);
+    // The per-name suffixes carry on from where each name's run left off.
+    assert_eq!(report.saved[0].file_name().unwrap(), "f0-1.txt");
+    assert_eq!(report.saved[3].file_name().unwrap(), "f0-2.txt");
+    assert_eq!(report.saved[4].file_name().unwrap(), "f1-1.txt");
 }

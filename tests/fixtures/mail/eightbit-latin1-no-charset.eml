@@ -1,0 +1,7 @@
+From: a@example.com
+To: b@example.com
+Subject: 8bit latin-1 body, no charset
+MIME-Version: 1.0
+Content-Transfer-Encoding: 8bit
+
+café crème brûlée

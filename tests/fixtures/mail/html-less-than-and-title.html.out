@@ -1,0 +1,11 @@
+From: a@example.com
+Reply-To: 
+To: b@example.com
+Cc: 
+Bcc: 
+Date: 
+Subject: html only
+Message-ID: 
+Message:
+
+<html><head><title>Newsletter title</title></head><body><p>If x < 5 and y > 3 then ok</p><!--[if mso]><p>Outlook only text</p><![endif]--><p>a&nbsp;b &amp; c</p></body></html>

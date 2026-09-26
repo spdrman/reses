@@ -1,0 +1,3 @@
+From: a@example.com
+To: b@example.org
+Subject: all headers, no body, no final newline
