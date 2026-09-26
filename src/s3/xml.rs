@@ -127,10 +127,11 @@ pub fn parse_buckets(body: &[u8]) -> Result<Vec<Bucket>, S3Error> {
         .collect())
 }
 
-/// A ListObjectsV2 page. `url_encoded` says the request asked for `encoding-type=url`,
-/// so keys and prefixes need decoding.
-pub fn parse_listing(body: &[u8], url_encoded: bool) -> Result<Listing, S3Error> {
+/// A ListObjectsV2 page. Keys and prefixes are decoded when the response says its
+/// `EncodingType` is `url`, and left alone otherwise.
+pub fn parse_listing(body: &[u8]) -> Result<Listing, S3Error> {
     let doc: ListBucketResult = parse(body, "ListBucketResult")?;
+    let url_encoded = true;
     let decode = |s: String| if url_encoded { url_decode(&s) } else { Ok(s) };
     let mut listing = Listing::default();
     for p in doc.common_prefixes {

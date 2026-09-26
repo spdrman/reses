@@ -37,7 +37,7 @@ fn list_all_my_buckets_empty() {
 
 #[test]
 fn list_objects_v2_with_folders_and_a_next_page() {
-    let l = parse_listing(&fixture("list_objects_v2_folders.xml"), true).unwrap();
+    let l = parse_listing(&fixture("list_objects_v2_folders.xml")).unwrap();
     assert_eq!(l.prefixes, vec!["inbox/2024/", "inbox/spam folder/"]);
     assert_eq!(
         l.objects,
@@ -64,7 +64,7 @@ fn list_objects_v2_with_folders_and_a_next_page() {
 
 #[test]
 fn list_objects_v2_last_page_has_no_token() {
-    let l = parse_listing(&fixture("list_objects_v2_last_page.xml"), false).unwrap();
+    let l = parse_listing(&fixture("list_objects_v2_last_page.xml")).unwrap();
     assert_eq!(l.prefixes, Vec::<String>::new());
     assert_eq!(l.objects.len(), 1);
     assert_eq!(l.objects[0].key, "inbox/zz-last");
@@ -81,14 +81,14 @@ fn list_objects_v2_without_url_encoding_leaves_keys_alone() {
     // A plain listing with a literal `+` in a key must not turn it into a space.
     let body = br#"<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><Contents><Key>a+b%20c</Key><Size>1</Size></Contents></ListBucketResult>"#;
-    let l = parse_listing(body, false).unwrap();
+    let l = parse_listing(body).unwrap();
     assert_eq!(l.objects[0].key, "a+b%20c");
     assert_eq!(l.objects[0].last_modified, None);
 }
 
 #[test]
 fn list_objects_v2_empty() {
-    let l = parse_listing(&fixture("list_objects_v2_empty.xml"), false).unwrap();
+    let l = parse_listing(&fixture("list_objects_v2_empty.xml")).unwrap();
     assert_eq!(l, reses::s3::Listing::default());
 }
 
@@ -127,7 +127,7 @@ fn error_documents() {
 #[test]
 fn malformed_xml_is_a_parse_error() {
     for name in ["malformed_truncated.xml", "malformed_bad_size.xml"] {
-        let err = parse_listing(&fixture(name), false).unwrap_err();
+        let err = parse_listing(&fixture(name)).unwrap_err();
         assert!(matches!(err, S3Error::Parse(_)), "{name}: {err:?}");
     }
     assert!(matches!(
@@ -140,7 +140,24 @@ fn malformed_xml_is_a_parse_error() {
     ));
     // The wrong document entirely is not a listing.
     assert!(matches!(
-        parse_listing(&fixture("error_no_such_key.xml"), false),
+        parse_listing(&fixture("error_no_such_key.xml")),
         Err(S3Error::Parse(_))
     ));
+}
+
+// Review item 18: decode only when the response itself says it's url-encoded.
+
+#[test]
+fn keys_are_decoded_only_when_the_response_says_encoding_type_url() {
+    let plain = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>a+b%41</Key><Size>1</Size></Contents><CommonPrefixes><Prefix>x+y%2F/</Prefix></CommonPrefixes></ListBucketResult>"#;
+    let l = parse_listing(plain).unwrap();
+    assert_eq!(l.objects[0].key, "a+b%41");
+    assert_eq!(l.prefixes, vec!["x+y%2F/"]);
+
+    let encoded = br#"<ListBucketResult><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>a+b%41</Key><Size>1</Size></Contents></ListBucketResult>"#;
+    assert_eq!(parse_listing(encoded).unwrap().objects[0].key, "a bA");
+
+    // Any other encoding type is not one we know how to undo, so the key stays as sent.
+    let other = br#"<ListBucketResult><EncodingType>base64</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>a+b</Key><Size>1</Size></Contents></ListBucketResult>"#;
+    assert_eq!(parse_listing(other).unwrap().objects[0].key, "a+b");
 }

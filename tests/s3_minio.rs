@@ -220,3 +220,68 @@ fn unreachable_endpoint_is_a_transport_error() {
     .with_endpoint("http://127.0.0.1:9", true);
     assert!(matches!(c.list_buckets(), Err(S3Error::Transport(_))));
 }
+
+/// Review item 26: keys with `.` and `..` segments. S3 treats a key as an opaque string, so
+/// each of these should put, list, get and delete as itself, and must never touch a
+/// neighbour that a normalised path would point at.
+#[test]
+#[ignore]
+fn dot_segment_keys_round_trip() {
+    let c = client("us-east-1");
+    let b = bucket("dots");
+    c.create_bucket(&b).unwrap();
+    let keys = [
+        "inbox/./a",
+        "inbox/../b",
+        "inbox/c/.",
+        "inbox/d/..",
+        "./e",
+        "../f",
+        ".",
+        "..",
+        "inbox/.hidden",
+        "inbox/..double",
+        "inbox/g/../../h",
+    ];
+    // Neighbours a normalising client or server would land on instead.
+    let decoys = ["inbox/a", "b", "inbox/c", "inbox", "e", "f", "h"];
+    for k in decoys {
+        c.put_object(&b, k, format!("decoy {k}").as_bytes())
+            .unwrap();
+    }
+
+    let mut report = Vec::new();
+    for k in keys {
+        let body = format!("body of {k}");
+        let put = c.put_object(&b, k, body.as_bytes());
+        let listed = c
+            .list(&b, k, None, None)
+            .map(|l| l.objects.iter().any(|o| o.key == k));
+        let got = c.get(&b, k).map(|d| d == body.as_bytes());
+        let deleted = c.delete(&b, k);
+        let gone = c.get(&b, k).map_err(|e| e.is_not_found());
+        report.push(format!(
+            "{k:?}: put={put:?} listed={listed:?} get_matches={got:?} delete={deleted:?} after_delete={gone:?}"
+        ));
+    }
+    let table = report.join("\n");
+    eprintln!("{table}");
+    for line in &report {
+        assert!(
+            line.contains("put=Ok(())")
+                && line.contains("listed=Ok(true)")
+                && line.contains("get_matches=Ok(true)")
+                && line.contains("delete=Ok(())")
+                && line.contains("after_delete=Err(true)"),
+            "dot-segment keys did not round-trip:\n{table}"
+        );
+    }
+    // No decoy was overwritten or deleted along the way.
+    for k in decoys {
+        assert_eq!(
+            c.get(&b, k).unwrap(),
+            format!("decoy {k}").as_bytes(),
+            "{k} was touched:\n{table}"
+        );
+    }
+}

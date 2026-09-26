@@ -212,6 +212,7 @@ impl S3Client {
                 url,
                 headers: all_headers,
                 body: call.body.clone(),
+                body_limit: Default::default(),
             })
             .map_err(S3Error::Transport)
     }
@@ -265,6 +266,7 @@ impl S3Client {
             },
             S3Error::Transport(m) => S3Error::Transport(self.scrub(m)),
             S3Error::Parse(m) => S3Error::Parse(self.scrub(m)),
+            other @ (S3Error::TooLarge { .. } | S3Error::EmptyKey) => other,
         })
     }
 }
@@ -348,7 +350,7 @@ impl Store for S3Client {
         self.guard(
             self.call(&call)
                 .and_then(ok_status)
-                .and_then(|r| xml::parse_listing(&r.body, true)),
+                .and_then(|r| xml::parse_listing(&r.body)),
         )
     }
 

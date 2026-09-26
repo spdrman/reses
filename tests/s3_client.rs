@@ -6,7 +6,10 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use reses::s3::{Credentials, HttpRequest, HttpResponse, S3Client, S3Error, Store, Transport};
+use reses::s3::{
+    Credentials, ERROR_BODY_LIMIT, HttpRequest, HttpResponse, LIST_BODY_LIMIT, Listing,
+    MAX_GET_BYTES, RANGE_SLACK, S3Client, S3Error, Store, Transport, valid_region,
+};
 
 const SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
 const TOKEN: &str = "FQoGZXIvYXdzEXAMPLE/session+token==";
@@ -56,6 +59,7 @@ fn ok(status: u16, body: &[u8]) -> Answer {
         status,
         headers: vec![],
         body: body.to_vec(),
+        ..Default::default()
     })
 }
 
@@ -67,6 +71,7 @@ fn with_headers(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Answer {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         body: body.to_vec(),
+        ..Default::default()
     })
 }
 
@@ -583,4 +588,303 @@ fn client_is_usable_as_a_shared_store() {
     let fake = Fake::new(vec![ok(200, b"x")]);
     let store: Arc<dyn Store> = Arc::new(minio(&fake));
     assert_eq!(store.get("mail", "k").unwrap(), b"x");
+}
+
+fn truncated(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Answer {
+    let mut resp = with_headers(status, headers, body).unwrap();
+    resp.truncated = true;
+    Ok(resp)
+}
+
+// Review item 4: every read is bounded.
+
+#[test]
+fn get_reads_at_most_the_message_limit() {
+    let fake = Fake::new(vec![ok(200, b"x")]);
+    minio(&fake).get("mail", "k").unwrap();
+    assert_eq!(fake.sent()[0].body_limit.ok, MAX_GET_BYTES);
+}
+
+#[test]
+fn get_of_an_object_over_the_limit_is_too_large() {
+    let size = "52428800";
+    let fake = Fake::new(vec![
+        truncated(200, &[("content-length", size)], b"partial"),
+        truncated(200, &[], b"partial"),
+    ]);
+    let c = minio(&fake);
+    assert_eq!(
+        c.get("mail", "k").unwrap_err(),
+        S3Error::TooLarge {
+            size: Some(52_428_800),
+            limit: MAX_GET_BYTES,
+        }
+    );
+    // Without a Content-Length the size is unknown, but it's still the same error.
+    assert_eq!(
+        c.get("mail", "k").unwrap_err(),
+        S3Error::TooLarge {
+            size: None,
+            limit: MAX_GET_BYTES,
+        }
+    );
+    let text = S3Error::TooLarge {
+        size: Some(52_428_800),
+        limit: MAX_GET_BYTES,
+    }
+    .to_string();
+    assert!(text.contains("52428800 bytes"), "{text}");
+    assert!(text.contains(&MAX_GET_BYTES.to_string()), "{text}");
+}
+
+#[test]
+fn get_range_limits_the_partial_and_the_whole_body() {
+    let fake = Fake::new(vec![ok(206, b"x")]);
+    minio(&fake).get_range("mail", "k", 100, 199).unwrap();
+    let limit = fake.sent()[0].body_limit;
+    assert_eq!(limit.partial, 100 + RANGE_SLACK);
+    // A 200 needs only the bytes up to the end of the range.
+    assert_eq!(limit.ok, 200);
+}
+
+#[test]
+fn get_range_on_a_200_stops_once_it_has_enough() {
+    // The transport stopped at the limit; the bytes it has cover the range.
+    let fake = Fake::new(vec![truncated(200, &[], b"hello")]);
+    assert_eq!(minio(&fake).get_range("mail", "k", 1, 4).unwrap(), b"ello");
+}
+
+#[test]
+fn get_range_on_a_200_clamps_an_end_inside_the_object() {
+    // Review item 29: the 200 path with end < len.
+    let fake = Fake::new(vec![ok(200, b"hello world")]);
+    assert_eq!(minio(&fake).get_range("mail", "k", 0, 4).unwrap(), b"hello");
+}
+
+#[test]
+fn get_range_far_into_an_object_caps_the_200_limit() {
+    let fake = Fake::new(vec![truncated(200, &[], b"")]);
+    let err = minio(&fake)
+        .get_range("mail", "k", 1 << 40, (1 << 40) + 9)
+        .unwrap_err();
+    assert!(matches!(err, S3Error::TooLarge { .. }), "{err:?}");
+    let limit = fake.sent()[0].body_limit;
+    assert_eq!(limit.ok, MAX_GET_BYTES);
+    assert_eq!(limit.partial, 10 + RANGE_SLACK);
+}
+
+#[test]
+fn listings_and_small_answers_are_bounded_too() {
+    let fake = Fake::new(vec![
+        ok(200, &fixture("list_buckets.xml")),
+        ok(200, &fixture("list_objects_v2_empty.xml")),
+        ok(204, b""),
+        ok(200, b""),
+    ]);
+    let c = minio(&fake);
+    c.list_buckets().unwrap();
+    c.list("mail", "", None, None).unwrap();
+    c.delete("mail", "k").unwrap();
+    c.put_object("mail", "k", b"x").unwrap();
+    let sent = fake.sent();
+    assert_eq!(sent[0].body_limit.ok, LIST_BODY_LIMIT);
+    assert_eq!(sent[1].body_limit.ok, LIST_BODY_LIMIT);
+    assert_eq!(sent[2].body_limit.ok, ERROR_BODY_LIMIT);
+    assert_eq!(sent[3].body_limit.ok, ERROR_BODY_LIMIT);
+}
+
+#[test]
+fn a_truncated_listing_is_too_large_not_a_parse_error() {
+    let fake = Fake::new(vec![truncated(200, &[], b"<ListBucketResult>")]);
+    let err = minio(&fake).list("mail", "", None, None).unwrap_err();
+    assert!(
+        matches!(err, S3Error::TooLarge { limit, .. } if limit == LIST_BODY_LIMIT),
+        "{err:?}"
+    );
+}
+
+// Review item 18: the client trusts the response's EncodingType, not its own request.
+
+#[test]
+fn list_leaves_keys_alone_when_the_server_ignored_encoding_type() {
+    let body = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>a+b%41</Key><Size>1</Size></Contents></ListBucketResult>"#;
+    let fake = Fake::new(vec![ok(200, body), ok(204, b"")]);
+    let c = minio(&fake);
+    let key = c.list("mail", "", None, None).unwrap().objects[0]
+        .key
+        .clone();
+    assert_eq!(key, "a+b%41");
+    // And deleting it deletes that key, not "a bA".
+    c.delete("mail", &key).unwrap();
+    assert_eq!(fake.sent()[1].url, "http://minio:9000/mail/a%2Bb%2541");
+}
+
+// Review item 22: region strings are checked before they go anywhere.
+
+#[test]
+fn valid_region_accepts_region_names_only() {
+    for ok in [
+        "us-east-1",
+        "eu-west-2",
+        "ap-southeast-4",
+        "us-gov-west-1",
+        "cn-north-1",
+        "minio",
+    ] {
+        assert!(valid_region(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "x.attacker.example/#",
+        "eu-west-2.evil",
+        "us-east-1/",
+        "US-EAST-1",
+        "eu west",
+        "-eu",
+        "eu-",
+        "a:1",
+        "reg\u{e9}on",
+        &"a".repeat(64),
+    ] {
+        assert!(!valid_region(bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn a_redirect_to_a_bad_region_header_is_ignored() {
+    let fake = Fake::new(vec![with_headers(
+        301,
+        &[("x-amz-bucket-region", "x.attacker.example/#")],
+        b"",
+    )]);
+    let c = aws("us-east-1", &fake);
+    let err = c.get("mail-inbound", "k").unwrap_err();
+    assert!(
+        matches!(err, S3Error::Service { status: 301, .. }),
+        "{err:?}"
+    );
+    assert_eq!(fake.sent().len(), 1);
+    assert_eq!(c.bucket_region("mail-inbound"), None);
+}
+
+#[test]
+fn a_bad_region_in_an_error_body_is_ignored() {
+    let body = b"<Error><Code>AuthorizationHeaderMalformed</Code><Message>m</Message><Region>evil.example/x</Region></Error>";
+    let fake = Fake::new(vec![ok(400, body)]);
+    assert!(aws("us-east-1", &fake).get("mail-inbound", "k").is_err());
+    assert_eq!(fake.sent().len(), 1);
+}
+
+#[test]
+fn a_bad_region_header_falls_back_to_a_good_body_region() {
+    let fake = Fake::new(vec![
+        with_headers(
+            400,
+            &[("x-amz-bucket-region", "evil.example/x")],
+            &fixture("error_authorization_header_malformed.xml"),
+        ),
+        ok(200, b"x"),
+    ]);
+    aws("us-east-1", &fake).get("mail-inbound", "k").unwrap();
+    assert_eq!(
+        fake.sent()[1].url,
+        "https://mail-inbound.s3.eu-west-2.amazonaws.com/k"
+    );
+}
+
+#[test]
+fn a_bad_region_given_to_new_falls_back_to_us_east_1() {
+    let fake = Fake::new(vec![ok(200, &fixture("list_buckets.xml"))]);
+    aws("evil.example/#", &fake).list_buckets().unwrap();
+    let req = &fake.sent()[0];
+    assert_eq!(req.url, "https://s3.us-east-1.amazonaws.com/");
+    assert_eq!(scope_region(req), "us-east-1");
+}
+
+// Review item 23: an empty key never reaches the bucket root.
+
+#[test]
+fn empty_keys_are_refused_without_a_request() {
+    let fake = Fake::new(vec![]);
+    let c = minio(&fake);
+    assert_eq!(c.get("mail", "").unwrap_err(), S3Error::EmptyKey);
+    assert_eq!(
+        c.get_range("mail", "", 0, 9).unwrap_err(),
+        S3Error::EmptyKey
+    );
+    assert_eq!(c.delete("mail", "").unwrap_err(), S3Error::EmptyKey);
+    assert_eq!(
+        c.put_object("mail", "", b"x").unwrap_err(),
+        S3Error::EmptyKey
+    );
+    assert!(fake.sent().is_empty());
+}
+
+// Review item 29: a secret echoed back url-encoded is scrubbed too.
+
+#[test]
+fn url_encoded_secrets_are_scrubbed_from_errors() {
+    // SECRET has `/` in it and TOKEN has `/`, `+` and `=`, so encoding changes them.
+    let upper = |s: &str| reses::s3::sigv4::uri_encode(s, false);
+    let lower = |s: &str| {
+        let mut out = String::new();
+        let enc = upper(s);
+        let mut chars = enc.chars().peekable();
+        while let Some(c) = chars.next() {
+            out.push(c);
+            if c == '%' {
+                for _ in 0..2 {
+                    out.push(chars.next().unwrap().to_ascii_lowercase());
+                }
+            }
+        }
+        out
+    };
+    assert_ne!(upper(SECRET), SECRET);
+    assert_ne!(lower(SECRET), upper(SECRET));
+    let echoes = [
+        format!("{} and {}", upper(SECRET), upper(TOKEN)),
+        format!("{} and {}", lower(SECRET), lower(TOKEN)),
+    ];
+    let fake = Fake::new(
+        echoes
+            .iter()
+            .flat_map(|e| {
+                [
+                    Err(format!("proxy said {e}")),
+                    ok(
+                        403,
+                        format!("<Error><Code>SignatureDoesNotMatch</Code><Message>{e}</Message></Error>")
+                            .as_bytes(),
+                    ),
+                ]
+            })
+            .collect(),
+    );
+    let c = S3Client::new(creds(Some(TOKEN)), "us-east-1").with_transport(fake.clone());
+    for _ in 0..4 {
+        let err = c.get("mail", "k").unwrap_err();
+        for text in [err.to_string(), format!("{err:?}")] {
+            for secret in [SECRET, TOKEN] {
+                for form in [secret.to_string(), upper(secret), lower(secret)] {
+                    assert!(!text.contains(&form), "{form} in {text}");
+                }
+            }
+        }
+    }
+}
+
+// Review item 25: a small helper so the screens can stop a listing that repeats itself.
+
+#[test]
+fn next_page_refuses_a_token_that_does_not_move() {
+    let page = |t: Option<&str>| Listing {
+        next_token: t.map(str::to_string),
+        ..Listing::default()
+    };
+    assert_eq!(page(Some("b")).next_page(Some("a")), Some("b"));
+    assert_eq!(page(Some("b")).next_page(None), Some("b"));
+    assert_eq!(page(Some("a")).next_page(Some("a")), None);
+    assert_eq!(page(Some("")).next_page(None), None);
+    assert_eq!(page(None).next_page(Some("a")), None);
 }
