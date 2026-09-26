@@ -408,6 +408,14 @@ fn removing_a_token_or_region_drops_its_continuation_lines() {
     assert!(!text.contains("continued-token"), "{text}");
     assert!(!text.contains("more-token"), "{text}");
     assert!(!text.contains("continued-region"), "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "[a]\naws_access_key_id = {KEY_ID}\naws_secret_access_key = {SECRET}\n\
+             note = keep\n  continued-note\n[b]\naws_access_key_id = AKIDEXAMPLE2\n\
+             aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY2\n"
+        )
+    );
 }
 
 #[test]
