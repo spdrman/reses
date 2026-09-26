@@ -198,7 +198,7 @@ fn dist_writes(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Nothing in the Makefile or ci-docker.sh writes into `dist/` except scripts/place-binary.sh.
+/// Nothing in the Makefile or fetch-darwin.sh writes into `dist/` except scripts/place-binary.sh.
 /// #15: an in-place overwrite of a binary that has run, while anything holds it open, leaves it
 /// dead for exec. place-binary.sh puts each build on a new inode instead.
 #[test]
