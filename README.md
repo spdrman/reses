@@ -45,7 +45,7 @@ A terminal inbox for the raw email that Amazon SES stores in S3.
 
 SES can drop every incoming message into an S3 bucket, but what lands there is the raw RFC 5322 text: pages of `Received:`, DKIM and ARC headers, MIME boundaries and base64. Run `reses` and it opens an inbox over the bucket, so you can read and delete that mail without downloading anything by hand... and if you do have a stored message on disk, it can decode that too.
 
-Rust 1.98+ is needed to build it, but you never need Rust installed, since every build runs in Docker.
+Rust 1.98+ is needed to build it, but you never need Rust installed, since every build runs in Docker on a remote x86_64 host (see [CONTRIBUTING.md](CONTRIBUTING.md) for `RESES_NAS`).
 
 ## Usage
 
@@ -104,7 +104,7 @@ The expected output for each test message lives in `tests/fixtures/mail/` next t
 
 ## Build and install
 
-Everything runs in Docker through `scripts/ci-docker.sh`, and the Makefile wraps it:
+Everything runs in Docker on a remote x86_64 host through `scripts/ci-docker.sh`, and the Makefile wraps it. Set `RESES_NAS=user@host` to your own Docker host first; [CONTRIBUTING.md](CONTRIBUTING.md) says what it needs.
 
 ```
 make gate          fmt, clippy, check, docs and tests
@@ -116,7 +116,7 @@ make demo          re-record docs/demo.gif against a throwaway MinIO, failing un
 
 `~/.local/bin` has to be on your PATH. If something is already there under that name, `make install` leaves it alone and tells you to move it aside first.
 
-On macOS, never install a new build by `cp` over an existing copy. Once a binary has run, overwriting its file in place while any process holds it open (a `reses` that is still running, or Docker Desktop, which holds everything under a mounted folder) makes macOS kill it on every later launch, silently, with exit 137. `make install` links to `dist/reses`, and every build is renamed into place on a new file, so it never hits this. If you copy a binary somewhere yourself, copy to a new name and `mv` it over the old one. See #15.
+On macOS, never install a new build by `cp` over an existing copy. Once a binary has run, overwriting its file in place while any process holds it open (a `reses` that is still running, for one) makes macOS kill it on every later launch, silently, with exit 137. `make install` links to `dist/reses`, and every build is renamed into place on a new file, so it never hits this. If you copy a binary somewhere yourself, copy to a new name and `mv` it over the old one. See #15.
 
 ## License
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render the committed brand assets from the SVGs in assets/brand/source/. Everything runs in
-# Docker, so neither Poppins nor Inkscape is ever needed on the host, and the build never needs
+# Docker on the NAS (scripts/nas-lib.sh), so neither Poppins nor Inkscape is ever needed on the host, and the build never needs
 # either: the outputs are committed.
 #
 #   scripts/render-brand.sh
@@ -17,7 +17,8 @@
 #       the font's license, since its glyph outlines are now in the SVGs
 set -euo pipefail
 
-PLATFORM="linux/arm64"
+# The renders run on the NAS, like every other container this repo starts.
+PLATFORM="linux/amd64"
 
 # Poppins from google/fonts, pinned to a commit and checked by hash.
 FONTS_COMMIT="8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5"
@@ -33,14 +34,29 @@ RUN apt-get update \
 
 if [ "${1:-}" != "--inside" ]; then
   REPO_ROOT="$(git rev-parse --show-toplevel)"
+  export RESES_LANE="${RESES_LANE:-brand}"
+  # shellcheck source=nas-lib.sh
+  . "$REPO_ROOT/scripts/nas-lib.sh"
+  PLATFORM="$NAS_PLATFORM"
+  W="$NAS_SCRATCH/$RESES_LANE"
   IMAGE="reses-brand:$(printf '%s' "$DOCKERFILE" | shasum -a 256 | cut -c1-12)"
-  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    printf '%s\n' "$DOCKERFILE" | docker build --platform "$PLATFORM" -t "$IMAGE" -
+  RUN_NAME="reses-$RESES_LANE-$$"
+  mkdir -p "$REPO_ROOT/tmp"
+  BACK="$(mktemp -d "$REPO_ROOT/tmp/brand.XXXXXX")"
+  trap 'dk rm -f "$RUN_NAME" >/dev/null 2>&1 || true; [ -z "${NAS_LOCK_MINE:-}" ] || nas_scrub "$RESES_LANE"; nas_unlock; rm -rf "$BACK"' EXIT INT TERM
+
+  nas_push "$RESES_LANE"
+  if ! dk image inspect "$IMAGE" >/dev/null 2>&1; then
+    printf '%s\n' "$DOCKERFILE" | "${NAS_SSH[@]}" "docker build --platform $PLATFORM -t $IMAGE -"
   fi
-  exec docker run --rm --platform "$PLATFORM" \
+  dk run --rm --name "$RUN_NAME" --platform "$PLATFORM" \
     -e FONTS_URL="$FONTS_URL" -e REGULAR_SHA256="$REGULAR_SHA256" \
     -e EXTRABOLD_SHA256="$EXTRABOLD_SHA256" -e OFL_SHA256="$OFL_SHA256" \
-    -v "$REPO_ROOT:/repo" -w /repo "$IMAGE" bash scripts/render-brand.sh --inside
+    -v "$W:/repo" -w /repo "$IMAGE" bash scripts/render-brand.sh --inside
+  # Only the rendered assets come back, and they land beside the old ones before moving over.
+  nas_fetch "$W" "$BACK" assets/brand
+  cp -R "$BACK/assets/brand/." "$REPO_ROOT/assets/brand/"
+  exit 0
 fi
 
 # ---- inside the container from here on ----

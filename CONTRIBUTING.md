@@ -1,10 +1,14 @@
 # Contributing
 
-## Everything runs in Docker
+## Everything runs in Docker, on a remote host
 
 Never build or test with the toolchain on your machine. `scripts/ci-docker.sh` (or `make gate`) runs the same checks as `.github/workflows/ci.yml` inside a pinned image, and `tests/ci_parity.rs` fails if the two drift. A red run should mean the code is wrong, not that a laptop updated its compiler overnight.
 
-If you work in more than one worktree at once, give each its own `RESES_LANE=<name>` so they don't share a cargo target volume.
+The containers don't run on your machine either. Every script sources `scripts/nas-lib.sh`, which sends the tree over ssh to an x86_64 Docker host and runs everything there. It defaults to my build box, so point `RESES_NAS=user@host` at your own: any x86_64 Linux machine you can ssh into without a password prompt, with Docker, `tar` and your user in the `docker` group. It needs nothing else, not even git. It can be the machine you're on, if that's x86_64 Linux and runs sshd.
+
+On the host, everything lives in `~/workspace/reses-ci/<lane>`, and each run clears its lane when it ends, Ctrl-C included. A lane is locked while a run uses it, so a second run in the same lane is turned away rather than pushing over the first one's tree; if a killed run leaves the lock behind, `scripts/ci-docker.sh --nas-unlock <lane>` clears it. Only the files git would see go over (tracked, plus untracked ones that aren't ignored), and an untracked file that looks like a key, a credentials file or real mail stops the push. `scripts/ci-docker.sh --nas-clean` removes every container, network, volume, image and directory reses left there.
+
+If you work in more than one worktree at once, give each its own `RESES_LANE=<name>` so they don't share a scratch directory or a cargo target volume.
 
 ## Every PR closes an issue
 
@@ -43,9 +47,9 @@ Tests never read or write the real `~/.aws` or `~/.config/reses`; they use temp 
 
 ## macOS binaries in dist/
 
-Every binary written into `dist/` goes through `scripts/place-binary.sh`, which copies beside the destination and renames over it. `tests/ci_parity.rs` fails if a `cp` or `mv` into `dist/` appears anywhere else in the Makefile or `scripts/ci-docker.sh`. The reason is #15: on Apple Silicon, overwriting a binary that has already run, in place, while any process holds it open, makes macOS kill it on every later exec, and Docker Desktop holds everything under a mounted folder.
+Every binary written into `dist/` goes through `scripts/place-binary.sh`, which copies beside the destination and renames over it. `tests/ci_parity.rs` fails if a `cp` or `mv` into `dist/` appears anywhere else in the Makefile or `scripts/ci-docker.sh`. The reason is #15: on Apple Silicon, overwriting a binary that has already run, in place, while any process holds it open, makes macOS kill it on every later exec, and Docker Desktop used to hold everything under a mounted folder. Builds run remotely now, but the rule stays, since a running `reses` holds its binary just the same.
 
-Two side effects are expected. Docker Desktop keeps the old, now unlinked binaries open, so each `make darwin` leaves a few MB on disk that comes back when Docker restarts. And a build killed partway through can leave a `dist/*.tmp.XXXXXX` file behind; nothing ever runs it, and it's safe to delete.
+One side effect is expected: a build killed partway through can leave a `dist/*.tmp.XXXXXX` file behind; nothing ever runs it, and it's safe to delete.
 
 ## Releasing
 
