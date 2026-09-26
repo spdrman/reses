@@ -50,9 +50,11 @@ case "${1:-}" in
   --exec) shift; run "$*" ;;
   --shell) run bash ;;
   --darwin)
+    # place-binary.sh rather than cp: the host runs the result, and a cp over the previous
+    # build leaves a binary macOS kills at exec (#15).
     run 'set -e
 cargo zigbuild --release --locked --target aarch64-apple-darwin
-mkdir -p dist && cp /target/aarch64-apple-darwin/release/reses dist/reses-aarch64-apple-darwin
+mkdir -p dist && scripts/place-binary.sh /target/aarch64-apple-darwin/release/reses dist/reses-aarch64-apple-darwin
 ls -l dist/' ;;
   --integration)
     NET="reses-it-${LANE}"
