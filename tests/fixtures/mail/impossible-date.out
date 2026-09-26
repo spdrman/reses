@@ -1,0 +1,11 @@
+From: baddate@example.com
+Reply-To: 
+To: someone@example.org
+Cc: 
+Bcc: 
+Date: Mon, 31 Feb 2026 25:61:00 +0000
+Subject: Date that parses but can't exist
+Message-ID: <impossible-date-1@example.com>
+Message:
+
+The date tokenizes but isn't a real calendar date.

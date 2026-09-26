@@ -1,0 +1,11 @@
+From: boss@example.com
+Reply-To: 
+To: team@example.org
+Cc: 
+Bcc: Secret Keeper <secret@example.org>, second@example.org
+Date: Fri, 09 Oct 2026 07:07:07
+Subject: Explicit Bcc wins
+Message-ID: <bcc-1@example.com>
+Message:
+
+Explicit Bcc header, and a naive -0000 date.

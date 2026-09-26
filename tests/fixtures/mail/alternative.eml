@@ -1,0 +1,26 @@
+From: News <news@example.com>
+To: reader@example.org
+Subject: Multipart alternative
+Date: Mon, 5 Oct 2026 08:00:00 +0000
+Message-ID: <alt-1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="==ALT=="
+
+This is a preamble nobody reads.
+
+--==ALT==
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Plain part with a soft=
+ break and an equals sign =3D and caf=C3=A9.
+--==ALT==
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><style>p { color: red; }</style></head><body>
+<p>HTML part with caf=C3=A9 &amp; friends.</p><br/>
+<div>Second&nbsp;block</div>
+</body></html>
+--==ALT==--
+Epilogue text.

@@ -1,0 +1,16 @@
+Return-Path: <alice@example.com>
+From: "Example, Alice" <alice@example.com>
+Reply-To: Replies <replies@example.com>
+To: Bob <bob@example.org>, carol@example.org
+Cc: "Dave (ops)" <dave@example.org>
+Subject: Plain text, CRLF line endings
+Date: Sat, 26 Sep 2026 09:15:00 +0200
+Message-ID: <plain-crlf-1@example.com>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hello both,
+
+CRLF endings throughout.   
+Trailing spaces above get kept inside the body, stripped at the end.
+
