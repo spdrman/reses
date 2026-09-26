@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use aws_smithy_http_client::test_util::infallible_client_fn;
+use aws_smithy_types::body::SdkBody;
 use reses::s3::{Credentials, MAX_GET_BYTES, RANGE_SLACK, S3Client, S3Error, Store};
 
 const SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
@@ -55,8 +56,30 @@ impl Sent {
     }
 }
 
-/// One scripted answer: status, headers and body.
-type Answer = (u16, Vec<(String, String)>, Vec<u8>);
+/// One scripted answer: status, headers, body, and whether the body breaks after its bytes.
+type Answer = (u16, Vec<(String, String)>, Vec<u8>, bool);
+
+/// A body that hands over its bytes in one chunk and then fails. A reader that stops once it
+/// has enough never sees the failure; one that drains the whole body does.
+struct ThenFail {
+    data: Option<bytes::Bytes>,
+}
+
+impl http_body::Body for ThenFail {
+    type Data = bytes::Bytes;
+    type Error = std::io::Error;
+
+    /// The bytes first, then an error, for as long as anyone keeps asking.
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, std::io::Error>>> {
+        std::task::Poll::Ready(Some(match self.data.take() {
+            Some(d) => Ok(http_body::Frame::data(d)),
+            None => Err(std::io::Error::other("the body broke")),
+        }))
+    }
+}
 
 /// Records requests and answers them from a queue, in order.
 #[derive(Default)]
@@ -98,15 +121,23 @@ impl Fake {
                     .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect(),
             });
-            let (status, headers, body) = fake.answers.lock().unwrap().pop_front().unwrap_or((
+            let (status, headers, body, fail) = fake.answers.lock().unwrap().pop_front().unwrap_or((
                 599,
                 vec![],
                 b"no answer queued".to_vec(),
+                false,
             ));
             let mut resp = http::Response::builder().status(status);
             for (k, v) in headers {
                 resp = resp.header(k, v);
             }
+            let body = if fail {
+                SdkBody::from_body_1_x(ThenFail {
+                    data: Some(body.into()),
+                })
+            } else {
+                SdkBody::from(body)
+            };
             resp.body(body).unwrap()
         })
     }
@@ -129,7 +160,16 @@ fn with_headers(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Answer {
     {
         h.push(("content-length".into(), body.len().to_string()));
     }
-    (status, h, body.to_vec())
+    (status, h, body.to_vec(), false)
+}
+
+/// An answer whose body breaks once its bytes are read, with no Content-Length.
+fn then_fail(status: u16, headers: &[(&str, &str)], body: Vec<u8>) -> Answer {
+    let h = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    (status, h, body, true)
 }
 
 /// An S3 error document with this code and message.
@@ -244,16 +284,34 @@ fn get_range_trims_an_oversized_partial_answer() {
 }
 
 #[test]
-fn get_range_refuses_a_partial_answer_far_past_its_slack() {
-    // A server that answers a 4-byte range with more than the range plus slack is refused
-    // rather than read to the end.
+fn get_range_stops_reading_a_partial_answer_past_its_slack() {
+    // A server that answers a 4-byte range with far more than that: I stop reading once past
+    // the range plus slack, so the body breaking afterwards never surfaces.
     let big = vec![b'x'; (4 + RANGE_SLACK + 100) as usize];
-    let fake = Fake::new(vec![with_headers(
+    let fake = Fake::new(vec![then_fail(
         206,
         &[("content-range", "bytes 0-3/99999")],
-        &big,
+        big,
     )]);
     assert_eq!(minio(&fake).get_range("mail", "k", 0, 3).unwrap(), b"xxxx");
+}
+
+#[test]
+fn get_range_on_a_200_stops_reading_once_it_has_the_range() {
+    // A server that ignores Range and streams the whole object: I only need bytes up to `end`.
+    let fake = Fake::new(vec![then_fail(200, &[], b"hello world, and a lot more".to_vec())]);
+    assert_eq!(minio(&fake).get_range("mail", "k", 6, 10).unwrap(), b"world");
+}
+
+#[test]
+fn a_body_that_breaks_before_the_limit_is_a_transport_error() {
+    // The positive control for the two tests above: when the break comes before I have
+    // enough, it does surface.
+    let fake = Fake::new(vec![then_fail(200, &[], b"short".to_vec())]);
+    assert!(matches!(
+        minio(&fake).get("mail", "k"),
+        Err(S3Error::Transport(_))
+    ));
 }
 
 // The size cap on a whole get
@@ -288,7 +346,7 @@ fn get_of_an_object_over_the_cap_is_too_large() {
 fn get_stops_reading_a_body_that_runs_past_the_cap() {
     // No trustworthy length up front: the body itself runs over, and I stop at the cap.
     let body = vec![b'x'; (MAX_GET_BYTES + 10) as usize];
-    let fake = Fake::new(vec![(200, vec![], body)]);
+    let fake = Fake::new(vec![then_fail(200, &[], body)]);
     match minio(&fake).get("mail", "k").unwrap_err() {
         S3Error::TooLarge { limit, .. } => assert_eq!(limit, MAX_GET_BYTES),
         other => panic!("{other:?}"),
@@ -470,6 +528,13 @@ fn secrets_are_scrubbed_from_errors() {
             .replace('+', "%2B")
             .replace('=', "%3D")
     };
+    // The same escapes with lower-case hex digits, which some servers write.
+    let low = |s: &str| {
+        enc(s)
+            .replace("%2F", "%2f")
+            .replace("%2B", "%2b")
+            .replace("%3D", "%3d")
+    };
     let fake = Fake::new(vec![
         ok(
             403,
@@ -486,7 +551,7 @@ fn secrets_are_scrubbed_from_errors() {
             403,
             &error_doc(
                 "SignatureDoesNotMatch",
-                &format!("{} {}", enc(SECRET).to_lowercase(), enc(TOKEN)),
+                &format!("{} {}", low(SECRET), low(TOKEN)),
             ),
         ),
     ]);
@@ -495,7 +560,7 @@ fn secrets_are_scrubbed_from_errors() {
         let err = c.get("mail", "k").unwrap_err();
         for text in [err.to_string(), format!("{err:?}")] {
             for s in [SECRET, TOKEN] {
-                for form in [s.to_string(), enc(s), enc(s).to_lowercase()] {
+                for form in [s.to_string(), enc(s), low(s)] {
                     assert!(!text.contains(&form), "{form} in {text}");
                 }
             }
