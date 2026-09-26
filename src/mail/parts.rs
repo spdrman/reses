@@ -11,8 +11,8 @@
 
 use std::borrow::Cow;
 
-use mail_parser::decoders::charsets::map::charset_decoder;
 use mail_parser::decoders::base64::base64_decode;
+use mail_parser::decoders::charsets::map::charset_decoder;
 use mail_parser::parsers::MessageStream;
 use mail_parser::{Encoding, Message, MessageParser, MessagePart, MimeHeaders, PartType};
 
@@ -92,7 +92,10 @@ pub(super) fn prepare(raw: &[u8]) -> Cow<'_, [u8]> {
     loop {
         if let Some(r) = rest.strip_prefix(b"\r\n") {
             rest = r;
-        } else if let Some(r) = rest.strip_prefix(b"\n").or_else(|| rest.strip_prefix(b"\r")) {
+        } else if let Some(r) = rest
+            .strip_prefix(b"\n")
+            .or_else(|| rest.strip_prefix(b"\r"))
+        {
             rest = r;
         } else {
             break;
@@ -323,10 +326,12 @@ impl<'x> Parsed<'x> {
             .map_or_else(String::new, |m| headers::addresses(m, name))
     }
 
+    /// The Subject, decoded.
     pub(super) fn subject(&self) -> String {
         self.msg.as_ref().map_or_else(String::new, headers::subject)
     }
 
+    /// The Bcc line: an explicit Bcc, or the envelope recipients nobody else can see.
     pub(super) fn bcc(&self) -> String {
         self.msg.as_ref().map_or_else(String::new, headers::bcc)
     }
@@ -470,7 +475,6 @@ impl<'x> Parsed<'x> {
     }
 }
 
-
 impl Drop for Parsed<'_> {
     /// Hand the parsed message to `drop_flat`, so a deep chain of forwards can't exhaust the stack.
     fn drop(&mut self) {
@@ -599,7 +603,10 @@ mod tests {
         assert_eq!(&*prepare(b"\xef\xbb\xbfFrom: a"), b"From: a");
         assert_eq!(&*prepare(b"\r\n\n\rFrom: a"), b"From: a");
         assert_eq!(&*prepare(b"From: a\r\n"), b"From: a\r\n");
-        assert_eq!(&*prepare(b"From: a\rTo: b\r\rx\r"), b"From: a\r\nTo: b\r\n\r\nx\r\n");
+        assert_eq!(
+            &*prepare(b"From: a\rTo: b\r\rx\r"),
+            b"From: a\r\nTo: b\r\n\r\nx\r\n"
+        );
         assert_eq!(&*prepare(b"From: a\r\nTo: b\r"), b"From: a\r\nTo: b\r\n");
         let raw = b"Subject: =?CP932?B?gqA=?=\r\n\r\nbody keeps =?cp932?B?gqA=?=\r\n";
         assert_eq!(

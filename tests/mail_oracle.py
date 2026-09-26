@@ -70,14 +70,17 @@ class Part(EmailMessage):
     """
 
     def real_type(self):
+        """The content type as the part declares it."""
         return EmailMessage.get_content_type(self)
 
     def get_content_type(self):
+        """What the parser sees: message/* reads as an opaque leaf."""
         ctype = EmailMessage.get_content_type(self)
         return "application/x-opaque-message" if ctype.startswith("message/") else ctype
 
 
 def parse(raw):
+    """Parse `raw` with policy.default, after the same tidying reses does."""
     # reses tolerates a UTF-8 byte order mark and blank lines before the first header, which
     # some tools write when they save a message.
     if raw.startswith(b"\xef\xbb\xbf"):
@@ -110,12 +113,14 @@ def sanitize(text):
 
 
 def quote_name(name):
+    """A display name, quoted when it holds a character that would otherwise read as syntax."""
     if any(c in NAME_SPECIALS for c in name):
         return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return name
 
 
 def mailbox(address):
+    """One mailbox: "Name <address>", or whichever of the two it has."""
     spec = "" if address.addr_spec == "<>" else address.addr_spec
     name = address.display_name
     if name and spec:
@@ -124,6 +129,7 @@ def mailbox(address):
 
 
 def render_addresses(value):
+    """An address header printed back: mailboxes joined by ", ", groups as "Name: members;"."""
     if value is None or not hasattr(value, "groups"):
         return str(value or "").strip()
     out = []
@@ -162,6 +168,7 @@ def zone_minutes(raw):
 
 
 def render_date(msg):
+    """The Date line: normalised when the date is real, as written when it isn't."""
     raw = raw_header(msg, "date")
     if not raw:
         return ""
@@ -190,6 +197,7 @@ RECEIVED_FOR = re.compile(r"\bfor\s+<?([^\s<>;]+@[^\s<>;]+)>?", re.IGNORECASE)
 
 
 def addresses(msg, name):
+    """Every address in every `name` header, as getaddresses reads them."""
     values = [str(v) for k, v in msg.items() if k.strip().lower() == name.lower()]
     return [a for _, a in getaddresses(values) if a]
 
@@ -233,6 +241,7 @@ def is_attachment(part):
 
 
 def transfer_decoded(part):
+    """A part's body after transfer decoding: the bytes it saves as."""
     return part.get_payload(decode=True) or b""
 
 
@@ -254,6 +263,7 @@ def text_of(part):
 
 
 def body(msg, prefer_html):
+    """The body under "Message:": the first plain or HTML part that isn't an attachment."""
     candidates = [p for p in leaves(msg) if not is_attachment(p)]
     plain = [p for p in candidates if p.real_type() == "text/plain"]
     html = [p for p in candidates if p.real_type() == "text/html"]
@@ -284,6 +294,7 @@ def attachments(msg):
 
 
 def render(raw, prefer_html):
+    """What `reses FILE` prints, or `reses --html FILE` with prefer_html."""
     msg = parse(raw)
     lines = [
         "From: " + render_addresses(header(msg, "from")),
@@ -323,6 +334,7 @@ def safe_name(name):
 
 
 def split_suffix(name):
+    """pathlib's stem and suffix."""
     i = name.rfind(".")
     if 0 < i < len(name) - 1:
         return name[:i], name[i:]
@@ -330,6 +342,7 @@ def split_suffix(name):
 
 
 def saved(raw):
+    """What --save-attachments writes into an empty directory, one line per file."""
     taken, next_n, lines = set(), {}, []
     for name, data in attachments(parse(raw))[:MAX_SAVED]:
         name = safe_name(name)
@@ -347,6 +360,7 @@ def saved(raw):
 
 
 def main(argv):
+    """Dispatch the command line described at the top of this file."""
     if len(argv) >= 2 and argv[0] == "render":
         prefer_html = argv[1] == "--html"
         path = argv[2] if prefer_html else argv[1]

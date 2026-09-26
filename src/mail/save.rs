@@ -62,7 +62,11 @@ pub(super) fn safe_file_name(name: &str) -> String {
     // Too long: cut the stem on a character boundary and keep a sensible extension.
     let (stem, suffix) = stem_suffix(&clean);
     let suffix = if suffix.len() <= 32 { suffix } else { "" };
-    let stem = if suffix.is_empty() { clean.as_str() } else { stem };
+    let stem = if suffix.is_empty() {
+        clean.as_str()
+    } else {
+        stem
+    };
     let mut budget = MAX_NAME_BYTES - suffix.len();
     while !stem.is_char_boundary(budget) {
         budget -= 1;
@@ -79,10 +83,19 @@ fn stem_suffix(name: &str) -> (&str, &str) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many files write_one has tried to create on this thread, so a test can see that
+    /// repeated names don't retry every suffix from the start.
+    static OPEN_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Write one file under the first free name at or after suffix `*next`, moving `*next` past it.
 fn write_one(dir: &Path, name: &str, data: &[u8], next: &mut usize) -> io::Result<PathBuf> {
     let (stem, suffix) = stem_suffix(name);
     loop {
+        #[cfg(test)]
+        OPEN_ATTEMPTS.with(|n| n.set(n.get() + 1));
         let candidate = if *next == 0 {
             name.to_string()
         } else {
@@ -90,7 +103,11 @@ fn write_one(dir: &Path, name: &str, data: &[u8], next: &mut usize) -> io::Resul
         };
         *next += 1;
         let target = dir.join(candidate);
-        match OpenOptions::new().write(true).create_new(true).open(&target) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
             Ok(mut file) => {
                 if let Err(e) = file.write_all(data) {
                     drop(file);
@@ -162,6 +179,7 @@ mod tests {
         assert!(save_all(&missing, vec![("a".into(), b"a".to_vec())]).is_err());
     }
 
+    /// Names lose their paths and deceptive characters, and long ones keep their extension.
     #[test]
     fn file_names() {
         assert_eq!(safe_file_name("../../etc/evil.bin"), "evil.bin");
@@ -170,17 +188,35 @@ mod tests {
         assert_eq!(safe_file_name(".."), "attachment");
         assert_eq!(safe_file_name("a\u{202e}b.txt"), "a_b.txt");
         let long = safe_file_name(&format!("{}.pdf", "é".repeat(150)));
-        assert!(long.len() <= MAX_NAME_BYTES && long.ends_with(".pdf"), "{long}");
+        assert!(
+            long.len() <= MAX_NAME_BYTES && long.ends_with(".pdf"),
+            "{long}"
+        );
         assert_eq!(stem_suffix("a.tar.gz"), ("a.tar", ".gz"));
         assert_eq!(stem_suffix(".profile"), (".profile", ""));
         assert_eq!(stem_suffix("trailing."), ("trailing.", ""));
+    }
+
+    /// A thousand parts with one name cost a thousand file creations, not half a million (N18).
+    #[test]
+    fn repeated_names_do_not_retry_from_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let items = (0..SaveReport::MAX)
+            .map(|_| ("same.bin".to_string(), vec![1]))
+            .collect();
+        OPEN_ATTEMPTS.with(|n| n.set(0));
+        let report = save_all(dir.path(), items).unwrap();
+        assert_eq!(report.saved.len(), SaveReport::MAX);
+        assert_eq!(OPEN_ATTEMPTS.with(|n| n.get()), SaveReport::MAX);
     }
 
     /// Suffixes carry on per name rather than starting again from 1.
     #[test]
     fn suffixes_carry_on() {
         let dir = tempfile::tempdir().unwrap();
-        let items = (0..4).map(|_| ("a.txt".to_string(), b"x".to_vec())).collect();
+        let items = (0..4)
+            .map(|_| ("a.txt".to_string(), b"x".to_vec()))
+            .collect();
         let report = save_all(dir.path(), items).unwrap();
         let names: Vec<_> = report
             .saved

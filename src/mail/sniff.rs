@@ -92,6 +92,7 @@ fn header_name(line: &[u8]) -> Option<String> {
     valid.then(|| String::from_utf8_lossy(name).to_ascii_lowercase())
 }
 
+/// Whether `prefix`, the first bytes of an object, looks like a stored message.
 pub(super) fn looks_like_email(prefix: &[u8]) -> bool {
     // A byte order mark and blank lines in front don't count against it.
     let data = prefix.strip_prefix(b"\xef\xbb\xbf").unwrap_or(prefix);
@@ -147,7 +148,10 @@ pub(super) fn looks_like_email(prefix: &[u8]) -> bool {
 
     // Weigh the evidence: two mail headers and an anchor for a whole header block, one mail
     // header for a clean prefix that stops inside it.
-    let known = names.iter().filter(|n| MAIL_HEADERS.contains(&n.as_str())).count();
+    let known = names
+        .iter()
+        .filter(|n| MAIL_HEADERS.contains(&n.as_str()))
+        .count();
     let anchored = from_has_address || names.iter().any(|n| SERVER_HEADERS.contains(&n.as_str()));
     let plausible = if complete || stray > 0 {
         known >= 2 && anchored
@@ -164,7 +168,10 @@ pub(super) fn looks_like_email(prefix: &[u8]) -> bool {
             .parse_headers(&data[..header_end])
             .and_then(|m| m.subject().map(str::to_string))
             .unwrap_or_default();
-        if subject.trim().eq_ignore_ascii_case("Amazon SES Setup Notification") {
+        if subject
+            .trim()
+            .eq_ignore_ascii_case("Amazon SES Setup Notification")
+        {
             return false;
         }
     }
@@ -180,10 +187,16 @@ mod tests {
     fn line_endings() {
         assert_eq!(
             lines(b"a\r\nb\rc\nd"),
-            [(&b"a"[..], true), (&b"b"[..], true), (&b"c"[..], true), (&b"d"[..], false)]
+            [
+                (&b"a"[..], true),
+                (&b"b"[..], true),
+                (&b"c"[..], true),
+                (&b"d"[..], false)
+            ]
         );
     }
 
+    /// A header name is printable ASCII before the colon, blanks before it allowed.
     #[test]
     fn header_names() {
         assert_eq!(header_name(b"Subject : x").as_deref(), Some("subject"));

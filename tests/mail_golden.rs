@@ -8,10 +8,12 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+/// Where the mail fixtures live.
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail")
 }
 
+/// Every fixture message, sorted.
 fn fixtures() -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = fs::read_dir(fixture_dir())
         .expect("fixture dir")
@@ -22,6 +24,7 @@ fn fixtures() -> Vec<PathBuf> {
     found
 }
 
+/// The golden next to `eml` with the given suffix.
 fn golden(eml: &Path, suffix: &str) -> String {
     let stem = eml.file_stem().unwrap().to_str().unwrap();
     let path = eml.with_file_name(format!("{stem}{suffix}"));
@@ -43,6 +46,7 @@ fn first_difference(want: &str, got: &str) -> String {
     )
 }
 
+/// Decode every fixture one way and compare each against its golden, reporting all mismatches.
 fn check_all(prefer_html: bool, suffix: &str) {
     let all = fixtures();
     // A glob that silently matches nothing would make this test pass vacuously.
@@ -74,16 +78,19 @@ fn check_all(prefer_html: bool, suffix: &str) {
     );
 }
 
+/// Plain renders match NAME.out.
 #[test]
 fn plain_output_matches_the_goldens() {
     check_all(false, ".out");
 }
 
+/// --html renders match NAME.html.out.
 #[test]
 fn html_output_matches_the_goldens() {
     check_all(true, ".html.out");
 }
 
+/// Saved files match NAME.saved: names, sizes and contents.
 #[test]
 fn saved_attachments_match_the_goldens() {
     let mut checked = 0;

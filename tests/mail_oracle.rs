@@ -26,6 +26,7 @@ enum Scope {
     All,
 }
 
+/// Where the mail fixtures live.
 fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail")
 }
@@ -48,8 +49,14 @@ fn pins() -> BTreeMap<String, Scope> {
         };
         let reason = words.next().unwrap_or("").trim();
         assert!(!reason.is_empty(), "{file} is pinned without a reason");
-        assert!(dir().join(&file).exists(), "{file} is pinned but doesn't exist");
-        assert!(out.insert(file.clone(), scope).is_none(), "{file} is pinned twice");
+        assert!(
+            dir().join(&file).exists(),
+            "{file} is pinned but doesn't exist"
+        );
+        assert!(
+            out.insert(file.clone(), scope).is_none(),
+            "{file} is pinned twice"
+        );
     }
     out
 }
@@ -77,6 +84,7 @@ fn above_body(render: &str) -> &str {
     }
 }
 
+/// Every golden agrees with the oracle, except where HAND-PINNED says otherwise and why.
 #[test]
 fn goldens_match_the_python_oracle() {
     let pins = pins();
@@ -87,7 +95,11 @@ fn goldens_match_the_python_oracle() {
         .collect();
     fixtures.sort();
     // An empty directory would make every check below pass without looking at anything.
-    assert!(fixtures.len() >= 60, "found only {} fixtures", fixtures.len());
+    assert!(
+        fixtures.len() >= 60,
+        "found only {} fixtures",
+        fixtures.len()
+    );
 
     let mut failures = Vec::new();
     let mut pins_used = 0;
@@ -102,7 +114,8 @@ fn goldens_match_the_python_oracle() {
             (".saved", vec!["saved", path]),
         ] {
             let file = format!("{base}{suffix}");
-            let golden = fs::read_to_string(dir().join(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let golden =
+                fs::read_to_string(dir().join(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
             let want = oracle(&args);
             match pins.get(&file) {
                 None if golden != want => failures.push(format!("{file} differs from the oracle")),

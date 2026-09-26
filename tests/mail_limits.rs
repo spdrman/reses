@@ -44,11 +44,13 @@ fn decode_all(label: &str, raw: Vec<u8>) -> String {
     }
 }
 
+/// A render still has the layout: headers first, then "Message:" and the body.
 fn assert_shape(label: &str, out: &str) {
     assert!(out.starts_with("From: "), "{label}: {out:.200}");
     assert!(out.contains("\nMessage:\n\n"), "{label}: {out:.200}");
 }
 
+/// A message with `n` forwarded messages each inside the last.
 fn nested_rfc822(n: usize) -> Vec<u8> {
     let mut s = String::from("From: a@example.com\nSubject: deep\n");
     for _ in 0..n {
@@ -58,6 +60,7 @@ fn nested_rfc822(n: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// A message with `n` multiparts each inside the last, all closed properly.
 fn nested_multipart(n: usize) -> Vec<u8> {
     let mut s = String::from("From: a@example.com\nSubject: deep\n");
     for k in 0..n {
@@ -72,18 +75,21 @@ fn nested_multipart(n: usize) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// Forwards nested 50,000 deep.
 #[test]
 fn fifty_thousand_nested_rfc822_parts() {
     let out = decode_all("rfc822", nested_rfc822(50_000));
     assert_shape("rfc822", &out);
 }
 
+/// Multiparts nested 50,000 deep.
 #[test]
 fn fifty_thousand_nested_multiparts() {
     let out = decode_all("multipart", nested_multipart(50_000));
     assert_shape("multipart", &out);
 }
 
+/// Twenty thousand parens or groups in each header that gets parsed.
 #[test]
 fn twenty_thousand_parens_in_every_parsed_header() {
     let open = "(".repeat(20_000);
@@ -141,6 +147,7 @@ fn twenty_thousand_parens_in_every_parsed_header() {
     }
 }
 
+/// About a megabyte of each input that makes a naive scanner quadratic.
 #[test]
 fn scanners_stay_linear_on_large_input() {
     let big = 1_200_000;
@@ -222,16 +229,25 @@ fn scanners_stay_linear_on_large_input() {
 /// continuation lines, and a hundred thousand headers.
 #[test]
 fn huge_headers() {
-    let long = format!("From: a@example.com\r\nSubject: {}\r\n\r\nbody\r\n", "x".repeat(1 << 20));
+    let long = format!(
+        "From: a@example.com\r\nSubject: {}\r\n\r\nbody\r\n",
+        "x".repeat(1 << 20)
+    );
     let folded = format!(
         "From: a@example.com\r\nSubject: start{}\r\n\r\nbody\r\n",
         "\r\n more".repeat(100_000)
     );
     let many = format!(
         "From: a@example.com\r\n{}\r\nbody\r\n",
-        (0..100_000).map(|i| format!("X-H{i}: v\r\n")).collect::<String>()
+        (0..100_000)
+            .map(|i| format!("X-H{i}: v\r\n"))
+            .collect::<String>()
     );
-    for (label, raw) in [("one long line", long), ("folded", folded), ("many headers", many)] {
+    for (label, raw) in [
+        ("one long line", long),
+        ("folded", folded),
+        ("many headers", many),
+    ] {
         assert_shape(label, &decode_all(label, raw.into_bytes()));
     }
 }
@@ -248,7 +264,7 @@ fn boundaries_that_never_close() {
     nested.push_str("Content-Type: text/plain\r\n\r\nleaf\r\n");
     let missing = "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=nowhere\r\n\r\n\
                    text with no boundary line at all\r\n"
-        .repeat(1)
+        .to_string()
         + &"filler line\r\n".repeat(50_000);
     let open_attachment = format!(
         "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n--B\r\n\
@@ -275,7 +291,9 @@ Content-Type: multipart/mixed; boundary=\xff\r\n\r\n--\xff\r\nContent-Type: text
     raw.extend((0..(1u32 << 20)).map(|i| (i % 256) as u8));
     let out = decode_all("invalid utf-8", raw);
     assert_shape("invalid utf-8", &out);
-    let noise: Vec<u8> = (0..(1u32 << 20)).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    let noise: Vec<u8> = (0..(1u32 << 20))
+        .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+        .collect();
     let _ = decode_all("noise", noise);
 }
 
@@ -298,7 +316,8 @@ fn deeply_nested_html() {
 /// write only the cap, count the rest, and still refuse to overwrite anything.
 #[test]
 fn thirty_two_thousand_attachments_with_one_name() {
-    let mut raw = String::from("From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n");
+    let mut raw =
+        String::from("From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n");
     for _ in 0..32_000 {
         raw.push_str("--B\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=same.bin\r\n\r\nx\r\n");
     }
@@ -310,7 +329,9 @@ fn thirty_two_thousand_attachments_with_one_name() {
     thread::Builder::new()
         .stack_size(STACK)
         .spawn(move || {
-            let _ = tx.send(save_attachments_report(raw.as_bytes(), &path).map(|r| (r.saved.len(), r.skipped)));
+            let _ = tx.send(
+                save_attachments_report(raw.as_bytes(), &path).map(|r| (r.saved.len(), r.skipped)),
+            );
         })
         .unwrap();
     let (saved, skipped) = rx

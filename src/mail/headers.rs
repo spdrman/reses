@@ -78,7 +78,9 @@ fn render(address: &Address<'_>) -> String {
                 match group.name.as_deref() {
                     None => out.extend(members),
                     Some(name) if members.is_empty() => out.push(format!("{}:;", quote_name(name))),
-                    Some(name) => out.push(format!("{}: {};", quote_name(name), members.join(", "))),
+                    Some(name) => {
+                        out.push(format!("{}: {};", quote_name(name), members.join(", ")))
+                    }
                 }
             }
         }
@@ -94,6 +96,7 @@ pub(super) fn addresses(msg: &Message<'_>, name: &str) -> String {
         .map_or_else(String::new, render)
 }
 
+/// The first Subject, decoded and trimmed.
 pub(super) fn subject(msg: &Message<'_>) -> String {
     first(msg, "Subject")
         .and_then(|h| h.value.as_text())
@@ -248,12 +251,16 @@ fn with_seconds(written: &str) -> Option<DateTime> {
         let b = w.as_bytes();
         (4..=5).contains(&b.len())
             && b[b.len() - 3] == b':'
-            && b.iter().enumerate().all(|(i, c)| i == b.len() - 3 || c.is_ascii_digit())
+            && b.iter()
+                .enumerate()
+                .all(|(i, c)| i == b.len() - 3 || c.is_ascii_digit())
     })?;
     let mut fixed: Vec<String> = words.iter().map(|w| w.to_string()).collect();
     fixed[at].push_str(":00");
     let text = fixed.join(" ");
-    MessageStream::new(text.as_bytes()).parse_date().into_datetime()
+    MessageStream::new(text.as_bytes())
+        .parse_date()
+        .into_datetime()
 }
 
 /// The Date header as a calendar date and time with its zone, or `None` when it isn't a real
@@ -334,7 +341,10 @@ mod tests {
         assert_eq!(zone("Tue, 22 Sep 2026 10:00:00 -0530"), Zone::Known(-330));
         assert_eq!(zone("22 Sep 2026 10:00:00 CEST"), Zone::Known(120));
         assert_eq!(zone("22 Sep 2026 10:00:00 cest"), Zone::Known(120));
-        assert_eq!(zone("Tue, 22 Sep 2026 10:00:00 +0200 (CEST)"), Zone::Known(120));
+        assert_eq!(
+            zone("Tue, 22 Sep 2026 10:00:00 +0200 (CEST)"),
+            Zone::Known(120)
+        );
         assert_eq!(zone("Tue, 22 Sep 2026 10:00:00 -0000"), Zone::Unknown);
         assert_eq!(zone("Tue, 22 Sep 2026 10:00:00 GMT+2"), Zone::Unknown);
         assert_eq!(zone("Tue, 22 Sep 2026 10:00:00 XYZ"), Zone::Unknown);
@@ -348,15 +358,24 @@ mod tests {
     #[test]
     fn dates_without_seconds() {
         let d = with_seconds("9 Oct 26 07:07 EST").unwrap();
-        assert_eq!((d.year, d.month, d.day, d.hour, d.minute, d.second), (2026, 10, 9, 7, 7, 0));
+        assert_eq!(
+            (d.year, d.month, d.day, d.hour, d.minute, d.second),
+            (2026, 10, 9, 7, 7, 0)
+        );
         assert!(with_seconds("no time here").is_none());
     }
 
     /// Names are quoted only when they'd otherwise read as syntax.
     #[test]
     fn names() {
-        assert_eq!(mailbox(Some("Ann Lee"), Some("a@example.com")), "Ann Lee <a@example.com>");
-        assert_eq!(mailbox(Some("Lee, Ann"), Some("a@example.com")), "\"Lee, Ann\" <a@example.com>");
+        assert_eq!(
+            mailbox(Some("Ann Lee"), Some("a@example.com")),
+            "Ann Lee <a@example.com>"
+        );
+        assert_eq!(
+            mailbox(Some("Lee, Ann"), Some("a@example.com")),
+            "\"Lee, Ann\" <a@example.com>"
+        );
         assert_eq!(mailbox(Some("say \"hi\""), None), "\"say \\\"hi\\\"\"");
         assert_eq!(mailbox(None, Some("a@example.com")), "a@example.com");
     }
