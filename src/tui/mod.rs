@@ -604,6 +604,8 @@ fn only_on_thread(main: ThreadId, hook: PanicHook) -> PanicHook {
 
 #[cfg(test)]
 mod review_tests;
+#[cfg(test)]
+mod session_tests;
 
 /// Headless helpers for view tests.
 #[cfg(test)]
