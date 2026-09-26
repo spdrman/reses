@@ -1,0 +1,73 @@
+From: Files <files@example.com>
+To: you@example.org
+Subject: Attachments of every shape
+Date: Sat, 10 Oct 2026 14:00:00 +0000
+Message-ID: <att-1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="MIXED"
+
+--MIXED
+Content-Type: multipart/alternative; boundary="ALT"
+
+--ALT
+Content-Type: text/plain; charset=utf-8
+
+See the attached files.
+--ALT
+Content-Type: text/html; charset=utf-8
+
+<p>See the <b>attached</b> files.</p>
+--ALT--
+
+--MIXED
+Content-Type: application/pdf; name="report.pdf"
+Content-Disposition: attachment; filename="report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcOkw7zDtsOfCjEgMCBvYmoKPDwvVHlwZS9DYXRhbG9nPj4KZW5kb2JqCnRy
+YWlsZXIKPDwvUm9vdCAxIDAgUj4+CiUlRU9GCg==
+--MIXED
+Content-Type: text/plain; name="notes.txt"
+Content-Disposition: attachment; filename="notes.txt"
+
+two lines
+of notes
+--MIXED
+Content-Type: text/csv
+Content-Disposition: attachment; filename*=UTF-8''r%C3%A9sum%C3%A9%20data.csv
+
+a,b
+1,2
+--MIXED
+Content-Type: image/png; name="=?utf-8?q?logo_=C3=A9.png?="
+Content-Disposition: inline
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==
+--MIXED
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="../../etc/evil.bin"
+Content-Transfer-Encoding: base64
+
+AAECAwQ=
+--MIXED
+Content-Type: text/plain; name="notes.txt"
+Content-Disposition: attachment; filename="notes.txt"
+Content-Transfer-Encoding: quoted-printable
+
+second=20notes=
+ file
+--MIXED
+Content-Type: application/zip
+Content-Disposition: attachment
+Content-Transfer-Encoding: base64
+
+UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==
+--MIXED
+Content-Type: application/octet-stream;
+ name*0="a-very-long-file";
+ name*1="name-in-parts.dat"
+Content-Transfer-Encoding: base64
+
+aGVsbG8=
+--MIXED--

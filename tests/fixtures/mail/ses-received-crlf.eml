@@ -1,0 +1,42 @@
+Return-Path: <0100019abc-sender@bounces.example.com>
+Received: from mail-yw1-f170.example.com (mail-yw1-f170.example.com [192.0.2.170])
+ by inbound-smtp.us-east-1.example.net with SMTP id 5sq9b1lkn0gqd4fk2i1q3fhs7bd4v8k0examplexx
+ for inbox@example.org;
+ Sat, 26 Sep 2026 00:02:08 +0000 (UTC)
+Received: by mail-yw1-f170.example.com with SMTP id 00721157ae682-6f2b8a0c2d1so12345677b3.1
+        for <Hidden.Person@example.org>; Fri, 25 Sep 2026 17:02:07 -0700 (PDT)
+X-SES-Spam-Verdict: PASS
+X-SES-Virus-Verdict: PASS
+Received-SPF: pass (spfCheck: domain of example.com designates 192.0.2.170 as permitted sender) client-ip=192.0.2.170; envelope-from=sender@example.com; helo=mail-yw1-f170.example.com;
+Authentication-Results: amazonses.example.net;
+ spf=pass (spfCheck: domain of example.com designates 192.0.2.170 as permitted sender) client-ip=192.0.2.170; envelope-from=sender@example.com; helo=mail-yw1-f170.example.com;
+ dkim=pass header.i=@example.com;
+ dmarc=pass header.from=example.com;
+X-SES-RECEIPT: AEFBQUFBQUFBQUFFQ0ZQd2ZzZUNXRzZ5b3N0dUpQbnVUZUQ5cGVKUnh5Wk9hS3dNZmdXMEVSWG9oeDlWNUtZN1ZPWWRkVXl0UmVDbXN0cGhZ
+X-SES-DKIM-SIGNATURE: a=rsa-sha256; q=dns/txt; b=AAAAexampleexampleexample=; c=relaxed/simple; s=224i4yxa5dv7c2xz3womw6peuasteono; d=amazonses.com; t=1790380928; v=1; bh=AAAAexample=; h=From:To:Cc:Bcc:Subject:Date:Message-ID:MIME-Version:Content-Type:X-SES-RECEIPT;
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=example.com; s=20230601; t=1790380927; x=1790985727; darn=example.org;
+        h=to:subject:message-id:date:from:mime-version:from:to:cc:subject
+         :date:message-id:reply-to;
+        bh=AAAAexampleexample=;
+        b=AAAAexampleexampleexampleexampleexampleexampleexampleexampleexample
+         exampleexampleexample==
+MIME-Version: 1.0
+From: Sender Person <sender@example.com>
+Date: Fri, 25 Sep 2026 17:01:55 -0700
+Message-ID: <CAexample+abc=def@mail.example.com>
+Subject: A message the way SES stores it
+To: inbox@example.org
+Content-Type: multipart/alternative; boundary="000000000000a1b2c3d4e5f6a7b8"
+
+--000000000000a1b2c3d4e5f6a7b8
+Content-Type: text/plain; charset="UTF-8"
+
+Stored by SES with long folded Received headers.
+
+--000000000000a1b2c3d4e5f6a7b8
+Content-Type: text/html; charset="UTF-8"
+
+<div dir="ltr">Stored by SES with long folded Received headers.</div>
+
+--000000000000a1b2c3d4e5f6a7b8--

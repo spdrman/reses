@@ -1,0 +1,12 @@
+From: only-html@example.com
+Reply-To: 
+To: you@example.org
+Cc: 
+Bcc: 
+Date: Tue, 13 Oct 2026 16:45:00 -0930
+Subject: HTML alternative only, with --html off
+Message-ID: 
+Attachments: readme.txt (28 bytes)
+Message:
+
+<div>Only <i>HTML</i> here<br>second line</div><p>&quot;quoted&quot;&#8212;dash</p>

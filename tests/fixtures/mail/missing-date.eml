@@ -1,0 +1,5 @@
+From: nodate@example.com
+To: someone@example.org
+Subject: No Date header here
+
+Body of a message with no Date and no Message-ID.

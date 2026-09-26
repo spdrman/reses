@@ -1,0 +1,14 @@
+From: Alice Example <alice@example.com>
+To: bob@example.org
+Subject: Plain text, LF line endings
+Date: Fri, 25 Sep 2026 17:01:31 -0700
+Message-ID: <plain-lf-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=us-ascii
+
+Hi Bob,
+
+This one is plain text with bare LF line endings.
+
+  Indented line stays indented.
+Alice

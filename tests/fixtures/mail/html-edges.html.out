@@ -1,0 +1,15 @@
+From: edges@example.com
+Reply-To: 
+To: you@example.org
+Cc: 
+Bcc: 
+Date: Fri, 25 Sep 2026 17:01:31 +999999999
+Subject: =?a?q?=?a?q?b?= xyz a?= =?u?q?no close ✓ glued
+Message-ID: 
+Message:
+
+<p>A<style>never closed here
+<SCRIPT>gone</script>B <ſcript>long s</ſCRIPT>C <script>kept</ſcript>D</p>
+<br   / >E<Br	/>F <b<i>>G < H<>I <div x=">">J</div>
+<STYLE>x</style >K<style>y</STYLE>L<h7>M</h7><h6>N</h6>O</LI>P</tr >Q
+&amp;amp; &#x110000; &#65; &AMP &lt &copy2 R <unclosed tag at the end
