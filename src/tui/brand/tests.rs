@@ -248,3 +248,95 @@ fn text_header_frame() {
     println!("{scr}");
     assert!(scr.lines().next().unwrap().starts_with(" ■ re:SES  Inbox"));
 }
+
+fn env(vars: &[(&str, &str)]) -> Env {
+    let mut e = Env::default();
+    for (k, v) in vars {
+        let v = Some(v.to_string());
+        match *k {
+            "RESES_LOGO" => e.reses_logo = v,
+            "TERM" => e.term = v,
+            "TERM_PROGRAM" => e.term_program = v,
+            "KITTY_WINDOW_ID" => e.kitty_window_id = v,
+            "WEZTERM_EXECUTABLE" => e.wezterm_executable = v,
+            "TMUX" => e.tmux = v,
+            "MLTERM" => e.mlterm = v,
+            other => panic!("unknown variable {other}"),
+        }
+    }
+    e
+}
+
+#[test]
+fn named_image_terminals_get_the_image_without_a_query() {
+    for (vars, protocol) in [
+        (&[("TERM_PROGRAM", "iTerm.app")][..], ProtocolType::Iterm2),
+        (&[("TERM_PROGRAM", "WezTerm")][..], ProtocolType::Iterm2),
+        (
+            &[("WEZTERM_EXECUTABLE", "/usr/bin/wezterm-gui")][..],
+            ProtocolType::Iterm2,
+        ),
+        (&[("TERM_PROGRAM", "ghostty")][..], ProtocolType::Kitty),
+        (&[("TERM", "xterm-ghostty")][..], ProtocolType::Kitty),
+        (&[("TERM", "xterm-kitty")][..], ProtocolType::Kitty),
+        (&[("KITTY_WINDOW_ID", "3")][..], ProtocolType::Kitty),
+        (&[("TERM", "foot")][..], ProtocolType::Sixel),
+        (&[("TERM", "foot-extra")][..], ProtocolType::Sixel),
+        (&[("MLTERM", "3.9.3")][..], ProtocolType::Sixel),
+    ] {
+        assert_eq!(plan(&env(vars)), Plan::Image(protocol), "{vars:?}");
+    }
+}
+
+#[test]
+fn every_other_terminal_gets_text_and_no_query() {
+    for vars in [
+        &[][..],
+        &[("TERM", "xterm-256color")][..],
+        &[
+            ("TERM_PROGRAM", "Apple_Terminal"),
+            ("TERM", "xterm-256color"),
+        ][..],
+        &[("TERM_PROGRAM", "vscode")][..],
+        &[("TERM", "screen-256color")][..],
+        &[("TERM", "linux")][..],
+        // Inside tmux, image escapes need passthrough, so even kitty's own variables don't count.
+        &[
+            ("TMUX", "/tmp/tmux-1/default,1,0"),
+            ("KITTY_WINDOW_ID", "3"),
+        ][..],
+        &[("TERM_PROGRAM", "tmux"), ("TERM", "tmux-256color")][..],
+    ] {
+        assert_eq!(plan(&env(vars)), Plan::Text, "{vars:?}");
+    }
+}
+
+#[test]
+fn reses_logo_forces_either_way() {
+    assert_eq!(
+        plan(&env(&[("RESES_LOGO", "text"), ("TERM", "xterm-kitty")])),
+        Plan::Text
+    );
+    assert_eq!(
+        plan(&env(&[
+            ("RESES_LOGO", "image"),
+            ("TERM_PROGRAM", "Apple_Terminal")
+        ])),
+        Plan::Query
+    );
+    // Anything else is ignored rather than guessed at.
+    assert_eq!(plan(&env(&[("RESES_LOGO", "yes")])), Plan::Text);
+    assert_eq!(
+        plan(&env(&[("RESES_LOGO", "yes"), ("TERM", "xterm-kitty")])),
+        Plan::Image(ProtocolType::Kitty)
+    );
+}
+
+#[test]
+fn the_cell_size_comes_from_the_window_or_not_at_all() {
+    assert_eq!(cell_size(800, 480, 100, 30), Some((8, 16)));
+    // A terminal that reports no pixel size gets the text header rather than a guess.
+    assert_eq!(cell_size(0, 0, 100, 30), None);
+    assert_eq!(cell_size(800, 480, 0, 0), None);
+    assert_eq!(cell_size(80, 16, 100, 30), None);
+}

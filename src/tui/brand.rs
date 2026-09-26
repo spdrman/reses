@@ -69,6 +69,57 @@ impl Variant {
     }
 }
 
+/// What startup does about the image logo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Plan {
+    /// The styled-text wordmark, asking the terminal nothing.
+    Text,
+    /// The image, in this protocol, sized from the window's pixel size. Nothing is read from
+    /// the terminal.
+    Image(ProtocolType),
+    /// Ask the terminal (`RESES_LOGO=image` only).
+    Query,
+}
+
+/// The environment variables the plan depends on.
+#[derive(Debug, Clone, Default)]
+pub struct Env {
+    pub reses_logo: Option<String>,
+    pub term: Option<String>,
+    pub term_program: Option<String>,
+    pub kitty_window_id: Option<String>,
+    pub wezterm_executable: Option<String>,
+    pub tmux: Option<String>,
+    pub mlterm: Option<String>,
+}
+
+impl Env {
+    pub fn from_process() -> Self {
+        let var = |name: &str| std::env::var(name).ok();
+        Self {
+            reses_logo: var("RESES_LOGO"),
+            term: var("TERM"),
+            term_program: var("TERM_PROGRAM"),
+            kitty_window_id: var("KITTY_WINDOW_ID"),
+            wezterm_executable: var("WEZTERM_EXECUTABLE"),
+            tmux: var("TMUX"),
+            mlterm: var("MLTERM"),
+        }
+    }
+}
+
+/// Decide from the environment alone.
+pub fn plan(env: &Env) -> Plan {
+    let _ = env;
+    Plan::Query
+}
+
+/// Pixels per cell from a window size, or None when the terminal doesn't report one.
+fn cell_size(width_px: u16, height_px: u16, cols: u16, rows: u16) -> Option<(u16, u16)> {
+    let _ = (width_px, height_px, cols, rows);
+    Some((8, 16))
+}
+
 /// How the header draws the logo, decided once at startup.
 pub struct Brand {
     background: Background,
