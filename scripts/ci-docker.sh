@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run reses builds and tests inside the CI image. Nothing here touches the host toolchain.
 #
-#   scripts/ci-docker.sh              full gate: fmt, clippy, tests, python oracle tests
+#   scripts/ci-docker.sh              full gate: the Check, MSRV, Docs and Test jobs of ci.yml
 #   scripts/ci-docker.sh --exec CMD   run CMD in the container (e.g. "cargo test mail")
 #   scripts/ci-docker.sh --shell      interactive shell
 #   scripts/ci-docker.sh --darwin     build the macOS release binary into dist/
@@ -12,7 +12,9 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 LANE="${RESES_LANE:-main}"
-IMAGE="reses-ci:1"
+# Tagged by a hash of the Dockerfile, so editing the Dockerfile builds a fresh image
+# instead of silently reusing the old one.
+IMAGE="reses-ci:$(shasum -a 256 "$REPO_ROOT/docker/ci.Dockerfile" | cut -c1-12)"
 PLATFORM="linux/arm64"
 TARGET_VOL="reses-target-${LANE}"
 REGISTRY_VOL="reses-cargo-registry"
@@ -38,6 +40,8 @@ EXTRA_DOCKER_ARGS=()
 GATE='set -e
 cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
+cargo check --all-targets --locked
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links -D rustdoc::redundant_explicit_links" cargo doc --no-deps --locked
 cargo test --locked --no-fail-fast
 (cd python && python3 -m unittest -q)'
 
