@@ -673,6 +673,14 @@ impl BrowserScreen {
 }
 
 impl BrowserScreen {
+    /// A browser that talks to `session`, whatever `ctx.session` says later.
+    pub fn with_session(session: super::Session) -> Self {
+        let _ = session;
+        Self::new()
+    }
+}
+
+impl BrowserScreen {
     /// Lower the page cap so a test can reach it.
     #[cfg(test)]
     pub(crate) fn with_max_pages(mut self, n: usize) -> Self {

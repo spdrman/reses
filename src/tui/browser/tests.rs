@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::KeyCode;
 
 use super::BrowserScreen;
+use crate::aws_profile::Profile;
 use crate::config::{AppConfig, Inbox};
 use crate::s3::{Bucket, Listing, MemoryStore, ObjectInfo, S3Error, Store};
 use crate::tui::testing::{self, chars, key, screen, settle};
-use crate::tui::{App, Status};
+use crate::tui::{App, Session, Status};
 
 const EMAIL: &[u8] = b"Return-Path: <sender@example.com>\r\n\
 Received: from mail.example.com by inbound-smtp.us-east-1.amazonaws.com\r\n\
@@ -35,6 +37,9 @@ struct Spy {
     /// How listings of the "loop" bucket answer: 0 normally, 1 the same token forever,
     /// 2 a fresh token forever.
     endless: AtomicUsize,
+    /// While true, every peek waits inside the store, so a one-thread pool backs up behind it.
+    hold: Mutex<bool>,
+    released: Condvar,
 }
 
 impl Spy {
@@ -45,6 +50,8 @@ impl Spy {
             lists: Mutex::new(Vec::new()),
             fail_list: AtomicBool::new(false),
             endless: AtomicUsize::new(0),
+            hold: Mutex::new(false),
+            released: Condvar::new(),
         })
     }
 
@@ -107,6 +114,11 @@ impl Store for Spy {
             .lock()
             .unwrap()
             .push((key.to_string(), start, end));
+        let mut held = self.hold.lock().unwrap();
+        while *held {
+            held = self.released.wait(held).unwrap();
+        }
+        drop(held);
         self.inner.get_range(bucket, key, start, end)
     }
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
@@ -785,4 +797,171 @@ fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
         cell_col(cjk, "1 email"),
         "{screen_text}"
     );
+}
+
+// ---- the browser's own session and generations ----
+
+fn session_on(name: &str, store: Arc<dyn Store>) -> Session {
+    Session {
+        profile: Profile {
+            name: name.into(),
+            access_key_id: "AKIAFAKEFAKE00000005".into(),
+            secret_access_key: "fakeSecret".into(),
+            session_token: None,
+            region: Some("eu-west-1".into()),
+        },
+        region: "eu-west-1".into(),
+        store,
+    }
+}
+
+#[test]
+fn the_browser_keeps_talking_to_the_session_it_was_opened_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let mine = Spy::new(mail_store());
+    let theirs = MemoryStore::new();
+    theirs.create_bucket("somebody-elses-bucket");
+    let theirs: Arc<dyn Store> = Arc::new(theirs);
+    let ctx = testing::ctx(dir.path(), Some(Arc::clone(&theirs)));
+    let screen_view = BrowserScreen::with_session(session_on("mine", mine.clone()));
+    let mut app = App::with_view(ctx, Box::new(screen_view));
+    settle(&mut app);
+    let s = screen(&mut app, 100, 12);
+    assert!(s.contains("archive"), "{s}");
+    assert!(!s.contains("somebody-elses-bucket"), "{s}");
+    assert!(s.contains("mine"), "the browser names its own account: {s}");
+
+    // Whatever happens to the shared session afterwards, the browser stays on its own.
+    app.ctx.session = Some(session_on("other", Arc::clone(&theirs)));
+    open(&mut app, "mail");
+    let s = screen(&mut app, 100, 12);
+    assert!(s.contains("inbound/"), "{s}");
+    assert!(!mine.lists.lock().unwrap().is_empty());
+}
+
+#[test]
+fn saving_the_inbox_hands_the_browsers_session_to_the_inbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let mine = Spy::new(mail_store());
+    let theirs: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let ctx = testing::ctx(dir.path(), Some(theirs));
+    let screen_view = BrowserScreen::with_session(session_on("mine", mine.clone()));
+    let mut app = App::with_view(ctx, Box::new(screen_view));
+    settle(&mut app);
+    open(&mut app, "mail");
+    open(&mut app, "inbound/");
+    press(&mut app, KeyCode::Char('i'));
+    let inbox = app.ctx.config.inbox.clone().expect("saved");
+    assert_eq!(inbox.profile, "mine");
+    assert_eq!(inbox.region.as_deref(), Some("eu-west-1"));
+    let session = app.ctx.session.as_ref().expect("a session for the inbox");
+    assert_eq!(session.profile.name, "mine");
+    assert_eq!(app.stack[0].title(), "Inbox");
+}
+
+/// A browser on a real one-thread pool, so a stale stamp can be seen being skipped.
+fn pooled(dir: &Path, spy: &Arc<Spy>) -> App {
+    let mut ctx = crate::tui::Ctx::new(
+        AppConfig::default(),
+        dir.join("config.toml"),
+        dir.join("credentials"),
+        crate::tui::jobs::Jobs::pool(1),
+    );
+    ctx.session = Some(session_on("pooled", Arc::clone(spy) as Arc<dyn Store>));
+    App::with_view(ctx, Box::new(BrowserScreen::new()))
+}
+
+/// Pump until `done` holds, for at most a few seconds.
+fn pump_until(app: &mut App, what: &str, mut done: impl FnMut(&mut App) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done(app) {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        app.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn release(spy: &Spy) {
+    *spy.hold.lock().unwrap() = false;
+    spy.released.notify_all();
+}
+
+#[test]
+fn leaving_a_folder_drops_its_queued_peeks() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = pooled(dir.path(), &spy);
+    pump_until(&mut app, "the bucket list", |a| {
+        screen(a, 100, 20).contains("archive")
+    });
+    open_pooled(&mut app, "mail");
+    pump_until(&mut app, "the root peek", |_| spy.peek_count() == 1);
+    spy.peeks.lock().unwrap().clear();
+    *spy.hold.lock().unwrap() = true;
+    open_pooled(&mut app, "inbound/");
+    // One peek is inside the store; the other three wait in the queue behind it.
+    pump_until(&mut app, "the first peek", |_| spy.peek_count() == 1);
+    press_pooled(&mut app, KeyCode::Backspace);
+    release(&spy);
+    pump_until(&mut app, "the folder above", |a| {
+        screen(a, 100, 20).contains("pictures/")
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    app.pump();
+    let inbound = spy
+        .peeks
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(k, _, _)| k.starts_with("inbound/"))
+        .count();
+    assert_eq!(inbound, 1, "the queued peeks were skipped");
+}
+
+#[test]
+fn stopping_a_search_drops_its_queued_peeks() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    for i in 0..40 {
+        s.put("bk", &format!("deep/msg-{i:02}"), EMAIL);
+    }
+    let spy = Spy::new(s);
+    let mut app = pooled(dir.path(), &spy);
+    pump_until(&mut app, "the bucket list", |a| {
+        screen(a, 100, 20).contains("bk")
+    });
+    open_pooled(&mut app, "bk");
+    // The folder view peeks nothing: the only row is a folder.
+    *spy.hold.lock().unwrap() = true;
+    press_pooled(&mut app, KeyCode::Char('s'));
+    pump_until(&mut app, "the first search peek", |_| spy.peek_count() == 1);
+    press_pooled(&mut app, KeyCode::Char('x'));
+    release(&spy);
+    std::thread::sleep(Duration::from_millis(500));
+    app.pump();
+    assert_eq!(spy.peek_count(), 1, "the queued search peeks were skipped");
+    assert!(screen(&mut app, 100, 20).contains("stopped"));
+}
+
+fn press_pooled(app: &mut App, code: KeyCode) {
+    app.key(key(code));
+    app.pump();
+}
+
+/// `open` for the pooled app: select the row, press Enter, wait for the listing.
+fn open_pooled(app: &mut App, name: &str) {
+    for _ in 0..50 {
+        let s = screen(app, 100, 20);
+        if selected_row(&s).contains(name) {
+            press_pooled(app, KeyCode::Enter);
+            let path = name.to_string();
+            pump_until(app, "the listing", |a| {
+                let s = screen(a, 100, 20);
+                s.contains(&path) && !s.contains("loading")
+            });
+            return;
+        }
+        press_pooled(app, KeyCode::Down);
+    }
+    panic!("never selected {name}");
 }

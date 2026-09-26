@@ -587,3 +587,36 @@ source_profile = work
         assert!(app.ctx.session.is_none(), "{name}");
     }
 }
+
+#[test]
+fn connecting_from_a_pushed_accounts_screen_leaves_the_shared_session_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("credentials"), TWO_PROFILES).unwrap();
+    // The inbox below this screen talks to its own store through ctx.session.
+    let inbox_store = MemoryStore::new();
+    inbox_store.create_bucket("the-inbox-bucket");
+    let mut ctx = testing::ctx(dir.path(), Some(Arc::new(inbox_store) as Arc<dyn Store>));
+    let new_store = store();
+    let accounts = AccountsScreen::new(&mut ctx).with_connector(move |profile: Profile| {
+        let region = profile.region.clone().unwrap_or_else(|| "us-east-1".into());
+        Session {
+            profile,
+            region,
+            store: Arc::clone(&new_store) as Arc<dyn Store>,
+        }
+    });
+    let mut app = App::with_view(ctx, Box::new(accounts));
+    settle(&mut app);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "test");
+    let s = screen(&mut app, 100, 12);
+    assert!(
+        s.contains("mail-archive"),
+        "the browser lists the new account: {s}"
+    );
+    assert!(!s.contains("the-inbox-bucket"), "{s}");
+    assert!(s.contains("work"), "and says which account it is on: {s}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.ctx.session.as_ref().unwrap().profile.name, "test");
+}
