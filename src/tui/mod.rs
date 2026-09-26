@@ -9,9 +9,12 @@ pub mod browser;
 pub mod inbox;
 pub mod jobs;
 pub mod message;
+pub mod text;
 
+use std::panic::PanicHookInfo;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::ThreadId;
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -24,7 +27,8 @@ use ratatui::widgets::Paragraph;
 use crate::aws_profile::{self, CredentialsFile, Profile};
 use crate::config::AppConfig;
 use crate::s3::{Credentials, S3Client, Store};
-use jobs::{Done, Job, JobId, Jobs};
+use jobs::{Done, Generation, Job, JobId, Jobs};
+use time::UtcOffset;
 
 /// What a view asks the shell to do after handling a key or a job result.
 pub enum Transition {
@@ -51,8 +55,18 @@ pub trait View {
     fn on_focus(&mut self, ctx: &mut Ctx) {
         let _ = ctx;
     }
+    /// Called on the top view on every pump, after any finished jobs. For work that depends
+    /// on what the last render showed, such as peeking the rows now on screen.
+    fn on_tick(&mut self, ctx: &mut Ctx) {
+        let _ = ctx;
+    }
     /// Key hints for the footer, e.g. `[("enter", "open"), ("d", "delete")]`.
     fn hints(&self) -> Vec<(&'static str, &'static str)>;
+    /// The account this view works in, when it holds its own. The header bar shows it in
+    /// place of `ctx.session`.
+    fn session(&self) -> Option<&Session> {
+        None
+    }
 }
 
 /// A connected account.
@@ -102,6 +116,10 @@ pub struct Ctx {
     pub creds_path: PathBuf,
     pub session: Option<Session>,
     pub status: Option<Status>,
+    /// The local UTC offset, read once at startup before any thread exists (on Unix the
+    /// lookup fails once there are other threads). One offset for the whole run means a
+    /// message from the other side of a DST change shows an hour off; that's accepted.
+    pub local_offset: UtcOffset,
     jobs: Jobs,
 }
 
@@ -113,14 +131,36 @@ impl Ctx {
             creds_path,
             session: None,
             status: None,
+            local_offset: UtcOffset::UTC,
             jobs,
         }
+    }
+
+    pub fn with_local_offset(mut self, offset: UtcOffset) -> Self {
+        self.local_offset = offset;
+        self
     }
 
     /// Queue a job against the current session. None when no account is connected.
     pub fn submit(&mut self, job: Job) -> Option<JobId> {
         let store = Arc::clone(&self.session.as_ref()?.store);
         Some(self.jobs.submit(store, job))
+    }
+
+    /// Queue a job against a session the caller holds, rather than whichever account is
+    /// current, so a view keeps talking to the account it was opened with. With a
+    /// generation, a later bump lets the workers skip it if it's a listing or a peek.
+    pub fn submit_to(
+        &mut self,
+        session: &Session,
+        job: Job,
+        generation: Option<&Generation>,
+    ) -> JobId {
+        self.jobs.submit_stamped(
+            Arc::clone(&session.store),
+            job,
+            generation.map(Generation::stamp),
+        )
     }
 
     pub fn info(&mut self, msg: impl Into<String>) {
@@ -247,6 +287,10 @@ impl App {
 
     /// Hand finished jobs to the views. Returns how many there were.
     pub fn pump(&mut self) -> usize {
+        // Tick first, so whatever the top view queues is collected by this same pump.
+        if let Some(top) = self.stack.last_mut() {
+            top.on_tick(&mut self.ctx);
+        }
         let finished = self.ctx.jobs.poll();
         let n = finished.len();
         for done in finished {
@@ -277,7 +321,7 @@ impl App {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let who = match &self.ctx.session {
+        let who = match top.session().or(self.ctx.session.as_ref()) {
             Some(s) => format!("  {} ({})", s.profile.name, s.region),
             None => String::new(),
         };
@@ -317,12 +361,26 @@ impl App {
 }
 
 /// Run the interactive UI until the user quits.
-pub fn run(config_path: PathBuf, creds_path: PathBuf) -> anyhow::Result<()> {
+/// `local_offset` has to be read before this, while the process still has one thread.
+pub fn run(
+    config_path: PathBuf,
+    creds_path: PathBuf,
+    local_offset: UtcOffset,
+) -> anyhow::Result<()> {
     let config = AppConfig::load(&config_path)?;
-    let ctx = Ctx::new(config, config_path, creds_path, Jobs::pool(8));
+    let ctx =
+        Ctx::new(config, config_path, creds_path, Jobs::pool(8)).with_local_offset(local_offset);
     let mut app = App::new(ctx);
 
     let mut terminal = ratatui::init();
+    // ratatui's hook restores the terminal on any thread's panic, which would drop the screen
+    // under a still-running app when a worker panics. Workers catch their own panics, so only
+    // a panic on this thread gets the restore (and the report).
+    let restore_and_report = std::panic::take_hook();
+    std::panic::set_hook(only_on_thread(
+        std::thread::current().id(),
+        restore_and_report,
+    ));
     let result = (|| -> anyhow::Result<()> {
         while !app.quit {
             terminal.draw(|f| app.render(f))?;
@@ -339,6 +397,17 @@ pub fn run(config_path: PathBuf, creds_path: PathBuf) -> anyhow::Result<()> {
     })();
     ratatui::restore();
     result
+}
+
+type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>;
+
+/// A panic hook that runs `hook` for panics on thread `main` and ignores all others.
+fn only_on_thread(main: ThreadId, hook: PanicHook) -> PanicHook {
+    Box::new(move |info| {
+        if std::thread::current().id() == main {
+            hook(info);
+        }
+    })
 }
 
 /// Headless helpers for view tests.
@@ -414,5 +483,180 @@ pub(crate) mod testing {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::s3::{Bucket, Listing, MemoryStore, S3Error};
+
+    /// Panics on every get, the way a decoder bug on a strange message would.
+    struct Exploding;
+
+    impl Store for Exploding {
+        fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
+            Ok(Vec::new())
+        }
+        fn list(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<Listing, S3Error> {
+            Ok(Listing::default())
+        }
+        fn get_range(&self, _: &str, _: &str, _: u64, _: u64) -> Result<Vec<u8>, S3Error> {
+            Ok(Vec::new())
+        }
+        fn get(&self, _: &str, _: &str) -> Result<Vec<u8>, S3Error> {
+            panic!("worker blew up")
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), S3Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn only_a_panic_on_the_ui_thread_restores_the_terminal() {
+        let restores = Arc::new(AtomicUsize::new(0));
+        // A stand-in for the UI thread, parked until the hook is in place.
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let ui = std::thread::spawn(move || {
+            go_rx.recv().unwrap();
+            panic!("ui thread panic");
+        });
+        let counted = Arc::clone(&restores);
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(only_on_thread(
+            ui.thread().id(),
+            Box::new(move |_| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        ));
+
+        // A worker panic: the job comes back as an Err and the terminal is left alone.
+        let mut jobs = Jobs::pool(1);
+        jobs.submit(
+            Arc::new(Exploding),
+            Job::Get {
+                bucket: "b".into(),
+                key: "k".into(),
+            },
+        );
+        let done = jobs.wait(Duration::from_secs(10));
+        let worker_restores = restores.load(Ordering::SeqCst);
+
+        // A panic on the UI thread still restores.
+        go_tx.send(()).unwrap();
+        let ui_result = ui.join();
+        let ui_restores = restores.load(Ordering::SeqCst);
+        std::panic::set_hook(previous);
+
+        assert_eq!(done.len(), 1);
+        assert!(done[0].result.is_err(), "{:?}", done[0].result);
+        assert_eq!(worker_restores, 0);
+        assert!(ui_result.is_err());
+        assert_eq!(ui_restores, 1);
+    }
+
+    #[test]
+    fn submit_to_uses_the_session_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = Arc::new(MemoryStore::new());
+        let mut ctx = testing::ctx(dir.path(), Some(current.clone()));
+        let mine = Arc::new(MemoryStore::new());
+        mine.put("b", "k", b"mine");
+        let mut session = ctx.session.clone().unwrap();
+        session.store = mine.clone();
+
+        ctx.submit_to(
+            &session,
+            Job::Delete {
+                bucket: "b".into(),
+                key: "k".into(),
+            },
+            None,
+        );
+        let done = ctx.jobs.poll();
+        assert_eq!(done.len(), 1);
+        assert!(done[0].result.is_ok(), "{:?}", done[0].result);
+        assert!(!mine.contains("b", "k"));
+    }
+
+    #[test]
+    fn the_local_offset_defaults_to_utc_and_can_be_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), None);
+        assert_eq!(ctx.local_offset, UtcOffset::UTC);
+        let east = UtcOffset::from_hms(2, 0, 0).unwrap();
+        assert_eq!(ctx.with_local_offset(east).local_offset, east);
+    }
+
+    #[test]
+    fn the_header_names_the_top_views_own_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), Some(Arc::new(MemoryStore::new())));
+        let mut other = ctx.session.clone().unwrap();
+        other.profile.name = "work".into();
+        other.region = "eu-west-2".into();
+
+        let inbox = inbox::InboxScreen::new(crate::config::Inbox {
+            profile: "test".into(),
+            bucket: "b".into(),
+            prefix: String::new(),
+            region: None,
+        });
+        let mut app = App::with_view(ctx, Box::new(inbox));
+        testing::settle(&mut app);
+        let header = |app: &mut App| {
+            testing::screen(app, 100, 5)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+
+        // Another account connects: the inbox still says whose it is.
+        let personal = app.ctx.session.replace(other.clone()).unwrap();
+        assert!(
+            header(&mut app).contains("test (us-east-1)"),
+            "{}",
+            header(&mut app)
+        );
+
+        // A message opened in the other account, on top of the inbox, names that one.
+        let message = message::MessageScreen::new("b".into(), "k".into()).with_session(other);
+        app.apply(Transition::Push(Box::new(message)));
+        testing::settle(&mut app);
+        assert!(
+            header(&mut app).contains("work (eu-west-2)"),
+            "{}",
+            header(&mut app)
+        );
+
+        // Back on the inbox, its own account again.
+        app.apply(Transition::Pop);
+        assert!(
+            header(&mut app).contains("test (us-east-1)"),
+            "{}",
+            header(&mut app)
+        );
+
+        // A view with no session of its own shows whatever is connected.
+        app.ctx.session = Some(personal);
+        let accounts = accounts::AccountsScreen::new(&mut app.ctx);
+        app.apply(Transition::Push(Box::new(accounts)));
+        app.ctx.session.as_mut().unwrap().profile.name = "current".into();
+        assert!(
+            header(&mut app).contains("current (us-east-1)"),
+            "{}",
+            header(&mut app)
+        );
     }
 }
