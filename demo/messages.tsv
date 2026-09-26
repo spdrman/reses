@@ -1,0 +1,14 @@
+# The demo inbox, oldest first. demo/seed.sh uploads these in this order, and
+# demo/check-frames.sh expects every one of them as a row in the recorded inbox.
+# Columns, tab-separated: SES object id, age (anything `date -d` takes), sender name,
+# sender address, subject. Every address is invented and on example.com/.org/.net.
+3k8vq2m1n7c0b5x9w4z6h2j8l1p0r3t5u7y9a2d4	5 days ago	The Weekly Tinkerer	news@example.com	Issue 118: a soldering station roundup
+7d2f9h4k6m8p1r3t5v7x9z0b2c4e6g8i1j3l5n7q	4 days ago	Dana Whitfield	dana@example.org	Lease renewal for unit 4B
+1a3c5e7g9i2k4m6o8q0s2u4w6y8b1d3f5h7j9l0n	3 days ago	Olu Adeyemi	olu@example.org	Photos from the workshop
+9z7x5v3t1r8p6n4l2j0h9f7d5b3a1c2e4g6i8k0m	2 days ago	Harbour Coffee	receipts@example.net	Your receipt from Harbour Coffee
+4b6d8f0h2j4l6n8p0r2t4v6x8z1a3c5e7g9i2k4m	36 hours ago	Security Alerts	alerts@example.net	New sign-in from Firefox on Linux
+6m4k2i0g8e6c4a2y0w8u6s4q2o0m8k6i4g2e0c8a	30 hours ago	Tomasz Nowak	tomasz.nowak@example.org	Re: Saturday hike, trail options
+2p4r6t8v0x2z4b6d8f0h2j4l6n8p0r2t4v6x8z0b	20 hours ago	Build Bot	ci@example.net	Build 812 passed on main
+8q6o4m2k0i8g6e4c2a0y8w6u4s2q0o8m6k4i2g0e	9 hours ago	Priya Raman	priya.raman@example.com	Invoice 4471 for September is ready
+5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o	3 hours ago	Mei Chen	mei.chen@example.com	Draft agenda for Thursday's planning call
+0e2g4i6k8m0o2q4s6u8w0y2a4c6e8g0i2k4m6o8q	25 minutes ago	Sam Ortiz	sam.ortiz@example.com	Welcome aboard! Notes for your first week
