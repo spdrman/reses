@@ -315,6 +315,11 @@ fn save_attachments_replaces_control_and_bidi_characters() {
         .collect();
     assert_eq!(
         names,
-        ["invoice_fdp.exe", "tab_here_bell.txt", "iso_late_.txt", "marks___.txt"]
+        [
+            "invoice_fdp.exe",
+            "tab_here_bell.txt",
+            "iso_late_.txt",
+            "marks___.txt"
+        ]
     );
 }

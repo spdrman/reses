@@ -81,35 +81,47 @@ pub(super) fn split_ws(s: &str) -> impl Iterator<Item = &str> {
 
 /// `int(s)` for a base-10 string that has already been split on whitespace: an optional sign,
 /// then ASCII digits with single underscores allowed between them. Out-of-range values are
-/// reported as `None`, which callers treat the same way as Python's later range errors.
+/// reported as `None` too; `is_int_literal` tells the two apart where that matters.
 pub(super) fn py_int(s: &str) -> Option<i64> {
-    let (neg, digits) = match s.as_bytes().first()? {
+    if !is_int_literal(s) {
+        return None;
+    }
+    let (neg, digits) = match s.as_bytes()[0] {
         b'+' => (false, &s[1..]),
         b'-' => (true, &s[1..]),
         _ => (false, s),
     };
-    let bytes = digits.as_bytes();
-    if bytes.is_empty() || !bytes[0].is_ascii_digit() || !bytes[bytes.len() - 1].is_ascii_digit() {
-        return None;
+    let mut n: i128 = 0;
+    for b in digits.bytes().filter(|&b| b != b'_') {
+        n = n.checked_mul(10)?.checked_add(i128::from(b - b'0'))?;
     }
-    let mut n: i64 = 0;
+    i64::try_from(if neg { -n } else { n }).ok()
+}
+
+/// Whether Python's `int(s)` would accept `s`, however big the number: an optional sign, then
+/// ASCII digits with single underscores allowed between them.
+pub(super) fn is_int_literal(s: &str) -> bool {
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s).as_bytes();
+    if digits.is_empty()
+        || !digits[0].is_ascii_digit()
+        || !digits[digits.len() - 1].is_ascii_digit()
+    {
+        return false;
+    }
     let mut prev_underscore = false;
-    for &b in bytes {
+    for &b in digits {
         if b == b'_' {
             if prev_underscore {
-                return None;
+                return false;
             }
             prev_underscore = true;
-            continue;
+        } else if b.is_ascii_digit() {
+            prev_underscore = false;
+        } else {
+            return false;
         }
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        prev_underscore = false;
-        // Anything this large fails Python's datetime range checks anyway.
-        n = n.saturating_mul(10).saturating_add(i64::from(b - b'0'));
     }
-    Some(if neg { -n } else { n })
+    true
 }
 
 /// Python `str.isdigit()` on one character. The fields this runs on are ASCII plus escaped
