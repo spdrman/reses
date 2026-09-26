@@ -5,6 +5,7 @@
 //! through `testing`.
 
 pub mod accounts;
+pub mod brand;
 pub mod browser;
 pub mod inbox;
 pub mod jobs;
@@ -120,6 +121,9 @@ pub struct Ctx {
     /// lookup fails once there are other threads). One offset for the whole run means a
     /// message from the other side of a DST change shows an hour off; that's accepted.
     pub local_offset: UtcOffset,
+    /// How the header draws the logo: the real image when the terminal can show one, the
+    /// styled-text wordmark otherwise. Detected once at startup.
+    pub brand: brand::Brand,
     jobs: Jobs,
 }
 
@@ -132,12 +136,18 @@ impl Ctx {
             session: None,
             status: None,
             local_offset: UtcOffset::UTC,
+            brand: brand::Brand::text(brand::Background::Dark),
             jobs,
         }
     }
 
     pub fn with_local_offset(mut self, offset: UtcOffset) -> Self {
         self.local_offset = offset;
+        self
+    }
+
+    pub fn with_brand(mut self, brand: brand::Brand) -> Self {
+        self.brand = brand;
         self
     }
 
@@ -368,11 +378,15 @@ pub fn run(
     local_offset: UtcOffset,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load(&config_path)?;
-    let ctx =
-        Ctx::new(config, config_path, creds_path, Jobs::pool(8)).with_local_offset(local_offset);
-    let mut app = App::new(ctx);
 
     let mut terminal = ratatui::init();
+    // After entering the alternate screen, as the picker asks, and before the job pool:
+    // like the local offset, it's read while nothing else is running.
+    let brand = brand::Brand::detect();
+    let ctx = Ctx::new(config, config_path, creds_path, Jobs::pool(8))
+        .with_local_offset(local_offset)
+        .with_brand(brand);
+    let mut app = App::new(ctx);
     // ratatui's hook restores the terminal on any thread's panic, which would drop the screen
     // under a still-running app when a worker panics. Workers catch their own panics, so only
     // a panic on this thread gets the restore (and the report).
@@ -467,6 +481,13 @@ pub(crate) mod testing {
             }
         }
         panic!("jobs never settled");
+    }
+
+    /// Render the whole app and hand back the cells, styles included.
+    pub fn buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut term = Terminal::new(TestBackend::new(width, height)).unwrap();
+        term.draw(|f| app.render(f)).unwrap();
+        term.backend().buffer().clone()
     }
 
     /// Render the whole app to plain text, one line per row, trailing spaces trimmed.
