@@ -724,3 +724,65 @@ fn search_stops_at_the_page_cap() {
     assert!(s.contains("7 pages"), "{s}");
     assert!(!s.contains("searching"), "{s}");
 }
+
+// ---- display width ----
+
+/// Column (in terminal cells) where `needle` starts on `line`. A wide character renders as
+/// its own symbol plus a blank cell, so every char of the rendered line is one cell.
+fn cell_col(line: &str, needle: &str) -> usize {
+    let byte = line
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} not on {line:?}"));
+    line[..byte].chars().count()
+}
+
+#[test]
+fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    let wide = "受信メール保存フォルダの中にある長い名前のファイルです";
+    s.put("bk", "a-plain-ascii-name", TEXT);
+    s.put("bk", wide, TEXT);
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    let width = 50;
+    let screen_text = screen(&mut app, width, 12);
+    let ascii = line_with(&screen_text, "a-plain-ascii");
+    let cjk = line_with(&screen_text, "受");
+    assert!(
+        cjk.contains("37 B"),
+        "the size fell off the row:\n{screen_text}"
+    );
+    assert_eq!(
+        cell_col(ascii, "37 B"),
+        cell_col(cjk, "37 B"),
+        "sizes line up:\n{screen_text}"
+    );
+    assert!(cjk.chars().count() <= width as usize, "{screen_text}");
+}
+
+#[test]
+fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    let wide = "受信メール保存フォルダの中にある長い名前のフォルダです/";
+    s.put("bk", &format!("{wide}m1"), EMAIL);
+    s.put("bk", "plain/m1", EMAIL);
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    press(&mut app, KeyCode::Char('s'));
+    let screen_text = screen(&mut app, 50, 12);
+    let cjk = line_with(&screen_text, "受");
+    assert!(
+        cjk.contains("1 email"),
+        "the count fell off the row:\n{screen_text}"
+    );
+    let plain = line_with(&screen_text, "bk/plain/");
+    assert_eq!(
+        cell_col(plain, "1 email"),
+        cell_col(cjk, "1 email"),
+        "{screen_text}"
+    );
+}
