@@ -1,6 +1,6 @@
 import unittest
 
-import mailfmt
+import reses
 
 RAW = b"""Return-Path: <alice@example.com>\r
 Received: from mx.example.com by inbound-smtp.example.net with SMTP id abc123\r
@@ -40,8 +40,8 @@ hi\r
 
 class FormatTest(unittest.TestCase):
     def setUp(self):
-        self.msg = mailfmt.parse(RAW)
-        self.out = mailfmt.format_message(self.msg)
+        self.msg = reses.parse(RAW)
+        self.out = reses.format_message(self.msg)
 
     def test_headers(self):
         self.assertIn("From: Alice <alice@example.com>\n", self.out)
@@ -55,19 +55,19 @@ class FormatTest(unittest.TestCase):
 
     def test_bcc_excludes_visible_recipients(self):
         raw = RAW.replace(b"for hidden@example.org", b"for bob@example.org")
-        self.assertIn("Bcc: \n", mailfmt.format_message(mailfmt.parse(raw)))
+        self.assertIn("Bcc: \n", reses.format_message(reses.parse(raw)))
 
     def test_plain_body_and_attachment(self):
         self.assertTrue(self.out.endswith("Message:\n\nplain body\n"))
         self.assertIn("Attachments: notes.txt (2 bytes)\n", self.out)
 
     def test_html_preference(self):
-        self.assertIn("<div>html <b>body</b></div>", mailfmt.format_message(self.msg, prefer_html=True))
+        self.assertIn("<div>html <b>body</b></div>", reses.format_message(self.msg, prefer_html=True))
 
     def test_html_only_falls_back_to_text(self):
         raw = (b"From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\n"
                b"Content-Type: text/html\r\n\r\n<p>one</p><p>two &amp; three</p>\r\n")
-        self.assertTrue(mailfmt.format_message(mailfmt.parse(raw)).endswith("one\ntwo & three\n"))
+        self.assertTrue(reses.format_message(reses.parse(raw)).endswith("one\ntwo & three\n"))
 
 
 if __name__ == "__main__":

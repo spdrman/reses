@@ -3,11 +3,11 @@
 readable email with From, To, Cc, Bcc, Subject, Date and the message body.
 
 Usage:
-    mailfmt FILE [FILE ...]            print each message to stdout
-    mailfmt FILE -o out.txt            write to a file
-    mailfmt FILE --html                show the HTML part instead of plain text
-    mailfmt FILE --save-attachments D  write attachments into directory D
-    cat FILE | mailfmt                 read from stdin
+    reses FILE [FILE ...]            print each message to stdout
+    reses FILE -o out.txt            write to a file
+    reses FILE --html                show the HTML part instead of plain text
+    reses FILE --save-attachments D  write attachments into directory D
+    cat FILE | reses                 read from stdin
 """
 
 import argparse
@@ -128,7 +128,7 @@ def save_attachments(msg, directory: Path):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="mailfmt", description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(prog="reses", description=__doc__.split("\n\n")[0])
     ap.add_argument("files", nargs="*", help="raw message files (default: stdin)")
     ap.add_argument("-o", "--output", help="write to this file instead of stdout")
     ap.add_argument("--html", action="store_true", help="show the HTML part instead of plain text")
