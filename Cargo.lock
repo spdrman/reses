@@ -895,10 +895,13 @@ dependencies = [
  "rustix 0.38.44",
  "serde",
  "sha2",
+ "signal-hook",
  "tempfile",
  "thiserror 2.0.21",
  "time",
  "toml",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
  "ureq",
 ]
 

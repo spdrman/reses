@@ -45,6 +45,16 @@ pub fn clean(s: &str) -> String {
         .collect()
 }
 
+/// Stub for the red tests: nothing is escaped yet.
+pub fn escape(s: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(s)
+}
+
+/// Stub for the red tests: nothing is escaped yet.
+pub fn escape_text(s: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(s)
+}
+
 /// Widest `human_size` output, for right-aligned columns.
 pub const SIZE_WIDTH: usize = 9;
 

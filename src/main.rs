@@ -24,6 +24,15 @@ struct Cli {
     /// Write attachments into this directory.
     #[arg(long, value_name = "DIR")]
     save_attachments: Option<PathBuf>,
+    /// Stub for the red tests.
+    #[arg(long)]
+    raw: bool,
+}
+
+/// Stub for the red tests: everything goes out as it is.
+fn for_stdout(text: String, stdout_tty: bool, cli: &Cli) -> String {
+    let _ = (stdout_tty, cli.raw);
+    text
 }
 
 /// What a run does, from the arguments and whether stdin and stdout are terminals.
@@ -133,6 +142,28 @@ mod tests {
         assert_eq!(
             mode(&cli(&["-o", "out.txt", "m.eml"]), true, true),
             Mode::Decode
+        );
+    }
+
+    #[test]
+    fn a_terminal_gets_control_characters_written_out() {
+        let text = "Subject: \u{1b}]52;c;aGk=\u{7}hi\nbody\ttab\n".to_string();
+        let escaped = for_stdout(text.clone(), true, &cli(&["m.eml"]));
+        assert_eq!(escaped, "Subject: \\x1b]52;c;aGk=\\x07hi\nbody\ttab\n");
+        assert!(!escaped.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn pipes_files_and_raw_get_the_bytes_as_they_are() {
+        let text = "a \u{1b}[2J b\n".to_string();
+        assert_eq!(for_stdout(text.clone(), false, &cli(&["m.eml"])), text);
+        assert_eq!(
+            for_stdout(text.clone(), true, &cli(&["--raw", "m.eml"])),
+            text
+        );
+        assert_eq!(
+            for_stdout(text.clone(), true, &cli(&["-o", "out.txt", "m.eml"])),
+            text
         );
     }
 

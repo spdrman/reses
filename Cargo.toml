@@ -26,10 +26,17 @@ ratatui = "0.29"
 ratatui-image = { version = "8.1", default-features = false }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+# The quit path for SIGTERM, SIGINT and SIGHUP, and ctrl-z. Already in the tree through
+# crossterm.
+signal-hook = "0.3"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
 toml = "0.8"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# Grapheme widths, measured the way ratatui lays cells out. Both are the versions ratatui
+# already builds.
+unicode-segmentation = "1"
+unicode-width = "0.2"
 
 [dev-dependencies]
 # tests/tui_pty.rs runs the app on a real pty. 0.38 is the rustix ratatui-image already builds.

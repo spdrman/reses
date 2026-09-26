@@ -46,6 +46,11 @@ pub trait View {
     fn title(&self) -> String;
     fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx);
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition;
+    /// Stub for the red tests: pastes go nowhere yet.
+    fn on_paste(&mut self, text: &str, ctx: &mut Ctx) -> Transition {
+        let _ = (text, ctx);
+        Transition::None
+    }
     /// Every finished job is offered to every view on the stack; ignore ids you did not submit.
     /// Only the top view's transition is applied.
     fn on_done(&mut self, done: &Done, ctx: &mut Ctx) -> Transition {
@@ -295,6 +300,13 @@ impl App {
         self.apply(t);
     }
 
+    /// Stub for the red tests: a paste still arrives as keys.
+    pub fn paste(&mut self, text: &str) {
+        for c in text.chars() {
+            self.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
     /// Hand finished jobs to the views. Returns how many there were.
     pub fn pump(&mut self) -> usize {
         // Tick first, so whatever the top view queues is collected by this same pump.
@@ -449,6 +461,9 @@ fn only_on_thread(main: ThreadId, hook: PanicHook) -> PanicHook {
         }
     })
 }
+
+#[cfg(test)]
+mod review_tests;
 
 /// Headless helpers for view tests.
 #[cfg(test)]
