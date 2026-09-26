@@ -23,26 +23,58 @@ fn ci_word_at(text: &[char], at: usize, word: &str) -> bool {
             .all(|(p, &c)| ci_eq(p, c))
 }
 
+/// Lowercase one character the way `re` does when it compares a backreference ignoring case
+/// (the simple, one-character mapping).
+fn re_lower(c: char) -> char {
+    match c {
+        '\u{130}' => 'i',
+        '\u{212a}' => 'k',
+        c => c.to_ascii_lowercase(),
+    }
+}
+
 /// `re.sub(r"(?is)<(script|style).*?</\1>", "", s)`.
+///
+/// The regex takes each opening tag to the first matching close tag after it, where "matching"
+/// means equal to the captured name ignoring case. Rescanning for that close tag from every
+/// opener is quadratic when none exists, so I index the close tags once, grouped by their
+/// lowercased name, and walk each group with a cursor that only moves forward.
 fn drop_script_style(text: &[char]) -> Vec<char> {
+    use std::collections::HashMap;
+    let mut closers: HashMap<Vec<char>, (Vec<usize>, usize)> = HashMap::new();
+    for j in 0..text.len() {
+        if text[j] != '<' || text.get(j + 1) != Some(&'/') {
+            continue;
+        }
+        for word in ["script", "style"] {
+            let n = word.len();
+            if ci_word_at(text, j + 2, word) && text.get(j + 2 + n) == Some(&'>') {
+                let key: Vec<char> = text[j + 2..j + 2 + n]
+                    .iter()
+                    .map(|&c| re_lower(c))
+                    .collect();
+                closers.entry(key).or_default().0.push(j);
+            }
+        }
+    }
     let mut out = Vec::with_capacity(text.len());
     let mut i = 0;
     'outer: while i < text.len() {
         if text[i] == '<' {
             for word in ["script", "style"] {
-                if ci_word_at(text, i + 1, word) {
-                    let body = i + 1 + word.len();
-                    let mut j = body;
-                    while j + 1 < text.len() {
-                        if text[j] == '<'
-                            && text[j + 1] == '/'
-                            && ci_word_at(text, j + 2, word)
-                            && text.get(j + 2 + word.len()) == Some(&'>')
-                        {
-                            i = j + 3 + word.len();
-                            continue 'outer;
-                        }
-                        j += 1;
+                let n = word.len();
+                if !ci_word_at(text, i + 1, word) {
+                    continue;
+                }
+                let body = i + 1 + n;
+                let key: Vec<char> = text[i + 1..body].iter().map(|&c| re_lower(c)).collect();
+                if let Some((positions, cursor)) = closers.get_mut(&key) {
+                    while *cursor < positions.len() && positions[*cursor] < body {
+                        *cursor += 1;
+                    }
+                    if let Some(&j) = positions.get(*cursor) {
+                        i = j + 3 + n;
+                        continue 'outer;
                     }
                 }
             }
@@ -111,17 +143,23 @@ fn block_ends_to_newline(text: &[char]) -> Vec<char> {
     out
 }
 
-/// `re.sub(r"<[^>]+>", "", s)`.
+/// `re.sub(r"<[^>]+>", "", s)`. The next ">" is looked up rather than searched for, so a run
+/// of "<" with no ">" after it costs one pass instead of one pass per "<".
 fn drop_tags(text: &[char]) -> Vec<char> {
+    let mut next_gt = vec![usize::MAX; text.len() + 1];
+    for i in (0..text.len()).rev() {
+        next_gt[i] = if text[i] == '>' { i } else { next_gt[i + 1] };
+    }
     let mut out = Vec::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {
-        if text[i] == '<'
-            && let Some(close) = text[i + 1..].iter().position(|&c| c == '>')
-            && close > 0
-        {
-            i += close + 2;
-            continue;
+        if text[i] == '<' {
+            let close = next_gt[i + 1];
+            // `[^>]+` needs at least one character between the brackets.
+            if close != usize::MAX && close > i + 1 {
+                i = close + 1;
+                continue;
+            }
         }
         out.push(text[i]);
         i += 1;

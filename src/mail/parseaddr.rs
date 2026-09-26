@@ -64,7 +64,61 @@ impl AddrList {
         result
     }
 
+    /// `getaddress`. Python recurses once per group nesting level; I keep the open groups on
+    /// my own stack instead, so "g:g:g:...;" can't exhaust the real one. The order of every
+    /// read and every change to `pos` and `commentlist` is the same as the recursive version.
     fn getaddress(&mut self) -> Vec<(String, String)> {
+        let mut groups: Vec<Vec<(String, String)>> = Vec::new();
+        loop {
+            let mut result = match self.address_head() {
+                Some(r) => {
+                    self.address_tail();
+                    r
+                }
+                None => {
+                    groups.push(Vec::new());
+                    Vec::new()
+                }
+            };
+            // Hand finished addresses to the enclosing group, closing groups as they end.
+            loop {
+                let Some(top) = groups.last_mut() else {
+                    return result;
+                };
+                top.append(&mut result);
+                if self.group_continues() {
+                    break;
+                }
+                result = groups.pop().unwrap_or_default();
+                self.address_tail();
+            }
+        }
+    }
+
+    /// The group loop's test: another member follows unless the field ended or `;` closed it.
+    fn group_continues(&mut self) -> bool {
+        if !self.more() {
+            return false;
+        }
+        self.gotonext();
+        if self.at() == Some(';') {
+            self.pos += 1;
+            return false;
+        }
+        true
+    }
+
+    /// What follows the address itself: whitespace, comments and one separating comma.
+    fn address_tail(&mut self) {
+        self.gotonext();
+        if self.at() == Some(',') {
+            self.pos += 1;
+        }
+    }
+
+    /// The start of `getaddress`, up to the branch on what follows the phrase. `None` means a
+    /// group opened (its `:` is consumed) and its members come next.
+    fn address_head(&mut self) -> Option<Vec<(String, String)>> {
         self.commentlist.clear();
         self.gotonext();
         let oldpos = self.pos;
@@ -85,16 +139,8 @@ impl AddrList {
                 returnlist = vec![(self.commentlist.join(" "), addrspec)];
             }
             Some(':') => {
-                let fieldlen = self.field.len();
                 self.pos += 1;
-                while self.more() {
-                    self.gotonext();
-                    if self.pos < fieldlen && self.at() == Some(';') {
-                        self.pos += 1;
-                        break;
-                    }
-                    returnlist.extend(self.getaddress());
-                }
+                return None;
             }
             Some('<') => {
                 let routeaddr = self.getrouteaddr();
@@ -115,11 +161,7 @@ impl AddrList {
                 }
             }
         }
-        self.gotonext();
-        if self.at() == Some(',') {
-            self.pos += 1;
-        }
-        returnlist
+        Some(returnlist)
     }
 
     fn getrouteaddr(&mut self) -> String {
@@ -220,12 +262,15 @@ impl AddrList {
         sdlist.concat()
     }
 
+    /// `getdelimited`. With comments allowed, Python recurses into each nested comment and
+    /// appends its text without the parens. A depth count does the same without recursing.
     fn getdelimited(&mut self, beginchar: char, endchars: &str, allowcomments: bool) -> String {
         if self.at() != Some(beginchar) {
             return String::new();
         }
         let mut s = String::new();
         let mut quote = false;
+        let mut depth = 1usize;
         self.pos += 1;
         while let Some(c) = self.at() {
             if quote {
@@ -233,10 +278,14 @@ impl AddrList {
                 quote = false;
             } else if endchars.contains(c) {
                 self.pos += 1;
-                break;
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                continue;
             } else if allowcomments && c == '(' {
-                let inner = self.getcomment();
-                s.push_str(&inner);
+                self.pos += 1;
+                depth += 1;
                 continue;
             } else if c == '\\' {
                 quote = true;

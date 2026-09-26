@@ -263,3 +263,63 @@ fn save_attachments_creates_the_directory() {
     let saved = save_attachments(&raw, &target).unwrap();
     assert_eq!(saved, [target.join("readme.txt")]);
 }
+
+fn one_attachment_each(names: &[&str]) -> Vec<u8> {
+    let mut raw = String::from(
+        "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n\
+         --B\r\nContent-Type: text/plain\r\n\r\nbody\r\n",
+    );
+    for (i, name) in names.iter().enumerate() {
+        raw.push_str(&format!(
+            "--B\r\nContent-Type: application/octet-stream\r\n\
+             Content-Disposition: attachment; filename=\"{name}\"\r\n\r\npayload {i}\r\n"
+        ));
+    }
+    raw.push_str("--B--\r\n");
+    raw.into_bytes()
+}
+
+#[test]
+fn save_attachments_shortens_long_names_and_keeps_going() {
+    let long = format!("{}.pdf", "é".repeat(150)); // 304 bytes
+    let raw = one_attachment_each(&[&long, "after.txt"]);
+    let dir = tempfile::tempdir().unwrap();
+    let saved = save_attachments(&raw, dir.path()).unwrap();
+    assert_eq!(saved.len(), 2, "{saved:?}");
+    let first = saved[0].file_name().unwrap().to_str().unwrap().to_string();
+    assert!(first.len() <= 200, "{} bytes", first.len());
+    assert!(first.ends_with(".pdf"), "{first}");
+    assert!(first.starts_with("éé"), "{first}");
+    assert_eq!(fs::read(&saved[0]).unwrap(), b"payload 0");
+    assert_eq!(saved[1].file_name().unwrap(), "after.txt");
+
+    // Saving again still finds a free, short-enough name.
+    let again = save_attachments(&raw, dir.path()).unwrap();
+    let name = again[0].file_name().unwrap().to_str().unwrap();
+    assert!(name.len() <= 210 && name.ends_with("-1.pdf"), "{name}");
+}
+
+#[test]
+fn save_attachments_replaces_control_and_bidi_characters() {
+    let raw = one_attachment_each(&[
+        "invoice\u{202e}fdp.exe",
+        "tab\there\u{7}bell.txt",
+        "iso\u{2066}late\u{2069}.txt",
+        "marks\u{200e}\u{200f}\u{61c}.txt",
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let names: Vec<String> = save_attachments(&raw, dir.path())
+        .unwrap()
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "invoice_fdp.exe",
+            "tab_here_bell.txt",
+            "iso_late_.txt",
+            "marks___.txt"
+        ]
+    );
+}

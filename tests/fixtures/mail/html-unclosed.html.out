@@ -1,0 +1,11 @@
+From: unclosed@example.com
+Reply-To: 
+To: you@example.org
+Cc: 
+Bcc: 
+Date: 
+Subject: Unclosed style and tags
+Message-ID: 
+Message:
+
+<p>start</p><style>never closed<p>kept</p> <script>s</script> mid <SCRIPT>open <b>tail</b> x < y <i

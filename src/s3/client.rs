@@ -6,8 +6,11 @@ use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 
 use super::sigv4::{self, EMPTY_SHA256, uri_encode};
-use super::transport::{HttpRequest, HttpResponse, Transport, UreqTransport};
-use super::{Bucket, Credentials, Listing, S3Error, Store, xml};
+use super::transport::{
+    BodyLimit, HttpRequest, HttpResponse, LIST_BODY_LIMIT, MAX_GET_BYTES, RANGE_SLACK, Transport,
+    UreqTransport,
+};
+use super::{Bucket, Credentials, Listing, S3Error, Store, valid_region, xml};
 
 /// The real client. Handles buckets in other regions by following S3's region hint.
 pub struct S3Client {
@@ -40,6 +43,7 @@ struct Call<'a> {
     query: Vec<(&'static str, String)>,
     headers: Vec<(&'static str, String)>,
     body: Vec<u8>,
+    body_limit: BodyLimit,
 }
 
 impl<'a> Call<'a> {
@@ -51,8 +55,35 @@ impl<'a> Call<'a> {
             query: Vec::new(),
             headers: Vec::new(),
             body: Vec::new(),
+            body_limit: BodyLimit::default(),
         }
     }
+}
+
+/// S3 would read an empty key as the bucket itself, so it never gets that far.
+fn require_key(key: &str) -> Result<(), S3Error> {
+    if key.is_empty() {
+        Err(S3Error::EmptyKey)
+    } else {
+        Ok(())
+    }
+}
+
+/// The object's length from Content-Length, when the server sent one.
+fn content_length(resp: &HttpResponse) -> Option<u64> {
+    resp.header("content-length")
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// A 2xx body that ran past its limit is refused whole, rather than handed on cut short.
+fn complete(resp: HttpResponse, limit: u64) -> Result<HttpResponse, S3Error> {
+    if resp.truncated {
+        return Err(S3Error::TooLarge {
+            size: content_length(&resp),
+            limit,
+        });
+    }
+    Ok(resp)
 }
 
 /// Bucket names that can go in a hostname. Anything else (upper case, underscores, legacy
@@ -68,7 +99,14 @@ fn dns_compatible(bucket: &str) -> bool {
 }
 
 impl S3Client {
+    /// A `region` that isn't a region name (see `valid_region`) is replaced with
+    /// `us-east-1`, and S3's redirect then finds the bucket's real region.
     pub fn new(creds: Credentials, region: &str) -> Self {
+        let region = if valid_region(region) {
+            region
+        } else {
+            "us-east-1"
+        };
         Self {
             creds,
             region: region.to_string(),
@@ -120,6 +158,7 @@ impl S3Client {
 
     /// Upload an object. reses never does this itself; the integration tests need it.
     pub fn put_object(&self, bucket: &str, key: &str, data: &[u8]) -> Result<(), S3Error> {
+        require_key(key)?;
         let mut call = Call::new("PUT", Some(bucket), Some(key));
         call.body = data.to_vec();
         self.guard(self.call(&call).and_then(ok_status).map(drop))
@@ -212,6 +251,7 @@ impl S3Client {
                 url,
                 headers: all_headers,
                 body: call.body.clone(),
+                body_limit: call.body_limit,
             })
             .map_err(S3Error::Transport)
     }
@@ -245,7 +285,8 @@ impl S3Client {
         }
         let mut text = text;
         for secret in secrets.iter().filter(|s| !s.is_empty()) {
-            for form in [secret.clone(), uri_encode(secret, false)] {
+            let encoded = uri_encode(secret, false);
+            for form in [secret.clone(), lowercase_escapes(&encoded), encoded] {
                 text = text.replace(&form, "<redacted>");
             }
         }
@@ -265,8 +306,27 @@ impl S3Client {
             },
             S3Error::Transport(m) => S3Error::Transport(self.scrub(m)),
             S3Error::Parse(m) => S3Error::Parse(self.scrub(m)),
+            other @ (S3Error::TooLarge { .. } | S3Error::EmptyKey) => other,
         })
     }
+}
+
+/// `%2F` as `%2f`, since a server echoing a value back may pick either case.
+fn lowercase_escapes(encoded: &str) -> String {
+    let mut out = String::with_capacity(encoded.len());
+    let mut hex_left = 0;
+    for c in encoded.chars() {
+        if hex_left > 0 {
+            out.push(c.to_ascii_lowercase());
+            hex_left -= 1;
+        } else {
+            if c == '%' {
+                hex_left = 2;
+            }
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The region S3 is pointing us at, if this response is a wrong-region answer.
@@ -284,11 +344,13 @@ fn redirect_region(resp: &HttpResponse) -> Option<String> {
             return None;
         }
     }
+    // The region ends up in a hostname and the signing scope, so a hint that isn't a region
+    // name is ignored rather than followed.
     resp.header("x-amz-bucket-region")
         .map(str::trim)
-        .filter(|r| !r.is_empty())
+        .filter(|r| valid_region(r))
         .map(str::to_string)
-        .or_else(|| doc.and_then(|d| d.region))
+        .or_else(|| doc.and_then(|d| d.region).filter(|r| valid_region(r)))
 }
 
 /// Turn a non-2xx answer into `S3Error::Service`, from its error document when it has one.
@@ -315,11 +377,17 @@ fn service_error(resp: &HttpResponse) -> S3Error {
 }
 
 impl Store for S3Client {
+    fn bucket_region(&self, bucket: &str) -> Option<String> {
+        S3Client::bucket_region(self, bucket)
+    }
+
     fn list_buckets(&self) -> Result<Vec<Bucket>, S3Error> {
-        let call = Call::new("GET", None, None);
+        let mut call = Call::new("GET", None, None);
+        call.body_limit.ok = LIST_BODY_LIMIT;
         self.guard(
             self.call(&call)
                 .and_then(ok_status)
+                .and_then(|r| complete(r, LIST_BODY_LIMIT))
                 .and_then(|r| xml::parse_buckets(&r.body)),
         )
     }
@@ -345,19 +413,29 @@ impl Store for S3Client {
         if let Some(n) = self.max_keys {
             call.query.push(("max-keys", n.to_string()));
         }
+        call.body_limit.ok = LIST_BODY_LIMIT;
         self.guard(
             self.call(&call)
                 .and_then(ok_status)
-                .and_then(|r| xml::parse_listing(&r.body, true)),
+                .and_then(|r| complete(r, LIST_BODY_LIMIT))
+                .and_then(|r| xml::parse_listing(&r.body)),
         )
     }
 
     fn get_range(&self, bucket: &str, key: &str, start: u64, end: u64) -> Result<Vec<u8>, S3Error> {
+        require_key(key)?;
         if end < start {
             return Ok(Vec::new());
         }
         let mut call = Call::new("GET", Some(bucket), Some(key));
         call.headers.push(("range", format!("bytes={start}-{end}")));
+        // A 206 carries just the range. A server that ignores Range answers 200 with the whole
+        // object, and then only the bytes up to `end` are worth reading.
+        call.body_limit = BodyLimit {
+            partial: (end - start).saturating_add(1).saturating_add(RANGE_SLACK),
+            ok: end.saturating_add(1).min(MAX_GET_BYTES),
+        };
+        let whole_limit = call.body_limit.ok;
         let result = self.call(&call).and_then(|resp| match resp.status {
             // Past the end (or an empty object): nothing to read, not a failure.
             416 => Ok(Vec::new()),
@@ -368,8 +446,15 @@ impl Store for S3Client {
             }
             // The server ignored Range and sent the whole object; cut it here.
             200 => {
+                let len = resp.body.len() as u64;
+                // Cut off before `end` means the range lies past what the client will read.
+                if resp.truncated && end >= len {
+                    return Err(S3Error::TooLarge {
+                        size: content_length(&resp),
+                        limit: whole_limit,
+                    });
+                }
                 let body = resp.body;
-                let len = body.len() as u64;
                 if start >= len {
                     return Ok(Vec::new());
                 }
@@ -382,11 +467,19 @@ impl Store for S3Client {
     }
 
     fn get(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
-        let call = Call::new("GET", Some(bucket), Some(key));
-        self.guard(self.call(&call).and_then(ok_status).map(|r| r.body))
+        require_key(key)?;
+        let mut call = Call::new("GET", Some(bucket), Some(key));
+        call.body_limit.ok = MAX_GET_BYTES;
+        self.guard(
+            self.call(&call)
+                .and_then(ok_status)
+                .and_then(|r| complete(r, MAX_GET_BYTES))
+                .map(|r| r.body),
+        )
     }
 
     fn delete(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
+        require_key(key)?;
         let call = Call::new("DELETE", Some(bucket), Some(key));
         self.guard(self.call(&call).and_then(ok_status).map(drop))
     }

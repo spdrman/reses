@@ -220,3 +220,79 @@ fn unreachable_endpoint_is_a_transport_error() {
     .with_endpoint("http://127.0.0.1:9", true);
     assert!(matches!(c.list_buckets(), Err(S3Error::Transport(_))));
 }
+
+/// Review item 26: keys with `.` and `..` in them. The client sends every key as the literal
+/// bytes it was given (dots are unreserved, so they go out as `.`), and nothing between it
+/// and the server may normalise a path onto a neighbouring key.
+///
+/// What MinIO does: a key whose segments include a bare `.` or `..` is refused outright with
+/// 400 XMinioInvalidResourceName, for put, get, delete and as a list prefix. Real S3 accepts
+/// such keys as opaque strings. Dots that aren't whole segments are ordinary characters and
+/// round-trip. The decoys prove no request landed on a normalised path.
+#[test]
+#[ignore]
+fn dot_segment_keys_are_never_normalised() {
+    let c = client("us-east-1");
+    let b = bucket("dots");
+    c.create_bucket(&b).unwrap();
+
+    // Where a normalising client or server would land. None of these is a prefix "folder"
+    // of another key: MinIO can't list an object `x` alongside objects under `x/`.
+    let decoys = ["inbox/a", "b", "e", "f", "h"];
+    for k in decoys {
+        c.put_object(&b, k, format!("decoy {k}").as_bytes())
+            .unwrap();
+    }
+
+    let plain = [
+        "inbox/.hidden",
+        "inbox/..double",
+        "inbox/x.y/..z.",
+        "inbox/...",
+    ];
+    for k in plain {
+        let body = format!("body of {k}");
+        c.put_object(&b, k, body.as_bytes()).unwrap();
+        let listed = c.list(&b, k, None, None).unwrap();
+        assert!(listed.objects.iter().any(|o| o.key == k), "{k}: {listed:?}");
+        assert_eq!(c.get(&b, k).unwrap(), body.as_bytes(), "{k}");
+        assert_eq!(c.get_range(&b, k, 0, 3).unwrap(), b"body", "{k}");
+        c.delete(&b, k).unwrap();
+        assert!(c.get(&b, k).unwrap_err().is_not_found(), "{k}");
+    }
+
+    let segments = [
+        "inbox/./a",
+        "inbox/../b",
+        "inbox/c/.",
+        "inbox/d/..",
+        "./e",
+        "../f",
+        ".",
+        "..",
+        "inbox/g/../../h",
+    ];
+    fn refused<T>(r: &Result<T, S3Error>) -> bool {
+        matches!(r, Err(S3Error::Service { status: 400, code, .. })
+            if code == "XMinioInvalidResourceName")
+    }
+    for k in segments {
+        let body = format!("body of {k}");
+        let put = c.put_object(&b, k, body.as_bytes());
+        assert!(refused(&put), "{k}: put {put:?}");
+        let got = c.get(&b, k);
+        assert!(refused(&got), "{k}: get {got:?}");
+        let listed = c.list(&b, k, None, None);
+        assert!(refused(&listed), "{k}: list {listed:?}");
+        let deleted = c.delete(&b, k);
+        assert!(refused(&deleted), "{k}: delete {deleted:?}");
+    }
+
+    for k in decoys {
+        assert_eq!(
+            c.get(&b, k).unwrap(),
+            format!("decoy {k}").as_bytes(),
+            "{k} was touched"
+        );
+    }
+}
