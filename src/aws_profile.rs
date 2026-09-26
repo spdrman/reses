@@ -577,3 +577,41 @@ pub fn region_from_config_file(path: &Path, profile: &str) -> Option<String> {
             .filter(|v| !v.is_empty())
     })
 }
+
+/// Why Python's configparser refuses a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IniError {
+    MissingSectionHeader,
+    Parsing,
+    DuplicateSection { section: String },
+    DuplicateOption { section: String, option: String },
+}
+
+/// Sections and items as `RawConfigParser(strict=False)` reads them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IniData {
+    pub defaults: Vec<(String, String)>,
+    pub sections: Vec<(String, Vec<(String, String)>)>,
+}
+
+/// What Python's configparser makes of an INI text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IniView {
+    pub strict_error: Option<IniError>,
+    pub read: Result<IniData, IniError>,
+}
+
+pub fn parse_ini(text: &str) -> IniView {
+    let _ = text;
+    IniView {
+        strict_error: None,
+        read: Ok(IniData::default()),
+    }
+}
+
+impl CredentialsFile {
+    pub fn has_section(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
+}

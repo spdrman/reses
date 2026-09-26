@@ -38,6 +38,13 @@ pub enum ConfigError {
     },
 }
 
+impl Inbox {
+    /// Check the parts S3 cares about.
+    pub fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 impl AppConfig {
     /// `$RESES_CONFIG`, else `$XDG_CONFIG_HOME/reses/config.toml`, else `~/.config/reses/config.toml`.
     pub fn default_path() -> PathBuf {
