@@ -54,7 +54,7 @@ Tests never read or write the real `~/.aws` or `~/.config/reses`; they use temp 
 
 ## macOS binaries in dist/
 
-Every binary written into `dist/` goes through `scripts/place-binary.sh`, which copies beside the destination and renames over it. `tests/ci_parity.rs` fails if a `cp` or `mv` into `dist/` appears anywhere else in the Makefile or `scripts/ci-docker.sh`. The reason is #15: on Apple Silicon, overwriting a binary that has already run, in place, while any process holds it open, makes macOS kill it on every later exec, and Docker Desktop used to hold everything under a mounted folder. Builds run remotely now, but the rule stays, since a running `reses` holds its binary just the same.
+Every binary written into `dist/` goes through `scripts/place-binary.sh`, which copies beside the destination and renames over it. `tests/ci_parity.rs` fails if a `cp` or `mv` into `dist/` appears anywhere else in the Makefile or `scripts/fetch-darwin.sh`. The reason is #15: on Apple Silicon, overwriting a binary that has already run, in place, while any process holds it open, makes macOS kill it on every later exec, and Docker Desktop used to hold everything under a mounted folder. Builds run remotely now, but the rule stays, since a running `reses` holds its binary just the same.
 
 One side effect is expected: a build killed partway through can leave a `dist/*.tmp.XXXXXX` file behind; nothing ever runs it, and it's safe to delete.
 

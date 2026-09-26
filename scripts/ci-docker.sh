@@ -6,7 +6,6 @@
 #                                       static build jobs of ci.yml
 #   scripts/ci-docker.sh --exec CMD     run CMD in the container (e.g. "cargo test mail")
 #   scripts/ci-docker.sh --shell        interactive shell
-#   scripts/ci-docker.sh --darwin       build the macOS release binary into dist/ on this Mac
 #   scripts/ci-docker.sh --integration  run the MinIO-backed S3 tests
 #   scripts/ci-docker.sh --image-tag    print the CI image tag (demo/record.sh uses it)
 #   scripts/ci-docker.sh --nas-clean    remove every reses container, image, volume and scratch
@@ -122,21 +121,6 @@ case "${1:-}" in
   "") nas_push "$LANE"; run "$GATE" ;;
   --exec) shift; nas_push "$LANE"; run "$*" ;;
   --shell) nas_push "$LANE"; INTERACTIVE=1 run bash ;;
-  --darwin)
-    nas_push "$LANE"
-    # place-binary.sh rather than cp, both on the NAS and back here: the Mac runs the result,
-    # and a cp over the previous build leaves a binary macOS kills at exec (#15).
-    run 'set -e
-cargo zigbuild --release --locked --target aarch64-apple-darwin
-mkdir -p dist && scripts/place-binary.sh /target/aarch64-apple-darwin/release/reses dist/reses-aarch64-apple-darwin
-ls -l dist/'
-    mkdir -p "$REPO_ROOT/tmp"
-    back="$(mktemp -d "$REPO_ROOT/tmp/darwin.XXXXXX")"
-    nas tar -cf - -C "$W" dist/reses-aarch64-apple-darwin | tar -xf - -C "$back"
-    mkdir -p "$REPO_ROOT/dist"
-    "$REPO_ROOT/scripts/place-binary.sh" "$back/dist/reses-aarch64-apple-darwin" "$REPO_ROOT/dist/reses-aarch64-apple-darwin"
-    rm -rf "$back"
-    ls -l "$REPO_ROOT/dist/" ;;
   --integration)
     # The lane is taken before MinIO or the network exist, and both are named for this run, so a
     # second run turned away by the lock never touches the first one's.

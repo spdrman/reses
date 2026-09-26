@@ -209,8 +209,8 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The local mirror cross-builds this with zigbuild; here it's a native build, which is
-      # the check that the zigbuild binary isn't hiding a real macOS problem.
+      # The Mac binary is only ever built here, natively: the SDK links Security.framework, which
+      # can't be cross-linked from Linux. `make darwin` fetches this build (scripts/fetch-darwin.sh).
       - run: cargo build --release --locked
       - run: scripts/check-goldens.sh target/release/reses
       # #15: a rebuilt binary placed over one that already ran, while it is held open, must still
@@ -218,3 +218,10 @@ jobs:
       # and the test fails here if the runner ever stops reproducing the kill. (release.yml only
       # warns on that, since a runner kernel change says nothing about the binary it releases.)
       - run: tests/macos-replace-binary.sh target/release/reses
+      # Uploaded only once the goldens and the #15 test passed on it, for scripts/fetch-darwin.sh.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: reses-aarch64-apple-darwin
+          path: target/release/reses
+          if-no-files-found: error
+          retention-days: 14
