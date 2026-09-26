@@ -8,8 +8,8 @@ use reses::aws_profile::CredentialsFile;
 use reses::config::AppConfig;
 use reses::mail;
 
-/// Read raw SES/RFC 5322 email. With files (or piped input) it prints them decoded; with
-/// neither it opens the terminal inbox.
+/// A terminal inbox for raw SES email stored in S3. Run it with no arguments in a terminal to
+/// open the inbox; give it message files (or pipe one in) to decode them instead.
 #[derive(Parser)]
 #[command(name = "reses", version)]
 struct Cli {

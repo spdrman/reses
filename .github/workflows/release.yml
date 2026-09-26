@@ -191,6 +191,8 @@ jobs:
 
           The binary is ad-hoc signed, not notarized, so macOS blocks it when it came from a browser download until the quarantine flag is cleared. If you downloaded with \`curl\` there's no flag, and \`xattr\` saying so is harmless. \`~/.local/bin\` isn't on a Mac's PATH by default, so add it or pick another directory. To replace an older copy, \`mv\` the new one over it, never \`cp\` (#15).
 
+          Then run \`reses\` to open the inbox. No file or path is needed.
+
           Check a download with \`shasum -a 256 -c SHA256SUMS --ignore-missing\`.
           EOF
       # The tag is created first, at exactly this commit. Creating a ref that already exists

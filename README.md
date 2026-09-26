@@ -4,13 +4,38 @@
 
 <sub>Enter connects and opens, `i` saves the inbox, Enter opens a message, `q` goes back. All the mail is synthetic.</sub>
 
-Read the raw email that Amazon SES stores in S3, either one file at a time or as a terminal inbox.
+A terminal inbox for the raw email that Amazon SES stores in S3.
 
-SES can drop every incoming message into an S3 bucket, but what lands there is the raw RFC 5322 text: pages of `Received:`, DKIM and ARC headers, MIME boundaries and base64. reses turns that back into something readable... and with no arguments it opens an inbox over the bucket, so you can read and delete mail without downloading anything by hand.
+SES can drop every incoming message into an S3 bucket, but what lands there is the raw RFC 5322 text: pages of `Received:`, DKIM and ARC headers, MIME boundaries and base64. Run `reses` and it opens an inbox over the bucket, so you can read and delete that mail without downloading anything by hand... and if you do have a stored message on disk, it can decode that too.
 
 Rust 1.98+ is needed to build it, but you never need Rust installed, since every build runs in Docker.
 
-## Decode a file
+## Usage
+
+```
+reses                            open the inbox (in a terminal, this is all you need)
+reses FILE [FILE ...]            optional: decode stored messages instead
+```
+
+## The inbox
+
+```
+reses
+```
+
+No file or path is needed.
+
+1. **Pick an account.** It lists the profiles in `~/.aws/credentials`. `a` adds one: the keys you type are written back to that file in the standard AWS format. Other profiles, comments and layout stay as they were, and the file is kept at mode 0600. `d` makes a profile the default.
+2. **Find the mail.** Browse buckets and folders. Objects that are stored email get marked as you scroll, and `s` searches down from the current folder for the folders that hold email.
+3. **Save the inbox.** `i` saves the current bucket and folder. From then on, `reses` opens straight into it.
+
+The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `u` goes back to the accounts. In a message, `h` switches to the HTML part, `w` saves the text and `a` saves the attachments, both into `~/Downloads`.
+
+Settings live in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
+
+## Decode a stored message (optional)
+
+If you have a raw message file, for example one downloaded from the bucket, reses can print it readably instead of opening the inbox:
 
 ```
 reses FILE [FILE ...]            print each message
@@ -37,18 +62,6 @@ plain body
 Bcc never survives delivery as a header, so I work it out from the envelope recipients (`Delivered-To`, `X-Original-To`, and the `for <addr>` in `Received`) that aren't already in To or Cc.
 
 The output matches `python/reses.py` byte for byte. That script was the first version of reses, and it stays in the repo as the reference: the mail goldens in `tests/fixtures/mail/` come from it.
-
-## The inbox
-
-Run `reses` with no arguments.
-
-1. **Pick an account.** It lists the profiles in `~/.aws/credentials`. `a` adds one: the keys you type are written back to that file in the standard AWS format (mode 0600), and nothing else in the file changes. `d` makes a profile the default.
-2. **Find the mail.** Browse buckets and folders. Objects that are stored email get marked as you scroll, and `s` searches down from the current folder for the folders that hold email.
-3. **Save the inbox.** `i` saves the current bucket and folder. From then on, `reses` opens straight into it.
-
-The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `u` goes back to the accounts. In a message, `h` switches to the HTML part, `w` saves the text and `a` saves the attachments, both into `~/Downloads`.
-
-Settings live in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
 
 ## Download
 
