@@ -24,8 +24,11 @@ use rustix::termios::{LocalModes, Winsize, tcgetattr, tcsetwinsize};
 const ENTER: &str = "\u{1b}[?1049h";
 const LEAVE: &str = "\u{1b}[?1049l";
 
+/// A running reses on a pty. A reader thread forwards whatever the app draws through `output`,
+/// and `seen` keeps everything received so far, so every check reads the whole screen history.
 struct Pty {
     child: Child,
+    /// The test's side of the pty: keys go in here and the screen comes out.
     master: File,
     /// The app's side of the pty, kept open so the test can read its terminal modes.
     slave: File,
@@ -49,7 +52,10 @@ enum Session {
     Group,
 }
 
+/// Start reses the way `session` says, on a 100x24 pty that answers no terminal query. The
+/// temp dir is its HOME and holds every file it reads, so drop it only after the app is done.
 fn start_as(env: &[(&str, &str)], session: Session) -> (Pty, tempfile::TempDir) {
+    // Open a pty pair and give it a window size, as a real terminal would.
     let home = tempfile::tempdir().unwrap();
     let master: OwnedFd = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
     grantpt(&master).unwrap();
@@ -71,6 +77,7 @@ fn start_as(env: &[(&str, &str)], session: Session) -> (Pty, tempfile::TempDir) 
         .open(slave_path.to_str().unwrap())
         .unwrap();
 
+    // A clean environment pointing every file at the throwaway HOME, all three stdio on the pty.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_reses"));
     cmd.env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -102,6 +109,7 @@ fn start_as(env: &[(&str, &str)], session: Session) -> (Pty, tempfile::TempDir) 
     }
     let child = cmd.spawn().unwrap();
 
+    // Read the screen on a thread of its own, so the app never blocks on a full pty buffer.
     let master = File::from(master);
     let mut reader = master.try_clone().unwrap();
     let (tx, output) = mpsc::channel();
@@ -193,6 +201,7 @@ impl Pty {
         false
     }
 
+    /// Type `key` into the pty, as raw bytes (so `"\u{1a}"` is ctrl-z).
     fn press(&mut self, key: &str) {
         self.master.write_all(key.as_bytes()).unwrap();
         self.master.flush().unwrap();
@@ -232,6 +241,8 @@ impl Pty {
     }
 }
 
+/// Start the app with `env`, wait for the accounts screen, and check that the very first `q`
+/// quits it. If anything left from startup is still reading stdin, it eats that `q`.
 fn first_q_quits(env: &[(&str, &str)]) {
     let (mut pty, _home) = start(env);
     assert!(
@@ -252,24 +263,28 @@ fn first_q_quits(env: &[(&str, &str)]) {
     );
 }
 
+/// A plain terminal that names itself as nothing in particular.
 #[test]
 fn the_first_q_quits_on_a_terminal_that_never_answers() {
     first_q_quits(&[]);
 }
 
+/// Apple's Terminal, which the logo code treats as text-only.
 #[test]
 fn the_first_q_quits_on_apple_terminal() {
     first_q_quits(&[("TERM_PROGRAM", "Apple_Terminal")]);
 }
 
+/// iTerm and kitty are named as image terminals, but this pty reports no pixel size, so the
+/// header stays text, and nothing is asked of the terminal on the way.
 #[test]
 fn the_first_q_quits_on_a_named_image_terminal_too() {
-    // Named as an image terminal, but this pty reports no pixel size, so the header stays text,
-    // and nothing is asked of the terminal on the way.
     first_q_quits(&[("TERM_PROGRAM", "iTerm.app")]);
     first_q_quits(&[("TERM", "xterm-kitty"), ("KITTY_WINDOW_ID", "1")]);
 }
 
+/// RESES_LOGO=text forces the text header even on a terminal that could draw images, and that
+/// path mustn't query the terminal either.
 #[test]
 fn reses_logo_text_never_asks_either() {
     first_q_quits(&[("RESES_LOGO", "text"), ("TERM_PROGRAM", "WezTerm")]);
@@ -287,6 +302,8 @@ fn started(session: Session) -> (Pty, tempfile::TempDir) {
     (pty, home)
 }
 
+/// SIGTERM, SIGHUP and SIGINT each end the app through its own exit, so the pty is left cooked
+/// and off the alternate screen.
 #[test]
 fn a_kill_a_hangup_or_an_interrupt_restores_the_terminal() {
     for sig in [Signal::Term, Signal::Hup, Signal::Int] {
@@ -307,8 +324,11 @@ fn a_kill_a_hangup_or_an_interrupt_restores_the_terminal() {
     }
 }
 
+/// ctrl-z leaves the alternate screen, restores cooked mode and stops the app; SIGCONT takes
+/// the screen back and redraws, and `q` still quits afterwards.
 #[test]
 fn ctrl_z_hands_the_terminal_back_and_resume_takes_it_again() {
+    // Suspend.
     let (mut pty, _home) = started(Session::Group);
     assert_eq!(pty.count(ENTER), 1);
     pty.press("\u{1a}");
@@ -322,6 +342,7 @@ fn ctrl_z_hands_the_terminal_back_and_resume_takes_it_again() {
     );
     assert!(pty.cooked(), "the pty was left in raw mode while stopped");
 
+    // Resume, then quit from the redrawn screen.
     pty.signal(Signal::Cont);
     assert!(
         pty.wait_for_count(ENTER, 2, Duration::from_secs(10)),

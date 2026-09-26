@@ -44,6 +44,8 @@ fn ci_commands() -> BTreeSet<String> {
         .collect()
 }
 
+/// Every cargo command in ci.yml runs in the local gate and the other way round, apart from the
+/// one pair of builds that differ on purpose.
 #[test]
 fn every_ci_command_runs_locally_and_back() {
     let ci = ci_commands();
@@ -74,6 +76,7 @@ fn every_ci_command_runs_locally_and_back() {
         );
     }
 
+    // Everything else has to appear on both sides.
     let missing_locally: Vec<_> = ci
         .difference(&local)
         .filter(|c| !CI_ONLY.contains(&c.as_str()))
@@ -88,12 +91,16 @@ fn every_ci_command_runs_locally_and_back() {
     );
 }
 
+/// `1.98.0` and `1.98` both come back as `1.98`, so I can compare versions written either way.
 fn major_minor(v: &str) -> String {
     v.split('.').take(2).collect::<Vec<_>>().join(".")
 }
 
+/// Cargo.toml's rust-version, the CI image's Rust, the MSRV job's toolchain and the README's
+/// `Rust X.Y+` all name the same release.
 #[test]
 fn every_msrv_claim_agrees() {
+    // I read the declared MSRV and the image's Rust straight out of their files.
     let cargo = read("Cargo.toml");
     let declared = cargo
         .lines()
@@ -119,6 +126,7 @@ fn every_msrv_claim_agrees() {
         .collect();
     let pinned: BTreeSet<String> = named.iter().map(|v| major_minor(v)).collect();
 
+    // The README advertises it as `Rust X.Y+`, so I pick out every version followed by a `+`.
     let readme = read("README.md");
     let advertised: BTreeSet<String> = readme
         .match_indices("Rust ")
@@ -163,10 +171,10 @@ fn every_msrv_claim_agrees() {
     );
 }
 
+/// The MSRV job's name has no digits in it. Branch protection matches a required check by its
+/// exact name, so a version in the name strands every open PR on the next bump.
 #[test]
 fn the_msrv_job_name_carries_no_version() {
-    // Branch protection matches a required check by its exact name, so a version in the name
-    // strands every open PR on the next bump.
     for line in read(".github/workflows/ci.yml").lines() {
         let Some(name) = line.trim().strip_prefix("name:") else {
             continue;
@@ -191,11 +199,11 @@ fn dist_writes(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Nothing in the Makefile or ci-docker.sh writes into `dist/` except scripts/place-binary.sh.
+/// #15: an in-place overwrite of a binary that has run, while anything holds it open, leaves it
+/// dead for exec. place-binary.sh puts each build on a new inode instead.
 #[test]
 fn every_write_into_dist_goes_through_place_binary() {
-    // #15: an in-place overwrite of a binary that has run, while anything holds it open, leaves
-    // it dead for exec. scripts/place-binary.sh puts each build on a new inode; nothing else may
-    // write a binary into dist/.
     for file in ["Makefile", "scripts/ci-docker.sh"] {
         let writes = dist_writes(&read(file));
         // Positive control: each file does place a binary, so an empty list means the
@@ -215,10 +223,11 @@ fn every_write_into_dist_goes_through_place_binary() {
     }
 }
 
+/// `make darwin` runs the goldens and the #15 replace test on the fresh build before it becomes
+/// dist/reses. ~/.local/bin/reses links there, so whatever lands there is the installed command.
 #[test]
 fn make_darwin_checks_the_build_before_it_becomes_dist_reses() {
-    // ~/.local/bin/reses links to dist/reses, so whatever lands there is the installed command.
-    // The goldens and the #15 replace test run on the fresh build first.
+    // The recipe is every tab-indented line after `darwin:`, and `at` finds a step's position.
     let makefile = read("Makefile");
     let recipe: Vec<&str> = makefile
         .lines()
@@ -261,11 +270,12 @@ fn repo_files() -> Vec<String> {
         .collect()
 }
 
+/// The only Python in the repo is the two test oracles. The Python version of reses used to be
+/// the reference the goldens came from, and it's gone (#24). Two oracles stay: one reads
+/// credentials the way the AWS CLI does, and one reads mail with Python's standard email package
+/// to vouch for the mail goldens (#26).
 #[test]
 fn the_only_python_left_is_the_configparser_oracle() {
-    // The Python version of reses used to be the reference the goldens came from. It's gone
-    // (#24). Two test oracles stay: one reads credentials the way the AWS CLI does, and one reads
-    // mail with Python's standard email package to vouch for the mail goldens (#26).
     let files = repo_files();
     assert!(
         files.iter().any(|f| f == "Cargo.toml"),
@@ -277,6 +287,7 @@ fn the_only_python_left_is_the_configparser_oracle() {
         vec!["tests/mail_oracle.py", "tests/profile_oracle.py"],
         "unexpected Python files"
     );
+    // The old implementation and its regen script are gone, and nothing still runs unittest.
     for f in ["python/reses.py", "tests/fixtures/mail/regen.sh"] {
         assert!(!files.iter().any(|x| x == f), "{f} should be gone");
     }
@@ -319,11 +330,12 @@ fn local_gate() -> String {
     text[start..start + len].to_string()
 }
 
+/// No job or step in ci.yml can be skipped or allowed to fail. A job that's skipped, or allowed
+/// to fail, still shows a green row, so a gate that can't go red is worse than none. The fork
+/// gate is the one `if:` allowed, and every job carries it, so a push to a PR from this repo runs
+/// each job once, not twice.
 #[test]
 fn no_gate_job_can_be_skipped_or_fail_quietly() {
-    // A job that's skipped, or allowed to fail, still shows a green row, so a gate that
-    // can't go red is worse than none. The fork gate is the one `if:` allowed, and every job
-    // carries it, so a push to a PR from this repo runs each job once, not twice.
     let ci = load(".github/workflows/ci.yml");
     let jobs = ci.jobs();
     assert!(jobs.len() >= 8, "found too few jobs: {}", jobs.len());
@@ -356,11 +368,12 @@ fn no_gate_job_can_be_skipped_or_fail_quietly() {
     }
 }
 
+/// The local gate hands the container every variable ci.yml builds with, and the MinIO suite
+/// the same keys. RUSTFLAGS=-Dwarnings changes what gets compiled (a warning anywhere is an
+/// error), so the gate has to set it too. The colour setting only changes how output looks, so
+/// it's the one difference allowed.
 #[test]
 fn the_local_gate_builds_with_the_environment_ci_builds_with() {
-    // RUSTFLAGS=-Dwarnings changes what gets compiled (a warning anywhere is an error), so the
-    // gate has to set it too. The colour setting only changes how output looks, so it's the
-    // one difference allowed.
     let ci = load(".github/workflows/ci.yml").env();
     assert_eq!(
         ci.get("RUSTFLAGS").map(String::as_str),
@@ -400,11 +413,12 @@ fn the_local_gate_builds_with_the_environment_ci_builds_with() {
     }
 }
 
+/// ci.yml fires on every push to a fork's PR and every branch push except `release`. `push`
+/// only fires for branches in this repo, so a fork's later commits only reach CI through
+/// `synchronize`. The release branch is left to release.yml, which runs its own tests and reads
+/// this workflow's results on the commit instead.
 #[test]
 fn every_push_to_a_fork_pr_gets_ci() {
-    // `push` only fires for branches in this repo, so a fork's later commits only reach CI
-    // through `synchronize`. The release branch is left to release.yml, which runs its own
-    // tests and reads this workflow's results on the commit instead.
     let ci = load(".github/workflows/ci.yml");
     let on = ci.on();
     let types: BTreeSet<String> = on["pull_request"]["types"]
@@ -428,10 +442,10 @@ fn every_push_to_a_fork_pr_gets_ci() {
     assert_eq!(branches, ["**", "!release"]);
 }
 
+/// CI and the local gate both build and check the static musl binaries the release ships.
+/// Without this, the first musl build of a changed Cargo.lock would be the release itself.
 #[test]
 fn ci_builds_the_static_musl_binaries_the_release_ships() {
-    // The release's Linux binaries are static musl builds. Without this job, the first musl
-    // build of a changed Cargo.lock would be the release itself.
     let ci = load(".github/workflows/ci.yml");
     let musl = ci.job("musl");
     let matrix: BTreeSet<(String, String)> = musl["strategy"]["matrix"]["include"]
@@ -472,6 +486,7 @@ fn ci_builds_the_static_musl_binaries_the_release_ships() {
     }
 }
 
+/// Both sides run the same `cargo deny check`, with the same cargo-deny version.
 #[test]
 fn cargo_deny_gates_ci_and_the_local_run_with_one_version() {
     let deny = "cargo deny check advisories bans licenses sources";
@@ -501,10 +516,11 @@ fn cargo_deny_gates_ci_and_the_local_run_with_one_version() {
     );
 }
 
+/// Every advisory deny.toml ignores has a real reason with a link to it. An ignore with no reason
+/// is how an advisory quietly becomes permanent. The set is pinned too, so adding one is a
+/// visible change to this test, not a one-line edit to deny.toml.
 #[test]
 fn every_advisory_exception_says_why_and_links_the_advisory() {
-    // An ignore with no reason is how an advisory quietly becomes permanent. The set is pinned
-    // too, so adding one is a visible change to this test, not a one-line edit to deny.toml.
     let deny: toml::Table = read("deny.toml").parse().expect("deny.toml is TOML");
     let ignores = deny["advisories"]["ignore"]
         .as_array()
@@ -523,9 +539,10 @@ fn every_advisory_exception_says_why_and_links_the_advisory() {
     assert_eq!(ids, ["RUSTSEC-2024-0436"].map(String::from).into());
 }
 
+/// Some macOS job runs the full `cargo test`. The goldens alone don't cover the file modes,
+/// paths and terminal code a Mac exercises.
 #[test]
 fn the_test_suite_runs_on_macos_too() {
-    // The goldens alone don't cover the file modes, paths and terminal code a Mac exercises.
     let ci = load(".github/workflows/ci.yml");
     let found = ci.jobs().into_iter().any(|(_, j)| {
         j["runs-on"].as_str() == Some("macos-latest")
@@ -536,17 +553,19 @@ fn the_test_suite_runs_on_macos_too() {
     assert!(found, "no macOS job runs cargo test");
 }
 
+/// Every job that runs the full suite sets up the Python that .python-version pins.
+/// tests/profile_oracle.rs compares reses with configparser, and configparser can change
+/// between Python releases, so CI installs the version .python-version names and the oracle test
+/// refuses any other.
 #[test]
 fn every_job_that_runs_the_oracle_uses_the_pinned_python() {
-    // tests/profile_oracle.rs compares reses with configparser, and configparser can change
-    // between Python releases, so CI installs the version .python-version names and the
-    // oracle test refuses any other.
     let pinned = read(".python-version");
     assert_eq!(
         pinned.trim(),
         "3.11",
         ".python-version should name a minor release"
     );
+    // Each job that runs the whole suite must set up Python from .python-version.
     let mut checked = 0;
     for rel in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
         let wf = load(rel);
@@ -581,10 +600,11 @@ fn every_job_that_runs_the_oracle_uses_the_pinned_python() {
     );
 }
 
+/// No ci.yml job softens the #15 control with RESES_REPLACE_CONTROL. A kernel that stops
+/// reproducing #15 should turn the job red, so someone notices the test can no longer catch it.
+/// Only the release is allowed to carry on with a warning.
 #[test]
 fn the_15_control_fails_in_ci() {
-    // In ci.yml a kernel that stops reproducing #15 should turn the job red, so someone notices
-    // the test can no longer catch it. Only the release is allowed to carry on with a warning.
     let ci = load(".github/workflows/ci.yml");
     for (id, job) in ci.jobs() {
         for step in steps(job) {

@@ -8,6 +8,7 @@ set -euo pipefail
 # Resolve the binary before changing directory, so a relative path still works.
 bin="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 cd "$(git rev-parse --show-toplevel)/tests/fixtures/mail"
+# Each fixture's plain and --html output has to match its goldens exactly; diff shows how not.
 n=0
 for f in *.eml; do
   [ -e "$f" ] || break

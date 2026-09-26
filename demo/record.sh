@@ -54,6 +54,8 @@ LOCAL="$(mktemp -d "$REPO_ROOT/tmp/demo.XXXXXX")"
 # ci-docker.sh would scrub the lane when each call ends, and the later steps still need it, so
 # I keep it and scrub the whole lane myself at the end.
 export RESES_KEEP_TREE=1
+# On any exit: remove every container and the network this run made, scrub the lane if I still
+# hold it, and drop the local staging directory.
 cleanup() {
   dk rm -f "$SEED" "$VHS" "$CHECK" "$MINIO" >/dev/null 2>&1 || true
   dk network rm "$NET" >/dev/null 2>&1 || true

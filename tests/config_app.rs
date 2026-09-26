@@ -1,4 +1,10 @@
-//! reses's own settings file.
+//! reses's own settings file: where it lives, how it loads and saves, and what it refuses.
+//!
+//! The file remembers the default profile and the inbox (profile, bucket, prefix, region), so
+//! a restart opens straight onto the mail. I test the path lookup as a pure function over the
+//! three environment values, and everything else against real files in a temp dir per test.
+//! The inbox gets checked on load and on save, because a hand-edited bucket or prefix would
+//! otherwise only fail later as a confusing S3 error.
 
 use std::ffi::OsString;
 use std::fs;
@@ -6,6 +12,7 @@ use std::path::PathBuf;
 
 use reses::config::{AppConfig, ConfigError, Inbox};
 
+/// A config with every field set, so a round trip that loses one shows up.
 fn sample() -> AppConfig {
     AppConfig {
         default_profile: Some("work".into()),
@@ -18,10 +25,12 @@ fn sample() -> AppConfig {
     }
 }
 
+/// Shorthand for an environment value that is set.
 fn s(v: &str) -> Option<OsString> {
     Some(OsString::from(v))
 }
 
+/// An explicit RESES_CONFIG beats both XDG and HOME.
 #[test]
 fn path_prefers_reses_config() {
     assert_eq!(
@@ -30,6 +39,7 @@ fn path_prefers_reses_config() {
     );
 }
 
+/// With no RESES_CONFIG, I fall back to XDG_CONFIG_HOME.
 #[test]
 fn path_then_xdg_config_home() {
     assert_eq!(
@@ -38,6 +48,7 @@ fn path_then_xdg_config_home() {
     );
 }
 
+/// With neither, it's ~/.config/reses/config.toml.
 #[test]
 fn path_then_home_dot_config() {
     assert_eq!(
@@ -46,6 +57,7 @@ fn path_then_home_dot_config() {
     );
 }
 
+/// An empty variable counts as unset, and so does a relative XDG_CONFIG_HOME.
 #[test]
 fn empty_or_relative_env_values_are_skipped() {
     assert_eq!(
@@ -59,6 +71,7 @@ fn empty_or_relative_env_values_are_skipped() {
     );
 }
 
+/// First run: no file is not an error, just the defaults.
 #[test]
 fn missing_file_loads_as_default() {
     let dir = tempfile::tempdir().unwrap();
@@ -68,6 +81,7 @@ fn missing_file_loads_as_default() {
     );
 }
 
+/// A config I save loads back unchanged.
 #[test]
 fn save_then_load_round_trips() {
     let dir = tempfile::tempdir().unwrap();
@@ -76,6 +90,7 @@ fn save_then_load_round_trips() {
     assert_eq!(AppConfig::load(&path).unwrap(), sample());
 }
 
+/// The empty config round trips too, so saving before anything is chosen is safe.
 #[test]
 fn default_config_round_trips() {
     let dir = tempfile::tempdir().unwrap();
@@ -84,6 +99,8 @@ fn default_config_round_trips() {
     assert_eq!(AppConfig::load(&path).unwrap(), AppConfig::default());
 }
 
+/// A file someone typed by hand loads the same as one I wrote, so the format is the TOML
+/// people expect and not just whatever the serializer happens to emit.
 #[test]
 fn loads_a_hand_written_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -97,6 +114,7 @@ fn loads_a_hand_written_file() {
     assert_eq!(AppConfig::load(&path).unwrap(), sample());
 }
 
+/// Saving on first run creates ~/.config/reses/ and anything above it.
 #[test]
 fn save_creates_parent_directories() {
     let dir = tempfile::tempdir().unwrap();
@@ -105,6 +123,7 @@ fn save_creates_parent_directories() {
     assert_eq!(AppConfig::load(&path).unwrap(), sample());
 }
 
+/// Saving over an old file replaces it, and the temp file I write through is gone afterwards.
 #[test]
 fn save_overwrites_and_leaves_no_temp_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -119,6 +138,8 @@ fn save_overwrites_and_leaves_no_temp_files() {
     assert_eq!(names, [OsString::from("config.toml")]);
 }
 
+/// Saving renames a new file into place instead of writing into the old inode, which I prove
+/// with a hard link that still reads the old contents. A crash mid-save can't leave half a file.
 #[cfg(unix)]
 #[test]
 fn save_replaces_the_file_rather_than_writing_in_place() {
@@ -137,6 +158,7 @@ fn save_replaces_the_file_rather_than_writing_in_place() {
     );
 }
 
+/// Broken TOML is a parse error, and the message says which file to go and fix.
 #[test]
 fn parse_error_names_the_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -147,6 +169,7 @@ fn parse_error_names_the_path() {
     assert!(err.to_string().contains("broken.toml"), "{err}");
 }
 
+/// Valid TOML with a required field missing is still a parse error, not a silent default.
 #[test]
 fn wrong_shape_is_a_parse_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -158,6 +181,7 @@ fn wrong_shape_is_a_parse_error() {
     ));
 }
 
+/// A path that can't be read (here a directory) is a read error, kept apart from bad contents.
 #[test]
 fn unreadable_path_is_a_read_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -169,6 +193,7 @@ fn unreadable_path_is_a_read_error() {
     ));
 }
 
+/// A save that can't create its directory is a write error naming the path.
 #[test]
 fn save_failure_is_a_write_error_with_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -183,10 +208,13 @@ fn save_failure_is_a_write_error_with_path() {
 
 // ---- the inbox is checked when it loads (item 24) ----
 
+/// A config file holding only an inbox with this bucket and prefix.
 fn inbox_file(bucket: &str, prefix: &str) -> String {
     format!("[inbox]\nprofile = \"work\"\nbucket = \"{bucket}\"\nprefix = \"{prefix}\"\n")
 }
 
+/// A hand-edited inbox with a bad bucket name or a prefix without its trailing slash is
+/// refused at load, so it never reaches an S3 request.
 #[test]
 fn bad_inbox_is_a_parse_error_naming_the_path() {
     let cases = [
@@ -209,6 +237,7 @@ fn bad_inbox_is_a_parse_error_naming_the_path() {
     }
 }
 
+/// The names that are valid have to keep loading, legacy bucket names included.
 #[test]
 fn good_inbox_loads() {
     // Buckets made before March 2018 in us-east-1 may use capitals and underscores, and reses
@@ -229,6 +258,7 @@ fn good_inbox_loads() {
     }
 }
 
+/// Save checks the inbox too, so I can never write a file the next start would refuse.
 #[test]
 fn save_refuses_an_inbox_that_would_not_load_again() {
     let dir = tempfile::tempdir().unwrap();
@@ -242,6 +272,7 @@ fn save_refuses_an_inbox_that_would_not_load_again() {
     assert!(!path.exists());
 }
 
+/// The picker can call `validate` itself to warn before anything is saved.
 #[test]
 fn inbox_validate_is_usable_before_saving() {
     let mut inbox = sample().inbox.unwrap();

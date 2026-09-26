@@ -66,6 +66,8 @@ BRAND=/repo/assets/brand
 WORK=$(mktemp -d)
 mkdir -p "$WORK/fonts" "$WORK/src" "$BRAND/tui"
 
+# Download font file $1 and refuse it unless its sha256 is $2, so a changed upstream file can't
+# quietly change the rendered brand.
 fetch() {
   curl -fsSL "$FONTS_URL/$1" -o "$WORK/fonts/$1"
   local got
@@ -75,6 +77,7 @@ fetch() {
     exit 1
   fi
 }
+# Fetch both weights and the licence, then install the fonts where fontconfig looks.
 fetch Poppins-Regular.ttf "$REGULAR_SHA256"
 fetch Poppins-ExtraBold.ttf "$EXTRABOLD_SHA256"
 fetch OFL.txt "$OFL_SHA256"

@@ -16,8 +16,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The tag the fake "latest release" redirect points at.
 const LATEST: &str = "v9.9.9";
 
+/// One fake machine: a temp dir holding the stub commands in `bin/`, the files the "release"
+/// serves in `served/`, and `calls.log`, where the stubs note every download and apt call.
 struct Fake {
     dir: tempfile::TempDir,
 }
@@ -26,6 +29,7 @@ impl Fake {
     /// A machine of the given architecture, whose "latest release" serves `debs` (file name to
     /// contents) and a SHA256SUMS listing `sums` (file name to the checksum it claims).
     fn new(os: &str, arch: &str, debs: &[(&str, &str)], sums: &[(&str, &str)]) -> Self {
+        // Lay out what the release serves: the packages and their checksum listing.
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         let served = dir.path().join("served");
@@ -40,6 +44,7 @@ impl Fake {
             .collect();
         fs::write(served.join("SHA256SUMS"), listing).unwrap();
 
+        // Then the stub commands, each a tiny sh script on the private PATH.
         let log = dir.path().join("calls.log");
         let script = |name: &str, body: String| {
             let path = bin.join(name);
@@ -94,6 +99,9 @@ cp "$f" "$out""#,
         Fake { dir }
     }
 
+    /// Run the real install.sh on this machine with a clean environment plus `env`, and return
+    /// its exit code, stdout and stderr. The stubs come first on PATH, so they shadow the real
+    /// commands, and the system dirs after them supply the ordinary tools.
     fn run(&self, env: &[(&str, &str)]) -> (i32, String, String) {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
         let bin: PathBuf = self.dir.path().join("bin");
@@ -114,21 +122,28 @@ cp "$f" "$out""#,
         )
     }
 
+    /// Everything the stubs logged, one call per line, or nothing if no stub ever ran.
     fn calls(&self) -> String {
         fs::read_to_string(self.dir.path().join("calls.log")).unwrap_or_default()
     }
 }
 
+/// The SHA-256 of `body` in hex, from the same sha256sum the script checks with.
 fn sha256(body: &str) -> String {
     let out = Command::new("sha256sum").arg("-").stdin_bytes(body);
     out.split_whitespace().next().unwrap().to_string()
 }
 
+/// Feed a string to a command's stdin and collect its stdout, which `Command` can't do in one
+/// call on its own.
 trait StdinBytes {
+    /// Run the command with `body` on stdin and return what it printed.
     fn stdin_bytes(&mut self, body: &str) -> String;
 }
 
 impl StdinBytes for Command {
+    /// Spawn with piped stdin and stdout, write `body`, and wait. Dropping stdin after the write
+    /// closes it, so the command sees the end of its input.
     fn stdin_bytes(&mut self, body: &str) -> String {
         use std::io::Write;
         use std::process::Stdio;
@@ -152,6 +167,8 @@ fn apt_line(calls: &str) -> Option<&str> {
     calls.lines().find(|l| l.starts_with("apt-get "))
 }
 
+/// On amd64 and arm64 alike, the script fetches the latest release's checksums and hands apt the
+/// package for this machine, never the other architecture's.
 #[test]
 fn it_installs_the_latest_release_for_this_machines_architecture() {
     for arch in ["amd64", "arm64"] {
@@ -186,6 +203,7 @@ fn it_installs_the_latest_release_for_this_machines_architecture() {
     }
 }
 
+/// A package whose bytes don't match its listed checksum never reaches apt.
 #[test]
 fn a_checksum_mismatch_installs_nothing() {
     let deb = "reses_9.9.9_amd64.deb";
@@ -205,6 +223,7 @@ fn a_checksum_mismatch_installs_nothing() {
     );
 }
 
+/// A package the checksum listing doesn't mention at all is refused too.
 #[test]
 fn a_package_missing_from_the_checksums_installs_nothing() {
     let deb = "reses_9.9.9_amd64.deb";
@@ -215,6 +234,7 @@ fn a_package_missing_from_the_checksums_installs_nothing() {
     assert_eq!(apt_line(&fake.calls()), None);
 }
 
+/// With RESES_VERSION set, the script downloads that release and never asks for the latest.
 #[test]
 fn a_pinned_version_skips_the_latest_lookup() {
     let deb = "reses_1.2.3_amd64.deb";
@@ -232,6 +252,7 @@ fn a_pinned_version_skips_the_latest_lookup() {
     );
 }
 
+/// An architecture the release has no package for is refused before anything is downloaded.
 #[test]
 fn an_unsupported_architecture_is_refused() {
     let fake = Fake::new("Linux", "riscv64", &[], &[]);
@@ -246,6 +267,7 @@ fn an_unsupported_architecture_is_refused() {
     assert_eq!(apt_line(&fake.calls()), None);
 }
 
+/// Run on a Mac, the script stops and names the Homebrew command instead.
 #[test]
 fn a_mac_is_pointed_at_homebrew() {
     let fake = Fake::new("Darwin", "arm64", &[], &[]);
@@ -254,6 +276,7 @@ fn a_mac_is_pointed_at_homebrew() {
     assert!(err.contains("brew install spdrman/reses/reses"), "{err}");
 }
 
+/// A normal user's install goes through sudo, and root's calls apt directly.
 #[test]
 fn a_non_root_user_installs_through_sudo_and_root_does_not() {
     let deb = "reses_9.9.9_amd64.deb";
@@ -275,16 +298,19 @@ fn a_non_root_user_installs_through_sudo_and_root_does_not() {
 }
 
 impl Fake {
+    /// Take one stub off this machine's PATH, for a test about a machine that lacks the tool.
     fn remove_tool(&self, name: &str) {
         fs::remove_file(self.dir.path().join("bin").join(name)).unwrap();
     }
 }
 
+/// The everyday case: an amd64 machine and a release whose one package checks out.
 fn amd64_release() -> Fake {
     let deb = "reses_9.9.9_amd64.deb";
     Fake::new("Linux", "amd64", &[(deb, "pkg")], &[(deb, &sha256("pkg"))])
 }
 
+/// When apt fails, so does the installer, and it doesn't claim the install worked.
 #[test]
 fn a_failed_install_is_reported_as_a_failure() {
     let fake = amd64_release();
@@ -293,6 +319,7 @@ fn a_failed_install_is_reported_as_a_failure() {
     assert!(!err.contains("installed"), "it claimed success: {err}");
 }
 
+/// If GitHub doesn't answer the latest-release lookup, the script stops and says so.
 #[test]
 fn no_answer_about_the_latest_release_installs_nothing() {
     let fake = amd64_release();
@@ -302,6 +329,8 @@ fn no_answer_about_the_latest_release_installs_nothing() {
     assert_eq!(apt_line(&fake.calls()), None);
 }
 
+/// A latest redirect that doesn't end in a version tag leaves the script not knowing which
+/// release to fetch, so it fetches none.
 #[test]
 fn a_latest_redirect_that_isnt_a_version_installs_nothing() {
     let fake = amd64_release();
@@ -315,6 +344,8 @@ fn a_latest_redirect_that_isnt_a_version_installs_nothing() {
     );
 }
 
+/// A RESES_VERSION with path segments in it could point the download at another repo, so it's
+/// refused before any URL is built from it.
 #[test]
 fn a_version_that_could_steer_the_download_is_refused() {
     let fake = amd64_release();
@@ -331,6 +362,7 @@ fn a_version_that_could_steer_the_download_is_refused() {
     );
 }
 
+/// `RESES_VERSION=1.2.3` works the same as `v1.2.3`.
 #[test]
 fn a_version_without_the_v_is_accepted() {
     let deb = "reses_1.2.3_amd64.deb";
@@ -345,9 +377,10 @@ fn a_version_without_the_v_is_accepted() {
     );
 }
 
+/// A decoy checksum line whose name only starts with the package name must not stand in for
+/// the package's own line.
 #[test]
 fn only_the_exact_package_line_in_the_checksums_counts() {
-    // A decoy line whose name only starts with the package name must not stand in for it.
     let deb = "reses_9.9.9_amd64.deb";
     let fake = Fake::new(
         "Linux",
@@ -363,6 +396,7 @@ fn only_the_exact_package_line_in_the_checksums_counts() {
     assert_eq!(apt_line(&fake.calls()), None);
 }
 
+/// A machine without apt is told it needs apt and dpkg, and nothing is downloaded first.
 #[test]
 fn a_machine_without_apt_is_told_so_and_nothing_is_downloaded() {
     let fake = amd64_release();
@@ -405,10 +439,10 @@ fn a_machine_without_apt_is_told_so_and_nothing_is_downloaded() {
     );
 }
 
+/// With only `reses_..._amd64.deb.sig` listed, the package itself has no checksum. A prefix
+/// match would mistake the decoy for it; the exact match refuses it as unlisted.
 #[test]
 fn a_checksum_listed_only_under_a_longer_name_doesnt_count() {
-    // With only `reses_..._amd64.deb.sig` listed, the package itself has no checksum. A prefix
-    // match would mistake the decoy for it; the exact match refuses it as unlisted.
     let deb = "reses_9.9.9_amd64.deb";
     let fake = Fake::new(
         "Linux",

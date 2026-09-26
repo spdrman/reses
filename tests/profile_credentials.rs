@@ -1,5 +1,11 @@
 //! The shared credentials file: parsing, byte-for-byte round trips, validation, and how it
 //! lands on disk. Every test works in its own temp dir and passes paths explicitly.
+//!
+//! reses writes into a file people have usually been editing by hand for years, so the bar is
+//! that a save only ever changes the lines it has to. I load one of two fixtures packed with
+//! comments, odd spacing and both line endings, make a change, and compare the result byte for
+//! byte against the fixture with just that change applied. Reading goes through aws-config, so
+//! the last group pins the places where its rules differ from a naive INI reader.
 
 use std::ffi::OsString;
 use std::fs;
@@ -48,12 +54,14 @@ region = eu-west-1\n\
 aws_access_key_id=AKIDEXAMPLE2\n\
 aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY2\n";
 
+/// Write `contents` as a file called `credentials` in `dir` and hand back its path.
 fn write(dir: &Path, contents: &str) -> PathBuf {
     let path = dir.join("credentials");
     fs::write(&path, contents).unwrap();
     path
 }
 
+/// A complete profile under `name`, with the fake test keys.
 fn profile(name: &str) -> Profile {
     Profile {
         name: name.into(),
@@ -64,6 +72,7 @@ fn profile(name: &str) -> Profile {
     }
 }
 
+/// Upsert `p`, save, and hand back what ended up on disk.
 fn upsert_and_save(path: &Path, p: &Profile) -> String {
     let mut file = CredentialsFile::load(path).unwrap();
     file.upsert(p).unwrap();
@@ -71,6 +80,7 @@ fn upsert_and_save(path: &Path, p: &Profile) -> String {
     fs::read_to_string(path).unwrap()
 }
 
+/// The permission bits of a file, without the file type.
 #[cfg(unix)]
 fn mode(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
@@ -79,6 +89,7 @@ fn mode(path: &Path) -> u32 {
 
 // ---- paths ----
 
+/// AWS_SHARED_CREDENTIALS_FILE, when set, is the path.
 #[test]
 fn path_honours_shared_credentials_file_env() {
     let p = credentials_path_from(
@@ -88,12 +99,14 @@ fn path_honours_shared_credentials_file_env() {
     assert_eq!(p, PathBuf::from("/elsewhere/creds"));
 }
 
+/// Otherwise it's ~/.aws/credentials.
 #[test]
 fn path_falls_back_to_home_aws_credentials() {
     let p = credentials_path_from(None, Some(OsString::from("/home/u")));
     assert_eq!(p, PathBuf::from("/home/u/.aws/credentials"));
 }
 
+/// An empty override counts as no override.
 #[test]
 fn empty_env_var_counts_as_unset() {
     let p = credentials_path_from(Some(OsString::new()), Some(OsString::from("/home/u")));
@@ -102,6 +115,7 @@ fn empty_env_var_counts_as_unset() {
 
 // ---- parsing ----
 
+/// No file yet is a normal first run: nothing to list, but the path is kept for the first save.
 #[test]
 fn missing_file_loads_as_empty() {
     let dir = tempfile::tempdir().unwrap();
@@ -111,6 +125,7 @@ fn missing_file_loads_as_empty() {
     assert_eq!(file.path(), path);
 }
 
+/// Profiles come back in the order the file lists them.
 #[test]
 fn parses_every_profile_in_file_order() {
     let dir = tempfile::tempdir().unwrap();
@@ -119,6 +134,7 @@ fn parses_every_profile_in_file_order() {
     assert_eq!(names, ["default", "work", "last"]);
 }
 
+/// `key=value` and padded `key   =    value` both read, trailing spaces trimmed.
 #[test]
 fn parses_both_spacing_styles_and_region() {
     let dir = tempfile::tempdir().unwrap();
@@ -147,6 +163,7 @@ fn parses_both_spacing_styles_and_region() {
     );
 }
 
+/// The session token and region are read when present, and an absent profile is None.
 #[test]
 fn parses_session_token() {
     let dir = tempfile::tempdir().unwrap();
@@ -157,6 +174,7 @@ fn parses_session_token() {
     assert!(file.get("missing").is_none());
 }
 
+/// A commented-out key is a comment, not a value.
 #[test]
 fn comment_lines_are_not_keys() {
     let dir = tempfile::tempdir().unwrap();
@@ -169,6 +187,7 @@ fn comment_lines_are_not_keys() {
     assert_eq!(p.region, None);
 }
 
+/// Key names match whatever their case.
 #[test]
 fn keys_are_case_insensitive() {
     let dir = tempfile::tempdir().unwrap();
@@ -178,6 +197,7 @@ fn keys_are_case_insensitive() {
     assert_eq!(file.get("a").unwrap().secret_access_key, SECRET);
 }
 
+/// Only the first `=` splits, so a secret with `=` in it stays whole.
 #[test]
 fn secret_containing_equals_sign_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -186,6 +206,7 @@ fn secret_containing_equals_sign_keeps_it() {
     assert_eq!(file.get("a").unwrap().secret_access_key, "abc=def==");
 }
 
+/// A section with no access key pair isn't a profile I can connect with, so it isn't listed.
 #[test]
 fn section_without_keys_is_not_a_profile() {
     let dir = tempfile::tempdir().unwrap();
@@ -194,6 +215,7 @@ fn section_without_keys_is_not_a_profile() {
     assert!(file.profiles().is_empty());
 }
 
+/// Debug output of the whole file never shows a secret or a token.
 #[test]
 fn debug_output_redacts_secrets() {
     let dir = tempfile::tempdir().unwrap();
@@ -205,6 +227,7 @@ fn debug_output_redacts_secrets() {
 
 // ---- round trips ----
 
+/// Loading and saving without a change writes back exactly the bytes I read.
 #[test]
 fn load_then_save_is_byte_identical() {
     for fixture in [FIXTURE_CRLF, FIXTURE_LF] {
@@ -215,6 +238,7 @@ fn load_then_save_is_byte_identical() {
     }
 }
 
+/// Upserting a profile with the values it already has changes nothing either.
 #[test]
 fn upsert_with_unchanged_values_is_byte_identical() {
     let dir = tempfile::tempdir().unwrap();
@@ -223,6 +247,7 @@ fn upsert_with_unchanged_values_is_byte_identical() {
     assert_eq!(upsert_and_save(&path, &existing), FIXTURE_CRLF);
 }
 
+/// A new profile goes on the end, in the file's own line endings, and nothing before it moves.
 #[test]
 fn adding_a_new_profile_leaves_everything_else_byte_identical() {
     let dir = tempfile::tempdir().unwrap();
@@ -237,6 +262,7 @@ fn adding_a_new_profile_leaves_everything_else_byte_identical() {
     assert_eq!(out.as_bytes(), expected.as_bytes());
 }
 
+/// Into an empty file, a new profile is just its section.
 #[test]
 fn adding_to_an_empty_file_writes_just_the_section() {
     let dir = tempfile::tempdir().unwrap();
@@ -248,6 +274,7 @@ fn adding_to_an_empty_file_writes_just_the_section() {
     );
 }
 
+/// Changing one value rewrites that one line, keeping the spacing it had.
 #[test]
 fn updating_one_profile_rewrites_only_its_changed_line() {
     let dir = tempfile::tempdir().unwrap();
@@ -263,6 +290,7 @@ fn updating_one_profile_rewrites_only_its_changed_line() {
     assert_eq!(out.as_bytes(), expected.as_bytes());
 }
 
+/// A `key=value` line stays `key=value` when its value changes.
 #[test]
 fn updating_a_compact_style_line_keeps_the_compact_style() {
     let dir = tempfile::tempdir().unwrap();
@@ -277,6 +305,7 @@ fn updating_a_compact_style_line_keeps_the_compact_style() {
     assert_eq!(out.as_bytes(), expected.as_bytes());
 }
 
+/// Adding to a last section that ends without a newline doesn't grow one.
 #[test]
 fn adding_a_key_to_the_eof_section_keeps_no_trailing_newline() {
     let dir = tempfile::tempdir().unwrap();
@@ -288,6 +317,8 @@ fn adding_a_key_to_the_eof_section_keeps_no_trailing_newline() {
     assert_eq!(out.as_bytes(), expected.as_bytes());
 }
 
+/// A new key in a middle section goes after its last key, ahead of the comments and blank lines
+/// that lead into the next section.
 #[test]
 fn adding_a_key_to_a_middle_section_goes_after_its_last_key() {
     let dir = tempfile::tempdir().unwrap();
@@ -302,6 +333,7 @@ fn adding_a_key_to_a_middle_section_goes_after_its_last_key() {
     assert_eq!(out.as_bytes(), expected.as_bytes());
 }
 
+/// Clearing the token and region removes exactly their lines, and they read back as None.
 #[test]
 fn clearing_optional_values_removes_their_lines_only() {
     let dir = tempfile::tempdir().unwrap();
@@ -325,6 +357,7 @@ fn clearing_optional_values_removes_their_lines_only() {
     assert_eq!(reread.region, None);
 }
 
+/// An empty token counts as clearing it, rather than writing `aws_session_token =`.
 #[test]
 fn empty_optional_value_counts_as_clearing() {
     let dir = tempfile::tempdir().unwrap();
@@ -341,6 +374,7 @@ fn empty_optional_value_counts_as_clearing() {
     );
 }
 
+/// An upsert shows up in memory straight away and touches the disk only on save.
 #[test]
 fn upsert_is_visible_before_save() {
     let dir = tempfile::tempdir().unwrap();
@@ -351,6 +385,7 @@ fn upsert_is_visible_before_save() {
     assert_eq!(fs::read_to_string(&path).unwrap(), FIXTURE_LF);
 }
 
+/// A key repeated in one section ends up as a single line holding the new value.
 #[test]
 fn duplicate_owned_keys_collapse_to_one_on_update() {
     let dir = tempfile::tempdir().unwrap();
@@ -367,6 +402,8 @@ fn duplicate_owned_keys_collapse_to_one_on_update() {
 
 // ---- validation ----
 
+/// Names and values that would inject a line or a section, or break a header, are refused
+/// before they reach the file, and nothing half-applied is left in memory.
 #[test]
 fn rejects_values_that_would_break_the_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -418,6 +455,7 @@ fn rejects_values_that_would_break_the_file() {
     }
 }
 
+/// A refused secret isn't echoed back in the error.
 #[test]
 fn rejection_message_never_contains_the_secret() {
     let dir = tempfile::tempdir().unwrap();
@@ -434,6 +472,7 @@ fn rejection_message_never_contains_the_secret() {
 
 // ---- writing to disk ----
 
+/// Saving on a machine with no ~/.aws yet creates it.
 #[test]
 fn save_creates_the_parent_directory() {
     let dir = tempfile::tempdir().unwrap();
@@ -442,6 +481,7 @@ fn save_creates_the_parent_directory() {
     assert!(path.is_file());
 }
 
+/// A new credentials file is readable by its owner only.
 #[cfg(unix)]
 #[test]
 fn new_file_is_mode_0600() {
@@ -451,6 +491,7 @@ fn new_file_is_mode_0600() {
     assert_eq!(mode(&path), 0o600);
 }
 
+/// A file that was left world-readable gets tightened to 0600 when I rewrite it.
 #[cfg(unix)]
 #[test]
 fn rewriting_a_0644_file_leaves_it_0600() {
@@ -463,6 +504,7 @@ fn rewriting_a_0644_file_leaves_it_0600() {
     assert_eq!(mode(&path), 0o600);
 }
 
+/// The temp file I save through is gone once the save is done.
 #[test]
 fn save_leaves_no_temp_files_behind() {
     let dir = tempfile::tempdir().unwrap();
@@ -475,6 +517,7 @@ fn save_leaves_no_temp_files_behind() {
     assert_eq!(names, [OsString::from("credentials")]);
 }
 
+/// Saving renames a new file into place, so a crash mid-save can't leave half a file.
 #[cfg(unix)]
 #[test]
 fn save_replaces_the_file_rather_than_writing_in_place() {
@@ -490,6 +533,8 @@ fn save_replaces_the_file_rather_than_writing_in_place() {
     assert_eq!(fs::read_to_string(&link).unwrap(), FIXTURE_LF);
 }
 
+/// A symlinked credentials file (dotfiles repos do this) stays a symlink, and its target
+/// gets the update.
 #[cfg(unix)]
 #[test]
 fn save_through_a_symlink_updates_the_target() {
@@ -508,6 +553,7 @@ fn save_through_a_symlink_updates_the_target() {
     assert!(CredentialsFile::load(&real).unwrap().get("new").is_some());
 }
 
+/// A path that can't be read is a read error that names the file.
 #[test]
 fn unreadable_path_reports_read_error_with_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -519,6 +565,7 @@ fn unreadable_path_reports_read_error_with_path() {
     assert!(err.to_string().contains("credentials"));
 }
 
+/// Removing the last line of a file that had no final newline doesn't add one.
 #[test]
 fn clearing_the_last_line_of_the_file_keeps_no_trailing_newline() {
     let dir = tempfile::tempdir().unwrap();
