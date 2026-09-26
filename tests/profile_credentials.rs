@@ -535,3 +535,77 @@ fn clearing_the_last_line_of_the_file_keeps_no_trailing_newline() {
          aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     );
 }
+
+// ---- reading goes through aws-config ----
+
+#[test]
+fn inline_comment_after_whitespace_is_dropped_like_the_sdk() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "[a]\naws_access_key_id = AKIDEXAMPLE # the old key\n\
+                aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n\
+                region = us-east-1 ; home\n";
+    let file = CredentialsFile::load(&write(dir.path(), text)).unwrap();
+    let p = file.get("a").unwrap();
+    assert_eq!(p.access_key_id, KEY_ID);
+    assert_eq!(p.region.as_deref(), Some("us-east-1"));
+}
+
+#[test]
+fn profile_prefixed_section_is_ignored_like_the_sdk() {
+    // aws-config ignores `[profile x]` in the credentials file, so reses can't connect with it
+    // and shouldn't list it.
+    let dir = tempfile::tempdir().unwrap();
+    let text = "[profile x]\naws_access_key_id = AKIDEXAMPLE\n\
+                aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n";
+    let file = CredentialsFile::load(&write(dir.path(), text)).unwrap();
+    assert!(file.profiles().is_empty(), "{:?}", file.profiles());
+}
+
+#[test]
+fn a_file_the_sdk_cannot_parse_fails_to_load_naming_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "[a]\naws_access_key_id: AKIDEXAMPLE\n");
+    let err = CredentialsFile::load(&path).unwrap_err();
+    assert!(matches!(err, ProfileError::Invalid(_)), "{err:?}");
+    assert!(err.to_string().contains("credentials"), "{err}");
+}
+
+#[test]
+fn names_the_sdk_would_ignore_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut file = CredentialsFile::load(&dir.path().join("credentials")).unwrap();
+    for name in [
+        "my profile",
+        "a#b",
+        "a;b",
+        "caf\u{e9}",
+        "a\tb",
+        "a=b",
+        "a\"b",
+    ] {
+        let err = file
+            .upsert(&Profile {
+                name: name.into(),
+                ..profile("x")
+            })
+            .expect_err(name);
+        assert!(matches!(err, ProfileError::Invalid(_)), "{name}: {err:?}");
+    }
+    // Everything aws-config allows in a name still works.
+    let fine = "Work_2-dev/eu.1%x@corp:+";
+    file.upsert(&Profile {
+        name: fine.into(),
+        ..profile("x")
+    })
+    .unwrap();
+    assert_eq!(file.get(fine).unwrap().name, fine);
+}
+
+#[test]
+fn path_expands_a_leading_tilde_like_the_sdk() {
+    let p = credentials_path_from(
+        Some(OsString::from("~/creds")),
+        Some(OsString::from("/home/u")),
+    );
+    assert_eq!(p, PathBuf::from("/home/u/creds"));
+}

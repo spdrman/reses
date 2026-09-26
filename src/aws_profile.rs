@@ -938,3 +938,9 @@ fn shlex_split(s: &str) -> Option<Vec<String>> {
     words.extend(word);
     Some(words)
 }
+
+/// Stub: the region lookup through aws-config with an explicit environment.
+pub fn region_from_config_in(env: &[(&str, &str)], profile: &str) -> Option<String> {
+    let _ = (env, profile);
+    None
+}
