@@ -1016,3 +1016,21 @@ fn the_inbox_gets_the_buckets_own_region_once_the_client_has_learned_it() {
     );
     assert_eq!(inbox.profile, "test");
 }
+
+#[test]
+fn the_header_bar_names_the_browsers_own_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let mine = Spy::new(mail_store());
+    let theirs: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    // The shared session is the inbox's account; the browser is on another one.
+    let ctx = testing::ctx(dir.path(), Some(theirs));
+    let screen_view = BrowserScreen::with_session(session_on("mine", mine.clone()));
+    let mut app = App::with_view(ctx, Box::new(screen_view));
+    settle(&mut app);
+    let s = screen(&mut app, 100, 12);
+    let header = s.lines().next().unwrap();
+    assert!(header.contains("mine (eu-west-1)"), "{header}");
+    assert!(!header.contains("test (us-east-1)"), "{header}");
+    // With the bar naming it, the body does not repeat it.
+    assert!(!s.contains("as mine"), "{s}");
+}
