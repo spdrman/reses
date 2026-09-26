@@ -594,7 +594,7 @@ impl BrowserScreen {
         parts.join(" · ")
     }
 
-    fn render_folder(&mut self, frame: &mut Frame, area: Rect, account: Option<String>) {
+    fn render_folder(&mut self, frame: &mut Frame, area: Rect) {
         let [head, body] =
             Layout::vertical([Constraint::Length(HEADER_LINES), Constraint::Min(1)]).areas(area);
         let dim = Style::default().fg(Color::DarkGray);
@@ -608,8 +608,6 @@ impl BrowserScreen {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         };
-        let mut first = vec![path];
-        first.extend(account.map(|a| Span::styled(a, dim)));
         let mut second = vec![Span::styled(format!(" {}", self.summary()), dim)];
         if self.editing_filter || !self.filter.is_empty() {
             second.push(Span::styled(
@@ -622,7 +620,7 @@ impl BrowserScreen {
             ));
         }
         frame.render_widget(
-            Paragraph::new(vec![Line::from(first), Line::from(second)]),
+            Paragraph::new(vec![Line::from(path), Line::from(second)]),
             head,
         );
 
@@ -735,22 +733,16 @@ impl View for BrowserScreen {
         "Browse S3".into()
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, ctx: &Ctx) {
-        // The header bar names ctx.session. When this browser is on another account (opened
-        // from a pushed accounts screen), say which one here.
-        let account = self
-            .session
-            .as_ref()
-            .filter(|mine| {
-                ctx.session.as_ref().is_none_or(|shared| {
-                    shared.profile.name != mine.profile.name || shared.region != mine.region
-                })
-            })
-            .map(|s| format!("   as {} ({})", s.profile.name, s.region));
+    fn render(&mut self, frame: &mut Frame, area: Rect, _ctx: &Ctx) {
         match self.search.as_mut() {
-            Some(search) => search.render(frame, area, account),
-            None => self.render_folder(frame, area, account),
+            Some(search) => search.render(frame, area),
+            None => self.render_folder(frame, area),
         }
+    }
+
+    /// The header bar names this browser's own account, which may not be ctx.session's.
+    fn session(&self) -> Option<&Session> {
+        self.session.as_ref()
     }
 
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
@@ -989,7 +981,7 @@ impl Search {
         self.selected = self.selected.saturating_add_signed(delta).min(n - 1);
     }
 
-    fn render(&mut self, frame: &mut Frame, area: Rect, account: Option<String>) {
+    fn render(&mut self, frame: &mut Frame, area: Rect) {
         let [head, body] = Layout::vertical([
             Constraint::Length(HEADER_LINES + u16::from(self.note.is_some())),
             Constraint::Min(1),
@@ -1018,15 +1010,10 @@ impl Search {
         frame.render_widget(
             Paragraph::new(
                 vec![
-                    Line::from(
-                        [Span::styled(
-                            format!(" Email under {}/{}", self.bucket, self.prefix),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        )]
-                        .into_iter()
-                        .chain(account.map(|a| Span::styled(a, dim)))
-                        .collect::<Vec<_>>(),
-                    ),
+                    Line::from(Span::styled(
+                        format!(" Email under {}/{}", self.bucket, self.prefix),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
                     Line::from(vec![
                         Span::styled(
                             format!(
