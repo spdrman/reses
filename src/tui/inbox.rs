@@ -18,6 +18,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use time::{OffsetDateTime, UtcOffset};
 
 use super::accounts::AccountsScreen;
+use super::browser::BrowserScreen;
 use super::jobs::{Done, Generation, Job, JobId, Outcome};
 use super::message::MessageScreen;
 use super::text::{SIZE_WIDTH, clean, escape, fit, human_size, width};
@@ -608,6 +609,25 @@ impl InboxScreen {
         frame.render_widget(Paragraph::new(lines), body);
     }
 
+    /// I leave the inbox upwards (#67). The accounts screen goes underneath, and on top of it the
+    /// browser opens at the inbox's own folder on the same account, so each Esc from there climbs
+    /// a level until the accounts. With no account there's nothing to browse, so it's the accounts
+    /// screen alone.
+    fn leave(&mut self, ctx: &mut Ctx) -> Transition {
+        let accounts: Box<dyn View> = Box::new(AccountsScreen::new(ctx));
+        match &self.session {
+            Some(session) => Transition::ResetStack(vec![
+                accounts,
+                Box::new(BrowserScreen::at_folder(
+                    session.clone(),
+                    self.inbox.bucket.clone(),
+                    self.inbox.prefix.clone(),
+                )),
+            ]),
+            None => Transition::Reset(accounts),
+        }
+    }
+
     /// Once the listing has ended, however it ended, I take down the "Refreshing" status I put up,
     /// but only while it's still showing: a status that came since, like a delete's or an error, is
     /// newer news and stays.
@@ -900,9 +920,31 @@ impl View for InboxScreen {
             ("d", "delete"),
             ("/", "filter"),
             ("r", "refresh"),
+            ("esc", "up"),
             ("u", "accounts"),
             ("q", "quit"),
         ]
+    }
+
+    /// Every key the inbox takes, for the `?` overlay.
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑↓  j k", "move a row"),
+            ("⇧↑↓  pgup pgdn", "move a page"),
+            ("g G  home end", "first or last message"),
+            ("enter", "open the message"),
+            ("d", "delete it from S3, once you confirm with y"),
+            ("/", "filter the list, esc clears it"),
+            ("r", "refresh from S3"),
+            ("esc", "up to the S3 folder, then on to the accounts"),
+            ("u", "straight to the accounts"),
+            ("q", "quit"),
+        ]
+    }
+
+    /// While the filter prompt is open, a `?` is part of the filter.
+    fn taking_text(&self) -> bool {
+        self.typing
     }
 }
 
@@ -983,7 +1025,9 @@ impl InboxScreen {
                 self.filter.clear();
                 self.dirty = true;
             }
-            // The inbox is the root screen, so Esc staying put keeps a stray press from quitting.
+            // With no filter to clear, Esc climbs out: up through S3 to the accounts (#67). It never
+            // quits from here; q does.
+            KeyCode::Esc => return self.leave(ctx),
             KeyCode::Char('q') => return Transition::Pop,
             _ => {}
         }
@@ -1579,6 +1623,107 @@ mod tests {
         assert!(scr.contains("Deleted s3://inbox-bucket/mail/aaa"), "{scr}");
     }
 
+    /// #67: Esc climbs out of the inbox. The browser opens at the inbox's own folder on the same
+    /// account, each further Esc goes up a level, and the last one reaches the accounts screen,
+    /// without ever quitting.
+    #[test]
+    fn esc_climbs_from_the_inbox_through_s3_to_the_accounts() {
+        let (mut app, _d) = app_with(three());
+        let path_line = |app: &mut App| {
+            screen(app, 100, 16)
+                .lines()
+                .nth(1)
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        };
+        app.key(key(KeyCode::Esc));
+        settle(&mut app);
+        assert_eq!(top_title(&app), "Browse S3");
+        assert_eq!(path_line(&mut app), "inbox-bucket/mail/");
+        app.key(key(KeyCode::Esc));
+        settle(&mut app);
+        assert_eq!(path_line(&mut app), "inbox-bucket/");
+        app.key(key(KeyCode::Esc));
+        settle(&mut app);
+        assert_eq!(top_title(&app), "Browse S3");
+        assert_eq!(path_line(&mut app), "All buckets");
+        app.key(key(KeyCode::Esc));
+        settle(&mut app);
+        assert_eq!(top_title(&app), "Accounts");
+        assert!(!app.quit);
+    }
+
+    /// #67: an inbox that never connected has no S3 to climb through, so Esc goes straight to
+    /// the accounts screen.
+    #[test]
+    fn esc_without_an_account_goes_to_the_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), None);
+        let view = InboxScreen::new(inbox()).with_now(NOW);
+        let mut app = App::with_view(ctx, Box::new(view));
+        settle(&mut app);
+        app.key(key(KeyCode::Esc));
+        settle(&mut app);
+        assert_eq!(top_title(&app), "Accounts");
+        assert!(!app.quit);
+    }
+
+    /// #68: `?` lists every inbox key, `u` included, and the keys that work everywhere. Any key
+    /// takes it down and does nothing else, so a `d` that closes it doesn't also start a delete.
+    #[test]
+    fn question_mark_lists_every_key_and_any_key_closes_it() {
+        let store = three();
+        let (mut app, _d) = app_with(store.clone());
+        app.key(key(KeyCode::Char('?')));
+        let scr = screen(&mut app, 100, 24);
+        for text in [
+            "Keys",
+            "straight to the accounts",
+            "up to the S3 folder",
+            "ctrl-c",
+            "On every screen",
+        ] {
+            assert!(scr.contains(text), "{text} missing:\n{scr}");
+        }
+        app.key(key(KeyCode::Char('d')));
+        let scr = screen(&mut app, 100, 24);
+        assert!(!scr.contains("On every screen"), "{scr}");
+        assert!(
+            !scr.contains("Press y"),
+            "the key that closed help started a delete:\n{scr}"
+        );
+    }
+
+    /// #68: while the filter prompt is open, `?` is typed into the filter, not taken as help.
+    #[test]
+    fn question_mark_in_the_filter_is_just_a_character() {
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::Char('/')));
+        app.key(key(KeyCode::Char('?')));
+        let scr = screen(&mut app, 100, 12);
+        assert!(!scr.contains("On every screen"), "{scr}");
+        assert!(scr.contains("?_"), "{scr}");
+    }
+
+    /// #68: however narrow the terminal, the hint row keeps `?` on it.
+    #[test]
+    fn the_help_hint_survives_a_narrow_terminal() {
+        let (mut app, _d) = app_with(three());
+        for width in [100, 80, 40, 24, 12] {
+            let scr = screen(&mut app, width, 12);
+            let last = scr.lines().last().unwrap_or_default();
+            assert!(last.contains(" ? "), "width {width}: {last:?}");
+        }
+    }
+
+    /// #67: the hints say Esc goes up.
+    #[test]
+    fn the_hints_say_esc_goes_up() {
+        let (mut app, _d) = app_with(three());
+        assert!(screen(&mut app, 140, 12).contains("esc  up"));
+    }
+
     /// I check the list is sorted newest first, since that's where new mail should show up.
     #[test]
     fn newest_message_comes_first() {
@@ -2105,13 +2250,15 @@ mod tests {
         scr.lines().find(|l| l.contains(needle))
     }
 
-    /// I check Esc on the root inbox doesn't quit and only `q` does, so a stray Esc can't close the app.
+    /// I check Esc on the root inbox never quits (it climbs to the S3 browser instead, #67) and
+    /// that `q` does, so a stray Esc can't close the app.
     #[test]
     fn esc_at_the_root_inbox_does_not_quit_but_q_does() {
         let (mut app, _d) = app_with(three());
         app.key(key(KeyCode::Esc));
         assert!(!app.quit);
-        assert!(screen(&mut app, 100, 12).contains("Lunch today"));
+        assert_eq!(top_title(&app), "Browse S3");
+        let (mut app, _d) = app_with(three());
         app.key(key(KeyCode::Char('q')));
         assert!(app.quit);
     }

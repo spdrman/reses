@@ -346,6 +346,11 @@ impl View for AccountsScreen {
             ],
         }
     }
+
+    /// While the add-account form is open, a `?` is part of what's being typed.
+    fn taking_text(&self) -> bool {
+        self.form.is_some()
+    }
 }
 
 // ---- the add-account form ----

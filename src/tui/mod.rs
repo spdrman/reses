@@ -25,7 +25,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::aws_profile::{CredentialsFile, Profile};
 use crate::config::AppConfig;
@@ -40,6 +40,9 @@ pub(crate) enum Transition {
     Pop,
     /// Replace the whole stack with this view (e.g. jumping to the inbox after saving it).
     Reset(Box<dyn View>),
+    /// Replace the whole stack with these views, bottom first: Esc in the inbox leaves the accounts
+    /// screen underneath and the S3 browser on top, so each Esc climbs a level (#67).
+    ResetStack(Vec<Box<dyn View>>),
 }
 
 pub(crate) trait View {
@@ -72,6 +75,16 @@ pub(crate) trait View {
     }
     /// Key hints for the footer, e.g. `[("enter", "open"), ("d", "delete")]`.
     fn hints(&self) -> Vec<(&'static str, &'static str)>;
+    /// Every key this view takes, for the `?` overlay (#68). The footer's hints are the short list
+    /// and lose their tail on a narrow terminal; this is the whole list, and defaults to the hints.
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        self.hints()
+    }
+    /// Whether the view is taking typed text right now (a filter, a form field), so a `?` is a
+    /// character for it and not a request for help.
+    fn taking_text(&self) -> bool {
+        false
+    }
     /// The account this view works in, when it holds its own. The header bar shows it in
     /// place of `ctx.session`.
     fn session(&self) -> Option<&Session> {
@@ -288,6 +301,8 @@ pub(crate) struct App {
     pub ctx: Ctx,
     pub stack: Vec<Box<dyn View>>,
     pub quit: bool,
+    /// Whether the `?` overlay is up. Any key takes it down (#68).
+    pub help: bool,
 }
 
 impl App {
@@ -300,6 +315,7 @@ impl App {
             ctx,
             stack: vec![first],
             quit: false,
+            help: false,
         }
     }
 
@@ -310,6 +326,7 @@ impl App {
             ctx,
             stack: vec![view],
             quit: false,
+            help: false,
         };
         app.focus_top();
         app
@@ -339,6 +356,13 @@ impl App {
                 self.stack.clear();
                 self.stack.push(v);
             }
+            Transition::ResetStack(views) => {
+                if views.is_empty() {
+                    self.quit = true;
+                    return;
+                }
+                self.stack = views;
+            }
         }
         self.focus_top();
     }
@@ -353,10 +377,20 @@ impl App {
             self.quit = true;
             return;
         }
+        // Help lies over the top view: any key closes it and goes no further, so the key that
+        // dismisses it can't also start a delete.
+        if self.help {
+            self.help = false;
+            return;
+        }
         let Some(top) = self.stack.last_mut() else {
             self.quit = true;
             return;
         };
+        if key.code == KeyCode::Char('?') && !top.taking_text() {
+            self.help = true;
+            return;
+        }
         let t = top.on_key(key, &mut self.ctx);
         self.apply(t);
     }
@@ -454,6 +488,9 @@ impl App {
         }
 
         top.render(frame, body, &self.ctx);
+        if self.help {
+            render_help(frame, body, &top.help());
+        }
 
         // Errors say so in words as well as in red, so NO_COLOR or a theme where red is
         // faint still tells them from news. Info is the terminal's own colour, which reads on
@@ -471,22 +508,25 @@ impl App {
 }
 
 /// The key hints that fit in `cols` columns. Views list hints most important first, so the
-/// ones that don't fit come off the end, except `q`, which always stays: without it an 80
-/// column terminal lost the only hint for getting out.
+/// ones that don't fit come off the end, except `?` and `q`, which always stay: without `q` an 80
+/// column terminal lost the only hint for getting out, and without `?` the hints that came off
+/// had no way back (#68). `?` goes first of the two, so on a terminal too narrow for both it's
+/// the one left showing.
 fn hints_line(hints: &[(&'static str, &'static str)], cols: usize) -> Line<'static> {
     let cost = |(k, what): &(&str, &str)| text::width(k) + text::width(what) + 5;
-    let quit = hints.iter().find(|(k, _)| *k == "q").copied();
-    let mut budget = cols.saturating_sub(quit.as_ref().map_or(0, cost));
+    let mut pinned = vec![("?", "help")];
+    pinned.extend(hints.iter().find(|(k, _)| *k == "q").copied());
+    let mut budget = cols.saturating_sub(pinned.iter().map(cost).sum());
     let mut kept: Vec<(&'static str, &'static str)> = Vec::new();
-    // Take hints in order while they fit, then put q back at the end.
-    for h in hints.iter().filter(|(k, _)| *k != "q") {
+    // Take hints in order while they fit, then put the pinned two back at the end.
+    for h in hints.iter().filter(|(k, _)| *k != "q" && *k != "?") {
         if cost(h) > budget {
             break;
         }
         budget -= cost(h);
         kept.push(*h);
     }
-    kept.extend(quit);
+    kept.extend(pinned);
     let mut spans = Vec::new();
     for (k, what) in kept {
         spans.push(Span::styled(
@@ -496,6 +536,57 @@ fn hints_line(hints: &[(&'static str, &'static str)], cols: usize) -> Line<'stat
         spans.push(Span::raw(format!(" {what}  ")));
     }
     Line::from(spans)
+}
+
+/// The keys that work on every screen, listed under the view's own in the `?` overlay.
+const GLOBAL_KEYS: &[(&str, &str)] = &[
+    ("?", "show or hide this help"),
+    ("ctrl-z", "suspend reses, back with fg"),
+    ("ctrl-c", "quit"),
+];
+
+/// The `?` overlay (#68): every key the top view takes, then the ones that work everywhere, in a
+/// box over the body. When the body is too short for the list, the list is cut at the bottom,
+/// never squeezed.
+fn render_help(frame: &mut Frame, area: Rect, keys: &[(&'static str, &'static str)]) {
+    let key_width = keys
+        .iter()
+        .chain(GLOBAL_KEYS)
+        .map(|(k, _)| text::width(k))
+        .max()
+        .unwrap_or(0);
+    let row = |(k, what): &(&str, &str)| {
+        Line::from(vec![
+            Span::styled(
+                format!(" {k:>key_width$} "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(" {what} ")),
+        ])
+    };
+    let mut lines: Vec<Line> = keys.iter().map(row).collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        " On every screen",
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    lines.extend(GLOBAL_KEYS.iter().map(row));
+    // Sized to its widest line and its rows, inside the body, and centred there.
+    let widest = lines.iter().map(Line::width).max().unwrap_or(0);
+    let title = " Keys · any key closes ";
+    let w = (widest.max(text::width(title)) + 2).min(area.width as usize) as u16;
+    let h = (lines.len() + 2).min(area.height as usize) as u16;
+    let rect = Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    );
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(title)),
+        rect,
+    );
 }
 
 /// How long quitting waits for deletes still on their way to S3.
