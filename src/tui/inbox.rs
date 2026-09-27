@@ -1527,6 +1527,35 @@ mod tests {
         }
     }
 
+    /// #62: once a refresh's listing is in, its "Refreshing" status gives way to the key hints
+    /// with no key press, the way the run loop draws it (only a key press clears a status there).
+    #[test]
+    fn a_finished_refresh_clears_its_status() {
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::Char('r')));
+        assert!(
+            matches!(&app.ctx.status, Some(crate::tui::Status::Info(m)) if m.starts_with("Refreshing")),
+            "{:?}",
+            app.ctx.status
+        );
+        settle(&mut app);
+        let scr = screen(&mut app, 100, 12);
+        assert!(!scr.contains("Refreshing"), "{scr}");
+        assert!(scr.contains("q  quit"), "{scr}");
+    }
+
+    /// #62: a status that arrived while the refresh ran, such as a delete finishing, isn't the
+    /// refresh's to clear, so it stays on the bottom line.
+    #[test]
+    fn a_finished_refresh_leaves_a_newer_status_alone() {
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::Char('r')));
+        app.ctx.info("Deleted s3://inbox-bucket/mail/aaa");
+        settle(&mut app);
+        let scr = screen(&mut app, 100, 12);
+        assert!(scr.contains("Deleted s3://inbox-bucket/mail/aaa"), "{scr}");
+    }
+
     /// I check the list is sorted newest first, since that's where new mail should show up.
     #[test]
     fn newest_message_comes_first() {

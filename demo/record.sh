@@ -16,6 +16,11 @@
 # RESES_LANE names the NAS scratch directory and cargo target volume, as for ci-docker.sh. It
 # defaults to "demo" here, so recording never shares build output with the main gate.
 #
+# RESES_DEMO_TAPE, when set, records that tape instead of demo/demo.tape, a bug report's
+# reproduction for example. Its GIF goes to RESES_DEMO_GIF (docs/demo.gif unless set), and the frame
+# check is skipped, since it only knows what demo.tape shows. The tape still has to write demo.gif
+# and demo.txt.
+#
 # RESES_DEMO_FRAMES, when set, is a path to copy the text snapshots to (for example to refresh
 # tests/fixtures/demo/good.txt), with the GIF next to them. Both are copied before the check, so a
 # failed run can be looked at.
@@ -89,7 +94,9 @@ aws_secret_access_key = $SECRET
 EOF
 chmod 600 "$LOCAL/home/.aws/credentials"
 printf '[default]\nregion = us-east-1\n\n[profile mail-archive]\nregion = eu-west-1\n' >"$LOCAL/home/.aws/config"
-cp demo/demo.tape "$LOCAL/demo.tape"
+TAPE="${RESES_DEMO_TAPE:-demo/demo.tape}"
+OUT_GIF="${RESES_DEMO_GIF:-docs/demo.gif}"
+cp "$TAPE" "$LOCAL/demo.tape"
 (cd "$LOCAL" && tar -cf - home demo.tape) | nas tar -xf - -C "$WORK"
 
 echo "==> starting MinIO"
@@ -136,16 +143,20 @@ if [ -n "${RESES_DEMO_FRAMES:-}" ]; then
   cp "$LOCAL/out/demo.txt" "$RESES_DEMO_FRAMES"
   cp "$LOCAL/out/demo.gif" "${RESES_DEMO_FRAMES%.txt}.gif"
 fi
-echo "==> checking the recording"
-dk run --rm --name "$CHECK" --platform "$PLATFORM" \
-  -v "$TREE/demo:/check:ro" -v "$WORK:/demo:ro" \
-  "$CI_IMAGE" bash /check/check-frames.sh /demo/demo.txt /check/messages.tsv
+if [ -z "${RESES_DEMO_TAPE:-}" ]; then
+  echo "==> checking the recording"
+  dk run --rm --name "$CHECK" --platform "$PLATFORM" \
+    -v "$TREE/demo:/check:ro" -v "$WORK:/demo:ro" \
+    "$CI_IMAGE" bash /check/check-frames.sh /demo/demo.txt /check/messages.tsv
+else
+  echo "==> not checking frames: $TAPE isn't the README demo"
+fi
 
 # Written next to the old GIF and moved over it, so a concurrent or interrupted run never
-# leaves a half-written docs/demo.gif.
-mkdir -p docs
-GIF_TMP="$(mktemp "$REPO_ROOT/docs/.demo.gif.XXXXXX")"
+# leaves a half-written one.
+mkdir -p "$(dirname "$OUT_GIF")"
+GIF_TMP="$(mktemp "$(dirname "$OUT_GIF")/.demo.gif.XXXXXX")"
 cp "$LOCAL/out/demo.gif" "$GIF_TMP"
 chmod 644 "$GIF_TMP"
-mv "$GIF_TMP" docs/demo.gif
-echo "wrote docs/demo.gif ($(wc -c <docs/demo.gif | tr -d ' ') bytes)"
+mv "$GIF_TMP" "$OUT_GIF"
+echo "wrote $OUT_GIF ($(wc -c <"$OUT_GIF" | tr -d ' ') bytes)"
