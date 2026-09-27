@@ -98,6 +98,29 @@ pub(super) fn addresses(msg: &Message<'_>, name: &str) -> String {
         .map_or_else(String::new, render)
 }
 
+/// The first `name` header's mailboxes as (name, address) pairs, trimmed, a group's members
+/// flattened in order. A mailbox with neither part is dropped.
+pub(super) fn mailboxes(msg: &Message<'_>, name: &str) -> Vec<(String, String)> {
+    let Some(address) = first(msg, name).and_then(|h| h.value.as_address()) else {
+        return Vec::new();
+    };
+    let pair = |name: Option<&str>, address: Option<&str>| {
+        (
+            name.unwrap_or("").trim().to_string(),
+            address.unwrap_or("").trim().to_string(),
+        )
+    };
+    let mut out: Vec<(String, String)> = match address {
+        Address::List(list) => list.iter().map(|a| pair(a.name(), a.address())).collect(),
+        Address::Group(groups) => groups
+            .iter()
+            .flat_map(|g| g.addresses.iter().map(|a| pair(a.name(), a.address())))
+            .collect(),
+    };
+    out.retain(|(name, address)| !name.is_empty() || !address.is_empty());
+    out
+}
+
 /// The first Subject, decoded and trimmed.
 pub(super) fn subject(msg: &Message<'_>) -> String {
     first(msg, "Subject")

@@ -31,6 +31,171 @@ use time::OffsetDateTime;
 
 pub use save::SaveReport;
 
+/// One mailbox from an address header, split the way a reader shows it: either part can be empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mailbox {
+    pub name: String,
+    pub address: String,
+}
+
+/// One result from an Authentication-Results header, such as `dkim=pass header.d=example.com`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Check {
+    /// The method, lower case: spf, dkim, dmarc.
+    pub method: String,
+    /// Its result, lower case: pass, fail, softfail, neutral, none and so on.
+    pub result: String,
+    /// The identity or domain it was checked for, when the header names one.
+    pub detail: String,
+}
+
+/// Everything the HTML reader shows around a message's HTML part: the headers a mail reader
+/// leads with, and what the footer says about delivery and the message itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Details {
+    pub subject: String,
+    pub from: Vec<Mailbox>,
+    pub to: Vec<Mailbox>,
+    pub cc: Vec<Mailbox>,
+    pub reply_to: Vec<Mailbox>,
+    /// The Bcc line, as the text view prints it (an explicit Bcc, or the envelope recipients).
+    pub bcc: String,
+    /// The Date header as a point in time, when it parses.
+    pub date: Option<OffsetDateTime>,
+    /// The Date header as written.
+    pub date_raw: String,
+    /// When the receiving server took it: the date at the end of the first Received header.
+    pub received: String,
+    pub message_id: String,
+    /// Each attachment's name and decoded size in bytes, in order.
+    pub attachments: Vec<(String, usize)>,
+    /// The HTML part as written, when there is one.
+    pub html: Option<String>,
+    /// Whether the message has a plain text part as well.
+    pub has_text: bool,
+    /// The first Authentication-Results header's checks, in order.
+    pub checks: Vec<Check>,
+    /// SES's X-SES-Spam-Verdict and X-SES-Virus-Verdict, as written, or "".
+    pub spam_verdict: String,
+    pub virus_verdict: String,
+    /// The whole message's size in bytes, as stored.
+    pub size: usize,
+}
+
+/// The details the HTML reader shows for `raw`.
+pub fn details(raw: &[u8]) -> Details {
+    let input = parts::prepare(raw);
+    let parsed = parts::Parsed::new(&input);
+    let boxes = |name: &str| {
+        parsed
+            .mailboxes(name)
+            .into_iter()
+            .map(|(name, address)| Mailbox { name, address })
+            .collect()
+    };
+    // The receiving server puts its own Received line on top, with the time after its last `;`.
+    let received = parsed.raw_header("Received");
+    Details {
+        subject: parsed.subject(),
+        from: boxes("From"),
+        to: boxes("To"),
+        cc: boxes("Cc"),
+        reply_to: boxes("Reply-To"),
+        bcc: parsed.bcc(),
+        date: parsed.date(),
+        date_raw: parsed.raw_header("Date"),
+        received: received
+            .rsplit_once(';')
+            .map_or_else(String::new, |(_, when)| when.trim().to_string()),
+        message_id: parsed.raw_header("Message-ID"),
+        attachments: parsed
+            .attachments()
+            .into_iter()
+            .map(|a| (a.name, a.bytes.len()))
+            .collect(),
+        html: parsed.html_part(),
+        has_text: parsed.has_text_part(),
+        checks: checks(&parsed.raw_header("Authentication-Results")),
+        spam_verdict: parsed.raw_header("X-SES-Spam-Verdict"),
+        virus_verdict: parsed.raw_header("X-SES-Virus-Verdict"),
+        size: raw.len(),
+    }
+}
+
+/// A check's `prop=value` pairs as the header gave them, keys lower case.
+type Props = Vec<(String, String)>;
+
+/// The methods an Authentication-Results check can start with (RFC 8601 and its registry).
+const AUTH_METHODS: &[&str] = &[
+    "spf",
+    "dkim",
+    "dmarc",
+    "arc",
+    "iprev",
+    "auth",
+    "bimi",
+    "dkim-atps",
+    "smime",
+    "vbr",
+];
+
+/// The checks in an Authentication-Results value, `authserv-id; method=result prop=value ...;`.
+///
+/// Comments go first, since one can hold a `;`. SES then separates a check's own properties
+/// with `;` as well (`spf=pass client-ip=...; envelope-from=...;`), so a segment that doesn't
+/// start with a method belongs to the check before it. Each check's detail is the identity it
+/// was run on: the envelope sender for SPF, the signing domain for DKIM, the From domain for
+/// DMARC.
+fn checks(value: &str) -> Vec<Check> {
+    let mut plain = String::with_capacity(value.len());
+    let mut depth = 0usize;
+    for c in value.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    // Group each check with its properties, however they were separated. The detail comes after.
+    let mut found: Vec<(Check, Props)> = Vec::new();
+    for segment in plain.split(';').skip(1) {
+        for word in segment.split_whitespace() {
+            let Some((key, val)) = word.split_once('=') else {
+                continue;
+            };
+            let key = key.to_ascii_lowercase();
+            if AUTH_METHODS.contains(&key.as_str()) {
+                let check = Check {
+                    method: key,
+                    result: val.to_ascii_lowercase(),
+                    detail: String::new(),
+                };
+                found.push((check, Vec::new()));
+            } else if let Some((_, props)) = found.last_mut() {
+                props.push((key, val.to_string()));
+            }
+        }
+    }
+    // The identity each method was run on, in the order I prefer the properties.
+    found
+        .into_iter()
+        .map(|(mut check, props)| {
+            let wanted: &[&str] = match check.method.as_str() {
+                "spf" => &["smtp.mailfrom", "envelope-from", "smtp.helo", "helo"],
+                "dkim" => &["header.d", "header.i"],
+                "dmarc" => &["header.from"],
+                _ => &[],
+            };
+            check.detail = wanted
+                .iter()
+                .find_map(|k| props.iter().find(|(p, _)| p == k).map(|(_, v)| v.as_str()))
+                .map_or_else(String::new, |v| v.trim_start_matches('@').to_string());
+            check
+        })
+        .collect()
+}
+
 /// The headers the inbox list shows. Built from a header-only prefix of the object as well as
 /// from a whole message, so every field has to cope with a truncated body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

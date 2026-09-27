@@ -11,7 +11,8 @@ use std::fs;
 use std::path::Path;
 
 use reses::mail::{
-    html_part, looks_like_email, save_attachments, save_attachments_report, summarize,
+    Check, Mailbox, details, html_part, looks_like_email, save_attachments,
+    save_attachments_report, summarize,
 };
 use time::macros::datetime;
 
@@ -502,4 +503,113 @@ Content-Disposition: attachment; filename=\"report.html\"\r\n\
 <p>attached</p>\r\n\
 --B--\r\n";
     assert_eq!(html_part(raw), None);
+}
+
+/// A message as SES stores it: its Received line, spam and virus verdicts and
+/// Authentication-Results on top, then a text part, an HTML part and one attachment.
+fn ses_message() -> Vec<u8> {
+    b"Return-Path: <alice@example.com>\r\n\
+Received: from mail.example.com (mail.example.com [192.0.2.1])\r\n by inbound-smtp.us-east-1.amazonaws.com with SMTP id abc123\r\n for me@example.com; Fri, 25 Sep 2026 09:30:04 +0000 (UTC)\r\n\
+X-SES-Spam-Verdict: PASS\r\n\
+X-SES-Virus-Verdict: PASS\r\n\
+Authentication-Results: amazonses.com;\r\n spf=pass (spf: domain of example.com designates 192.0.2.1 as permitted sender; ok) client-ip=192.0.2.1; envelope-from=alice@example.com; helo=mail.example.com;\r\n dkim=pass header.i=@example.com;\r\n dmarc=fail header.from=example.com;\r\n\
+From: Alice Example <alice@example.com>\r\n\
+To: Me <me@example.com>\r\n\
+Cc: Bob Builder <bob@example.org>, carol@example.net\r\n\
+Reply-To: reports@example.com\r\n\
+Subject: Your Q3 numbers are in\r\n\
+Date: Fri, 25 Sep 2026 09:30:00 +0000\r\n\
+Message-ID: <CAF7x2Q9@mail.example.com>\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"B\"\r\n\
+\r\n\
+--B\r\n\
+Content-Type: multipart/alternative; boundary=\"A\"\r\n\
+\r\n\
+--A\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+the plain version\r\n\
+--A\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<p>the <b>html</b> version</p>\r\n\
+--A--\r\n\
+--B\r\n\
+Content-Type: application/pdf; name=\"report.pdf\"\r\n\
+Content-Disposition: attachment; filename=\"report.pdf\"\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+JVBERi0=\r\n\
+--B--\r\n"
+        .to_vec()
+}
+
+/// The reader's details come out of the headers: mailboxes split into name and address, the
+/// dates, the Message-ID, and each attachment with its decoded size.
+#[test]
+fn details_split_the_headers_the_reader_shows() {
+    let raw = ses_message();
+    let d = details(&raw);
+    assert_eq!(d.subject, "Your Q3 numbers are in");
+    let mailbox = |name: &str, address: &str| Mailbox {
+        name: name.into(),
+        address: address.into(),
+    };
+    assert_eq!(d.from, [mailbox("Alice Example", "alice@example.com")]);
+    assert_eq!(d.to, [mailbox("Me", "me@example.com")]);
+    assert_eq!(
+        d.cc,
+        [
+            mailbox("Bob Builder", "bob@example.org"),
+            mailbox("", "carol@example.net")
+        ]
+    );
+    assert_eq!(d.reply_to, [mailbox("", "reports@example.com")]);
+    assert_eq!(d.date_raw, "Fri, 25 Sep 2026 09:30:00 +0000");
+    assert_eq!(d.date, Some(datetime!(2026-09-25 09:30:00 +00:00)));
+    assert_eq!(d.received, "Fri, 25 Sep 2026 09:30:04 +0000 (UTC)");
+    assert_eq!(d.message_id, "<CAF7x2Q9@mail.example.com>");
+    assert_eq!(d.attachments, [("report.pdf".to_string(), 5)]);
+    assert!(
+        d.html.as_deref().unwrap_or("").contains("<b>html</b>"),
+        "{:?}",
+        d.html
+    );
+    assert!(d.has_text);
+    assert_eq!(d.size, raw.len());
+}
+
+/// The delivery checks come from the first Authentication-Results header, comments and all
+/// (a `;` inside a comment doesn't split a check), with the identity each one checked.
+#[test]
+fn details_read_the_delivery_checks_and_ses_verdicts() {
+    let d = details(&ses_message());
+    let check = |method: &str, result: &str, detail: &str| Check {
+        method: method.into(),
+        result: result.into(),
+        detail: detail.into(),
+    };
+    assert_eq!(
+        d.checks,
+        [
+            check("spf", "pass", "alice@example.com"),
+            check("dkim", "pass", "example.com"),
+            check("dmarc", "fail", "example.com"),
+        ]
+    );
+    assert_eq!(d.spam_verdict, "PASS");
+    assert_eq!(d.virus_verdict, "PASS");
+}
+
+/// A message that never went through SES has no checks, verdicts or Received time, and says so
+/// by leaving them empty rather than guessing.
+#[test]
+fn details_of_a_plain_message_leave_the_delivery_fields_empty() {
+    let d = details(&fixture("plain-lf.eml"));
+    assert!(d.checks.is_empty(), "{:?}", d.checks);
+    assert_eq!(d.spam_verdict, "");
+    assert_eq!(d.virus_verdict, "");
+    assert_eq!(d.html, None);
+    assert!(d.has_text);
 }

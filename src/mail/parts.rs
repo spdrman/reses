@@ -352,6 +352,13 @@ impl<'x> Parsed<'x> {
             .map_or_else(String::new, |m| headers::addresses(m, name))
     }
 
+    /// The first `name` header's mailboxes as (name, address) pairs.
+    pub(super) fn mailboxes(&self, name: &str) -> Vec<(String, String)> {
+        self.msg
+            .as_ref()
+            .map_or_else(Vec::new, |m| headers::mailboxes(m, name))
+    }
+
     /// The Subject, decoded.
     pub(super) fn subject(&self) -> String {
         self.msg.as_ref().map_or_else(String::new, headers::subject)
@@ -500,6 +507,17 @@ impl<'x> Parsed<'x> {
             text = html_to_text(&text);
         }
         text.replace("\r\n", "\n").trim().to_string()
+    }
+
+    /// Whether the message has a plain text part that isn't an attachment. A message with no headers
+    /// at all is plain text through and through.
+    pub(super) fn has_text_part(&self) -> bool {
+        if self.msg.is_none() {
+            return true;
+        }
+        self.leaves()
+            .into_iter()
+            .any(|p| !is_attachment(p) && content_type(p) == "text/plain")
     }
 
     /// The first HTML part that isn't an attachment, decoded but otherwise as written, for a browser
