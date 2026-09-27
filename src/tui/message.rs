@@ -427,18 +427,42 @@ impl View for MessageScreen {
 
     /// I list the keys the message screen takes.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("↑↓", "scroll"),
-            ("⇧↑↓", "page"),
-            // Short labels, so the row still fits delete and back at the demo's 106 columns.
-            ("h", "html"),
-            ("H", if self.html { "text" } else { "source" }),
+        let mut hints = vec![("↑↓", "scroll"), ("⇧↑↓", "page"), ("h", "html")];
+        // H only shows while it's the way back to the text: its source view is in `?`, and
+        // leaving it out keeps delete on the row at the demo's 106 columns with `?` pinned.
+        if self.html {
+            hints.push(("H", "text"));
+        }
+        hints.extend([
             ("w", "save text"),
             ("a", "save attachments"),
             ("d", "delete"),
             // Last before q: at the demo's width it's the one that gives way, not delete.
             ("o", "mail app"),
             ("q", "back"),
+        ]);
+        hints
+    }
+
+    /// Every key the message screen takes, for the `?` overlay.
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑↓  j k", "scroll a line"),
+            ("⇧↑↓  space b", "scroll a page (pgup pgdn too)"),
+            ("g G  home end", "top or bottom"),
+            (
+                "h",
+                "open the HTML in your browser, as a re:SES reader page",
+            ),
+            ("H", "show the HTML source here, or back to the text"),
+            (
+                "o",
+                "open the message in your mail app, to reply or forward",
+            ),
+            ("w", "save the text into ~/Downloads"),
+            ("a", "save the attachments into ~/Downloads"),
+            ("d", "delete it from S3, once you confirm with y"),
+            ("q  esc", "back to the inbox"),
         ]
     }
 }

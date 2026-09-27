@@ -104,6 +104,8 @@ enum Row {
 
 pub struct BrowserScreen {
     started: bool,
+    /// Where the first listing goes: the bucket list, or a folder when the inbox's Esc opens me (#67).
+    start: Location,
     location: Location,
     buckets: Vec<String>,
     folders: Vec<String>,
@@ -139,6 +141,7 @@ impl BrowserScreen {
     pub fn new() -> Self {
         Self {
             started: false,
+            start: Location::Buckets,
             location: Location::Buckets,
             buckets: Vec::new(),
             folders: Vec::new(),
@@ -775,6 +778,15 @@ impl BrowserScreen {
             ..Self::new()
         }
     }
+
+    /// A browser on `session` that opens in `bucket` at `prefix`: where the inbox's mail is, when
+    /// Esc leaves the inbox. Going up from there climbs to the bucket list as usual (#67).
+    pub fn at_folder(session: Session, bucket: String, prefix: String) -> Self {
+        Self {
+            start: Location::Folder { bucket, prefix },
+            ..Self::with_session(session)
+        }
+    }
 }
 
 impl BrowserScreen {
@@ -861,7 +873,7 @@ impl View for BrowserScreen {
         }
         if !self.started {
             self.started = true;
-            self.go(Location::Buckets, ctx);
+            self.go(self.start.clone(), ctx);
         }
     }
 
@@ -886,16 +898,42 @@ impl View for BrowserScreen {
                 ("r", "reload"),
                 ("esc", "back"),
             ],
+            // Paging comes last here: at 80 columns, with `?` pinned, it's the one that gives way,
+            // not saving the folder as the inbox.
             Location::Folder { .. } => vec![
                 ("enter", "open"),
-                ("⇧↑↓", "page"),
                 ("bksp", "up"),
                 ("/", "filter"),
                 ("s", "search"),
                 ("i", "inbox"),
                 ("esc", "up"),
+                ("⇧↑↓", "page"),
             ],
         }
+    }
+
+    /// Every key the browser takes, for the `?` overlay.
+    fn help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑↓  j k", "move a row"),
+            ("⇧↑↓  pgup pgdn", "move a page"),
+            ("g G  home end", "first or last row"),
+            ("enter  →  l", "open the bucket or folder"),
+            ("bksp  ←  h", "up a folder"),
+            ("/", "filter the rows, esc clears it"),
+            ("s", "search every folder below this one for email"),
+            ("i", "save this folder as the inbox and open it"),
+            ("r", "reload"),
+            (
+                "esc",
+                "up a level; from the bucket list, back to the accounts",
+            ),
+        ]
+    }
+
+    /// While the filter prompt is open, a `?` is part of the filter.
+    fn taking_text(&self) -> bool {
+        self.editing_filter
     }
 }
 
