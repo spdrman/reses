@@ -31,7 +31,7 @@
   export-2026-09.csv                             32 B
   receipt-rule.json                              38 B
 
- enter  open   bksp  up   /  filter   s  search   i  inbox   esc  up
+ enter  open   ⇧↑↓  page   bksp  up   /  filter   s  search   i  inbox   esc  up
 ────────────────────────────────────────────────────────────────────────────────
  ▄▀▄ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
  From                  Subject                                                             Date       Size
@@ -76,7 +76,7 @@ and I'll fold it in before the invite goes out.
 
 3. Hiring
    - One backend role is open, interviews start next week
- ↑↓ pgup pgdn  scroll   h  html   H  source   w  save text   a  save attachments   d  delete   q  back
+ ↑↓  scroll   ⇧↑↓  page   h  html   H  source   w  save text   a  save attachments   d  delete   q  back
 ────────────────────────────────────────────────────────────────────────────────
  ▄▀▄ re:SES  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
 Here's a draft agenda for Thursday's planning call. Shout if I missed anything
@@ -121,7 +121,7 @@ Mei
  Dana Whitfield        Lease renewal for unit 4B                                         Sep 22      984 B
  The Weekly Tinkerer   Issue 118: a soldering station roundup                            Sep 21    1.0 KiB
 
- ↑↓  move   enter  open   d  delete   /  filter   r  refresh   u  accounts   q  quit
+ ↑↓  move   ⇧↑↓  page   enter  open   d  delete   /  filter   r  refresh   u  accounts   q  quit
 ────────────────────────────────────────────────────────────────────────────────
  ▄▀▄ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
  From                  Subject                                                             Date       Size
@@ -136,5 +136,5 @@ Mei
  Dana Whitfield        Lease renewal for unit 4B                                         Sep 22      984 B
  The Weekly Tinkerer   Issue 118: a soldering station roundup                            Sep 21    1.0 KiB
 
- ↑↓  move   enter  open   d  delete   /  filter   r  refresh   u  accounts   q  quit
+ ↑↓  move   ⇧↑↓  page   enter  open   d  delete   /  filter   r  refresh   u  accounts   q  quit
 ────────────────────────────────────────────────────────────────────────────────

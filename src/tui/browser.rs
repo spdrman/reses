@@ -458,6 +458,10 @@ impl BrowserScreen {
             }
             KeyCode::Esc if self.location == Location::Buckets => return Transition::Pop,
             KeyCode::Esc => self.up(ctx),
+            // Shift+arrows page, since a MacBook has no Page Up or Page Down key. They come first, or
+            // the bare arrow arms would move a row at a time.
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => self.move_by(page),
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.move_by(-page),
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::PageDown => self.move_by(page),
@@ -499,6 +503,12 @@ impl BrowserScreen {
                 self.peek_visible(ctx);
             }
             KeyCode::Char('x') => search.stop(),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                search.move_by(search.visible.max(1) as isize)
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                search.move_by(-(search.visible.max(1) as isize))
+            }
             KeyCode::Down | KeyCode::Char('j') => search.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => search.move_by(-1),
             KeyCode::PageDown => search.move_by(search.visible.max(1) as isize),
@@ -878,6 +888,7 @@ impl View for BrowserScreen {
             ],
             Location::Folder { .. } => vec![
                 ("enter", "open"),
+                ("⇧↑↓", "page"),
                 ("bksp", "up"),
                 ("/", "filter"),
                 ("s", "search"),

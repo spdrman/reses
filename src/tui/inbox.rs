@@ -876,6 +876,7 @@ impl View for InboxScreen {
         }
         vec![
             ("↑↓", "move"),
+            ("⇧↑↓", "page"),
             ("enter", "open"),
             ("d", "delete"),
             ("/", "filter"),
@@ -919,6 +920,14 @@ impl InboxScreen {
         self.refresh_view();
         let pos = self.sel_pos;
         match key.code {
+            // Shift+arrows page, since a MacBook has no Page Up or Page Down key. They come first, or
+            // the bare arrow arms would move a row at a time.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.select(pos.saturating_sub(self.page))
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.select(pos + self.page)
+            }
             KeyCode::Up | KeyCode::Char('k') => self.select(pos.saturating_sub(1)),
             KeyCode::Down | KeyCode::Char('j') => self.select(pos + 1),
             KeyCode::PageUp => self.select(pos.saturating_sub(self.page)),
@@ -2216,6 +2225,8 @@ mod tests {
         let after = |app: &mut App, keys: &[KeyEvent]| {
             app.key(key(KeyCode::Home));
             settle(app);
+            // Drawn once first, since the page size is only known after a render.
+            screen(app, 80, 12);
             for k in keys {
                 app.key(*k);
                 settle(app);
@@ -2223,11 +2234,18 @@ mod tests {
             screen(app, 80, 12)
         };
         let paged = after(&mut app, &[key(KeyCode::PageDown)]);
-        assert_ne!(paged, after(&mut app, &[key(KeyCode::Down)]), "a page is more than a row");
+        assert_ne!(
+            paged,
+            after(&mut app, &[key(KeyCode::Down)]),
+            "a page is more than a row"
+        );
         assert_eq!(after(&mut app, &[shifted(KeyCode::Down)]), paged);
         let two_down = [key(KeyCode::PageDown), key(KeyCode::PageDown)];
         let back = after(&mut app, &[two_down[0], two_down[1], key(KeyCode::PageUp)]);
-        assert_eq!(after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]), back);
+        assert_eq!(
+            after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]),
+            back
+        );
         let scr = screen(&mut app, 120, 12);
         assert!(scr.contains("⇧↑↓  page"), "{scr}");
     }

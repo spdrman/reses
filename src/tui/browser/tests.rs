@@ -444,6 +444,8 @@ fn shift_arrows_page_a_folder_like_the_page_keys() {
     // Each run starts from the top, so the screens can be compared like for like.
     let after = |app: &mut App, keys: &[KeyEvent]| {
         press(app, KeyCode::Home);
+        // Drawn once first, since the page size is only known after a render.
+        screen(app, 100, 20);
         for k in keys {
             app.key(*k);
             settle(app);
@@ -451,11 +453,18 @@ fn shift_arrows_page_a_folder_like_the_page_keys() {
         screen(app, 100, 20)
     };
     let paged = after(&mut app, &[key(KeyCode::PageDown)]);
-    assert_ne!(paged, after(&mut app, &[key(KeyCode::Down)]), "a page is more than a row");
+    assert_ne!(
+        paged,
+        after(&mut app, &[key(KeyCode::Down)]),
+        "a page is more than a row"
+    );
     assert_eq!(after(&mut app, &[shifted(KeyCode::Down)]), paged);
     let two_down = [key(KeyCode::PageDown), key(KeyCode::PageDown)];
     let back = after(&mut app, &[two_down[0], two_down[1], key(KeyCode::PageUp)]);
-    assert_eq!(after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]), back);
+    assert_eq!(
+        after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]),
+        back
+    );
     assert!(screen(&mut app, 140, 20).contains("⇧↑↓  page"));
 }
 
@@ -855,7 +864,7 @@ fn cell_col(line: &str, needle: &str) -> usize {
 fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
     let dir = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
-    let wide = "åä¿¡ã¡ã¼ã«ä¿å­ãã©ã«ãã®ä¸­ã«ããé·ãååã®ãã¡ã¤ã«ã§ã";
+    let wide = "受信メール保存フォルダの中にある長い名前のファイルです";
     s.put("bk", "a-plain-ascii-name", TEXT);
     s.put("bk", wide, TEXT);
     let spy = Spy::new(s);
@@ -864,7 +873,7 @@ fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
     let width = 50;
     let screen_text = screen(&mut app, width, 12);
     let ascii = line_with(&screen_text, "a-plain-ascii");
-    let cjk = line_with(&screen_text, "å");
+    let cjk = line_with(&screen_text, "受");
     assert!(
         cjk.contains("37 B"),
         "the size fell off the row:\n{screen_text}"
@@ -883,7 +892,7 @@ fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
 fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
     let dir = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
-    let wide = "åä¿¡ã¡ã¼ã«ä¿å­ãã©ã«ãã®ä¸­ã«ããé·ãååã®ãã©ã«ãã§ã/";
+    let wide = "受信メール保存フォルダの中にある長い名前のフォルダです/";
     s.put("bk", &format!("{wide}m1"), EMAIL);
     s.put("bk", "plain/m1", EMAIL);
     let spy = Spy::new(s);
@@ -891,7 +900,7 @@ fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
     open(&mut app, "bk");
     press(&mut app, KeyCode::Char('s'));
     let screen_text = screen(&mut app, 50, 12);
-    let cjk = line_with(&screen_text, "å");
+    let cjk = line_with(&screen_text, "受");
     assert!(
         cjk.contains("1 email"),
         "the count fell off the row:\n{screen_text}"
@@ -1092,7 +1101,7 @@ fn a_wide_name_that_fits_is_shown_whole() {
     let dir = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
     // Ten characters, twenty columns: the column must be sized in columns to hold it.
-    let wide = "åä¿¡ã¡ã¼ã«ä¿å­ãã©ã«ã";
+    let wide = "受信メール保存フォルダ";
     s.put("bk", "a", TEXT);
     s.put("bk", wide, EMAIL);
     s.put("bk", &format!("{wide}/m1"), EMAIL);

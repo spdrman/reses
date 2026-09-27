@@ -297,9 +297,17 @@ impl View for MessageScreen {
             return Transition::None;
         }
         match key.code {
+            // Shift+arrows page, since a MacBook has no Page Up or Page Down key. They come first, or the
+            // bare arrow arms below would take them a line at a time.
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.scroll(|p, t| p.up(t, p.page()))
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.scroll(|p, t| p.down(t, p.page()))
+            }
             KeyCode::Up | KeyCode::Char('k') => self.scroll(|p, t| p.up(t, 1)),
             KeyCode::Down | KeyCode::Char('j') => self.scroll(|p, t| p.down(t, 1)),
-            KeyCode::PageUp => self.scroll(|p, t| p.up(t, p.page())),
+            KeyCode::PageUp | KeyCode::Char('b') => self.scroll(|p, t| p.up(t, p.page())),
             KeyCode::PageDown | KeyCode::Char(' ') => self.scroll(|p, t| p.down(t, p.page())),
             KeyCode::Home | KeyCode::Char('g') => self.scroll(|p, _| p.home()),
             KeyCode::End | KeyCode::Char('G') => self.scroll(|p, t| p.end(t)),
@@ -393,7 +401,8 @@ impl View for MessageScreen {
     /// I list the keys the message screen takes.
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         vec![
-            ("↑↓ pgup pgdn", "scroll"),
+            ("↑↓", "scroll"),
+            ("⇧↑↓", "page"),
             // Short labels, so the row still fits delete and back at the demo's 106 columns.
             ("h", "html"),
             ("H", if self.html { "text" } else { "source" }),
@@ -649,19 +658,34 @@ attached words\r\n\
         // Each run starts from the top, so the screens can be compared like for like.
         let after = |app: &mut App, keys: &[KeyEvent]| {
             app.key(key(KeyCode::Home));
+            // Drawn once first, since the page size is only known after a render.
+            screen(app, 80, 20);
             for k in keys {
                 app.key(*k);
             }
             screen(app, 80, 20)
         };
         let paged = after(&mut app, &[key(KeyCode::PageDown)]);
-        assert_ne!(paged, after(&mut app, &[key(KeyCode::Down)]), "a page is more than a line");
+        assert_ne!(
+            paged,
+            after(&mut app, &[key(KeyCode::Down)]),
+            "a page is more than a line"
+        );
         assert_eq!(after(&mut app, &[shifted(KeyCode::Down)]), paged);
         assert_eq!(after(&mut app, &[key(KeyCode::Char(' '))]), paged);
         let two_down = [key(KeyCode::PageDown), key(KeyCode::PageDown)];
         let back = after(&mut app, &[two_down[0], two_down[1], key(KeyCode::PageUp)]);
-        assert_eq!(after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]), back);
-        assert_eq!(after(&mut app, &[two_down[0], two_down[1], key(KeyCode::Char('b'))]), back);
+        assert_eq!(
+            after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]),
+            back
+        );
+        assert_eq!(
+            after(
+                &mut app,
+                &[two_down[0], two_down[1], key(KeyCode::Char('b'))]
+            ),
+            back
+        );
     }
 
     /// I check the hints name keys a MacBook has: Shift+arrows for paging, not Page Up/Down.
