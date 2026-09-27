@@ -200,10 +200,10 @@ fn missing_inputs_fail() {
 #[test]
 fn a_header_without_the_logo_fails() {
     // The header as it was before the logo: " reses  Accounts".
-    let frames = good().replace(" ■ re:SES  ", " reses  ");
+    let frames = good().replace(" ▄▀▄ re:SES  ", " reses  ");
     assert_ne!(frames, good(), "the fixture has no logo to take out");
     assert_fails(&frames, &messages(), "FAIL  the accounts screen");
     // Losing it on a later screen fails too, at that screen.
-    let frames = good().replace(" ■ re:SES  Message", " reses  Message");
+    let frames = good().replace(" ▄▀▄ re:SES  Message", " reses  Message");
     assert_fails(&frames, &messages(), "FAIL  the opened message");
 }

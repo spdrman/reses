@@ -90,8 +90,8 @@ done <"$messages"
 
 header='^ *From +Subject +Date +Size *$'
 # The header bar opens with the logo. vhs records in xterm.js, which gets the styled-text
-# wordmark: a cube mark, then "re:SES", then the screen's title.
-logo='^ ■ re:SES  '
+# wordmark: three squares stacked like the cubes (▄▀▄), then "re:SES", then the screen's title.
+logo='^ ▄▀▄ re:SES  '
 
 step "the accounts screen" \
   "${logo}Accounts" \

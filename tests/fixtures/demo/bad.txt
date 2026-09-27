@@ -1,4 +1,4 @@
- ■ re:SES  Accounts
+ ▄▀▄ re:SES  Accounts
  AWS profiles in /home/demo/.aws/credentials
 
 > default       us-east-1  resesadmin
@@ -6,7 +6,7 @@
 
  enter  connect   a  add   d  make default   r  reload   q  quit
 ────────────────────────────────────────────────────────────────────────────────
- ■ re:SES  Browse S3  default (us-east-1)
+ ▄▀▄ re:SES  Browse S3  default (us-east-1)
  All buckets
  3 buckets
   backups-2026
@@ -15,7 +15,7 @@
 
  enter  open   /  filter   r  reload   esc  back
 ────────────────────────────────────────────────────────────────────────────────
- ■ re:SES  Browse S3  default (us-east-1)
+ ▄▀▄ re:SES  Browse S3  default (us-east-1)
  mail-inbound/inbound/
  0 folders · 12 objects · 10 emails
 > 0e2g4i6k8m0o2q4s6u8w0y2a4c6e8g0i2k4m6o8q      990 B  email
@@ -33,7 +33,7 @@
 
  enter  open   bksp  up   /  filter   s  search   i  inbox   esc  up
 ────────────────────────────────────────────────────────────────────────────────
- ■ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
+ ▄▀▄ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
  From                  Subject                                                             Date       Size
  Sam Ortiz             Welcome aboard! Notes for your first week                          04:45      990 B
  Mei Chen              Draft agenda for Thursday's planning call                          02:10    1.7 KiB
@@ -48,7 +48,7 @@
 
  saved mail-inbound/inbound/ as the inbox
 ────────────────────────────────────────────────────────────────────────────────
- ■ re:SES  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
+ ▄▀▄ re:SES  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
 From: Mei Chen <mei.chen@example.com>
 Reply-To:
 To: mail@example.org
@@ -78,7 +78,7 @@ and I'll fold it in before the invite goes out.
    - One backend role is open, interviews start next week
  ↑↓ pgup pgdn  scroll   h  html   w  save text   a  save attachments   d  delete   q  back
 ────────────────────────────────────────────────────────────────────────────────
- ■ re:SES  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
+ ▄▀▄ re:SES  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
 Here's a draft agenda for Thursday's planning call. Shout if I missed anything
 and I'll fold it in before the invite goes out.
 
@@ -108,7 +108,7 @@ Cheers,
 Mei
  Could not fetch inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o: connection reset
 ────────────────────────────────────────────────────────────────────────────────
- ■ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
+ ▄▀▄ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
  From                  Subject                                                             Date       Size
  Sam Ortiz             Welcome aboard! Notes for your first week                          04:45      990 B
  Mei Chen              Draft agenda for Thursday's planning call                          02:10    1.7 KiB
@@ -123,7 +123,7 @@ Mei
 
  ↑↓  move   enter  open   d  delete   /  filter   r  refresh   u  accounts   q  quit
 ────────────────────────────────────────────────────────────────────────────────
- ■ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
+ ▄▀▄ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
  From                  Subject                                                             Date       Size
  Sam Ortiz             Welcome aboard! Notes for your first week                          04:45      990 B
  Mei Chen              Draft agenda for Thursday's planning call                          02:10    1.7 KiB

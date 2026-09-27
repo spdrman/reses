@@ -96,7 +96,7 @@ fn text_mode_puts_the_wordmark_at_the_start_of_the_bar() {
         let scr = screen(&mut app, 80, 10);
         let header = scr.lines().next().unwrap();
         assert!(
-            header.starts_with(" ■ re:SES  Inbox s3://mail/inbound/"),
+            header.starts_with(" ▄▀▄ re:SES  Inbox s3://mail/inbound/"),
             "{bg:?}: {header:?}"
         );
         // One row of header, as before, so every screen keeps its body height.
@@ -104,27 +104,37 @@ fn text_mode_puts_the_wordmark_at_the_start_of_the_bar() {
     }
 }
 
-/// I check the text wordmark picks out the cube and colon in logo blue and only SES in bold, like
-/// the image does.
+/// I check the text wordmark draws the three cubes as a pyramid of squares (`▄▀▄`: one on top, two
+/// below) in the logo's blues, picks out the colon in logo blue, and bolds only SES, like the
+/// image does.
 #[test]
 fn text_mode_styles_the_wordmark_like_the_logo() {
     let (mut app, _area, _d) = app(Brand::text());
     let buf = buffer(&mut app, 80, 10);
     let at = |x: u16| buf[(x, 0)].clone();
-    // " ■ re:SES": the cube at 1, "re" at 3-4, ":" at 5, "SES" at 6-8.
-    assert_eq!(at(1).symbol(), "■");
-    assert_eq!(at(5).symbol(), ":");
-    for x in [1, 5] {
-        assert_eq!(at(x).bg, LOGO_BLUE, "col {x}");
+    // " ▄▀▄ re:SES": the squares at 1-3, "re" at 5-6, ":" at 7, "SES" at 8-10. A half-cell block
+    // is about square, so the lower halves at 1 and 3 are the bottom pair and the upper half at 2
+    // sits over the gap between them. Each square takes one of the logo's blues.
+    let squares = [
+        (1, "▄", Color::Rgb(0x2A, 0x8F, 0xE9)),
+        (2, "▀", Color::Rgb(0x2E, 0xA8, 0xF2)),
+        (3, "▄", Color::Rgb(0x1D, 0x78, 0xDE)),
+    ];
+    for (x, symbol, blue) in squares {
+        assert_eq!(at(x).symbol(), symbol, "col {x}");
+        assert_eq!(at(x).bg, blue, "col {x}");
         assert!(at(x).modifier.contains(Modifier::REVERSED), "col {x}");
     }
-    for x in [3, 4] {
+    assert_eq!(at(7).symbol(), ":");
+    assert_eq!(at(7).bg, LOGO_BLUE);
+    assert!(at(7).modifier.contains(Modifier::REVERSED));
+    for x in [5, 6] {
         assert!(
             !at(x).modifier.contains(Modifier::BOLD),
             "re at {x} is bold"
         );
     }
-    for x in [6, 7, 8] {
+    for x in [8, 9, 10] {
         assert!(
             at(x).modifier.contains(Modifier::BOLD),
             "SES at {x} is not bold"
@@ -209,7 +219,7 @@ fn a_terminal_without_an_image_protocol_gets_the_text_wordmark() {
     let brand = Brand::with_picker(picker(ProtocolType::Halfblocks), Background::Dark);
     assert_eq!(brand.variant(), None);
     let (mut app, area, _d) = app(brand);
-    assert!(screen(&mut app, 100, 20).starts_with(" ■ re:SES"));
+    assert!(screen(&mut app, 100, 20).starts_with(" ▄▀▄ re:SES"));
     assert_eq!(area.get().y, 1);
 }
 
@@ -228,7 +238,7 @@ fn a_small_terminal_falls_back_to_the_text_wordmark() {
             "{w}x{h} drew the image"
         );
         assert!(
-            row(&buf, 0).starts_with(" ■ re:SES"),
+            row(&buf, 0).starts_with(" ▄▀▄ re:SES"),
             "{w}x{h}: {:?}",
             row(&buf, 0)
         );
@@ -237,8 +247,9 @@ fn a_small_terminal_falls_back_to_the_text_wordmark() {
     // Narrow enough that the title gets cut, the wordmark still shows whole.
     let (mut app, _area, _d) = app(Brand::text());
     let buf = buffer(&mut app, 12, 6);
-    assert!(row(&buf, 0).starts_with(" ■ re:SES "), "{:?}", row(&buf, 0));
-    assert_eq!(cols_of(&buf, 0, "■"), [1]);
+    assert!(row(&buf, 0).starts_with(" ▄▀▄ re:SES "), "{:?}", row(&buf, 0));
+    assert_eq!(cols_of(&buf, 0, "▄"), [1, 3]);
+    assert_eq!(cols_of(&buf, 0, "▀"), [2]);
 }
 
 /// I check COLORFGBG maps to dark or light, and that anything missing or garbled falls back to
@@ -279,7 +290,7 @@ fn text_header_frame() {
     let (mut app, _area, _d) = app(Brand::text());
     let scr = screen(&mut app, 80, 4);
     println!("{scr}");
-    assert!(scr.lines().next().unwrap().starts_with(" ■ re:SES  Inbox"));
+    assert!(scr.lines().next().unwrap().starts_with(" ▄▀▄ re:SES  Inbox"));
 }
 
 /// I build an `Env` from name and value pairs, leaving every other variable unset.
