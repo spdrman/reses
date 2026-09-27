@@ -20,6 +20,7 @@ use super::text::{clean, escape, human_size, width as text_width};
 use super::{Ctx, Session, Transition, View};
 use crate::mail;
 use crate::s3::S3Error;
+use time::OffsetDateTime;
 
 mod pager;
 use pager::Pager;
@@ -133,23 +134,48 @@ impl MessageScreen {
         Transition::Pop
     }
 
-    /// I open the HTML part in the default browser, as a guarded page of its own (see
+    /// I open the HTML part in the default browser, wrapped in the re:SES reader page (see
     /// [`page`]), and leave the text part on screen. A message with no HTML part, or a browser
     /// that won't start, gets a status line saying so instead.
     fn open_html(&self, ctx: &mut Ctx) {
         let Some(message) = &self.message else {
             return;
         };
-        let Some(html) = mail::html_part(&message.raw) else {
+        let details = mail::details(&message.raw);
+        if details.html.is_none() {
             ctx.info("This message has no HTML part.");
             return;
+        }
+        let location = format!("s3://{}/{}", self.bucket, self.key);
+        let now = OffsetDateTime::now_utc();
+        let copy = page::Copy {
+            location: &location,
+            opened: now.checked_to_offset(ctx.local_offset).unwrap_or(now),
         };
+        let html = page::reader(&details, &copy);
         // Written first, then handed over: the browser reads the file after I've moved on.
-        match page::write(&ctx.page_dir, &html).and_then(|path| (ctx.open_page)(&path)) {
+        match page::write(&ctx.page_dir, html.as_bytes(), ".html")
+            .and_then(|path| (ctx.open_file)(&path))
+        {
             Ok(()) => ctx.info("Opened the HTML part in your browser."),
             Err(e) => ctx.error(format!(
                 "Couldn't open the HTML part: {e}. H shows the HTML source here instead."
             )),
+        }
+    }
+
+    /// I hand the message itself, byte for byte, to the default mail app as a private `.eml` copy, so
+    /// its own Reply, Reply all and Forward work, with threading, quoting and attachments that a
+    /// `mailto:` link can't carry.
+    fn open_in_mail(&self, ctx: &mut Ctx) {
+        let Some(message) = &self.message else {
+            return;
+        };
+        match page::write(&ctx.page_dir, &message.raw, ".eml")
+            .and_then(|path| (ctx.open_file)(&path))
+        {
+            Ok(()) => ctx.info("Opened the message in your mail app."),
+            Err(e) => ctx.error(format!("Couldn't open the message in your mail app: {e}")),
         }
     }
 
@@ -322,6 +348,7 @@ impl View for MessageScreen {
                     "Showing the text part."
                 });
             }
+            KeyCode::Char('o') if self.message.is_some() => self.open_in_mail(ctx),
             KeyCode::Char('w') => self.write_text(ctx),
             KeyCode::Char('a') => self.save_attachments(ctx),
             KeyCode::Char('d') if key.modifiers == KeyModifiers::NONE => self.confirm = true,
@@ -409,6 +436,8 @@ impl View for MessageScreen {
             ("w", "save text"),
             ("a", "save attachments"),
             ("d", "delete"),
+            // Last before q: at the demo's width it's the one that gives way, not delete.
+            ("o", "mail app"),
             ("q", "back"),
         ]
     }
@@ -702,7 +731,7 @@ attached words\r\n\
     fn recording(app: &mut App) -> Arc<Mutex<Vec<PathBuf>>> {
         let opened = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&opened);
-        app.ctx.open_page = Arc::new(move |path: &Path| {
+        app.ctx.open_file = Arc::new(move |path: &Path| {
             seen.lock().unwrap().push(path.to_path_buf());
             Ok(())
         });
@@ -723,12 +752,59 @@ attached words\r\n\
         let page = fs::read_to_string(&opened[0]).unwrap();
         assert!(page.contains("<b>html</b>"), "{page}");
         assert!(page.contains("Content-Security-Policy"), "{page}");
+        // Wrapped in the reader: the sender up top, and where this copy came from below.
+        assert!(page.contains("alice@example.com"), "{page}");
+        assert!(page.contains("About this message"), "{page}");
+        assert!(page.contains(&format!("s3://{BUCKET}/{KEY}")), "{page}");
         let scr = screen(&mut app, 80, 20);
         assert!(scr.contains("the plain version"), "{scr}");
         assert!(
             scr.contains("Opened the HTML part in your browser"),
             "{scr}"
         );
+    }
+
+    /// I check `o` hands the message itself, byte for byte, to the mail app as a private `.eml`
+    /// file, so its own Reply, Reply all and Forward work with threading and attachments.
+    #[test]
+    fn o_opens_the_message_in_the_mail_app() {
+        let out = tempfile::tempdir().unwrap();
+        let raw = multipart();
+        let (mut app, _d) = open(store_with(&raw), out.path());
+        let opened = recording(&mut app);
+        app.key(key(KeyCode::Char('o')));
+        let opened = opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 1, "{opened:?}");
+        assert_eq!(opened[0].extension().unwrap(), "eml");
+        assert_eq!(fs::read(&opened[0]).unwrap(), raw);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&opened[0]).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let scr = screen(&mut app, 100, 20);
+        assert!(scr.contains("Opened the message in your mail app"), "{scr}");
+    }
+
+    /// I check a mail app that won't start is an error on the status line, not a silent no-op.
+    #[test]
+    fn a_failed_mail_app_open_is_an_error() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&multipart()), out.path());
+        app.ctx.open_file = Arc::new(|_: &Path| Err(std::io::Error::other("no mail app")));
+        app.key(key(KeyCode::Char('o')));
+        let scr = screen(&mut app, 100, 20);
+        assert!(scr.contains("no mail app"), "{scr}");
+    }
+
+    /// I check the hints list `o`, so it's findable without the README.
+    #[test]
+    fn the_hints_list_the_mail_app_key() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&multipart()), out.path());
+        let scr = screen(&mut app, 160, 20);
+        assert!(scr.contains("o  mail app"), "{scr}");
     }
 
     /// I check a message with no HTML part says so and opens nothing, rather than an empty page.
@@ -749,7 +825,7 @@ attached words\r\n\
     fn a_failed_open_is_an_error_that_points_at_the_source_view() {
         let out = tempfile::tempdir().unwrap();
         let (mut app, _d) = open(store_with(&multipart()), out.path());
-        app.ctx.open_page = Arc::new(|_: &Path| Err(std::io::Error::other("no browser here")));
+        app.ctx.open_file = Arc::new(|_: &Path| Err(std::io::Error::other("no browser here")));
         app.key(key(KeyCode::Char('h')));
         let scr = screen(&mut app, 100, 20);
         assert!(scr.contains("no browser here"), "{scr}");
@@ -778,7 +854,7 @@ attached words\r\n\
     fn the_test_context_never_opens_a_browser() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = testing::ctx(dir.path(), None);
-        assert!((ctx.open_page)(Path::new("/nowhere.html")).is_err());
+        assert!((ctx.open_file)(Path::new("/nowhere.html")).is_err());
     }
 
     /// I check `w` writes exactly the decoded text, names the file on the status line, and never
