@@ -10,11 +10,12 @@ pub(crate) mod browser;
 pub(crate) mod inbox;
 pub(crate) mod jobs;
 pub(crate) mod message;
+pub(crate) mod page;
 pub mod saved;
 pub mod text;
 
 use std::panic::PanicHookInfo;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::ThreadId;
 use std::time::Duration;
@@ -152,8 +153,16 @@ pub(crate) struct Ctx {
     /// How the header draws the logo: the real image when the terminal can show one, the
     /// styled-text wordmark otherwise. Detected once at startup.
     pub brand: brand::Brand,
+    /// Shows a page in the browser. The real one hands the file to the system's default browser;
+    /// tests swap in a recorder, so no test ever starts a browser.
+    pub open_page: OpenPage,
+    /// Where pages for the browser are written. The system temp dir, so the OS clears them.
+    pub page_dir: PathBuf,
     jobs: Jobs,
 }
+
+/// Something that shows a written page, given its path.
+pub(crate) type OpenPage = Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
 
 impl Ctx {
     /// I build the shared context with no session, no status, UTC for dates and the text logo.
@@ -167,6 +176,8 @@ impl Ctx {
             status: None,
             local_offset: UtcOffset::UTC,
             brand: brand::Brand::text(),
+            open_page: Arc::new(|path: &Path| open::that_detached(path)),
+            page_dir: std::env::temp_dir(),
             jobs,
         }
     }
@@ -673,6 +684,15 @@ pub(crate) mod testing {
             dir.join("credentials"),
             Jobs::inline(),
         );
+        // No test may start a real browser: the default refuses, and a test that wants to see what
+        // would open swaps in its own recorder. Pages go under the test's own dir.
+        ctx.open_page = Arc::new(|path: &Path| {
+            Err(std::io::Error::other(format!(
+                "tests never open a browser (asked for {})",
+                path.display()
+            )))
+        });
+        ctx.page_dir = dir.join("pages");
         if let Some(store) = store {
             ctx.session = Some(Session {
                 profile: Profile {

@@ -471,8 +471,9 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use std::sync::Arc;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
 
     use ratatui::crossterm::event::KeyCode;
 
@@ -614,19 +615,84 @@ attached words\r\n\
         assert!(scr.contains("END"), "{scr}");
     }
 
-    /// I check `h` switches between the plain and HTML parts and back again.
+    /// I stand in for the browser: every page the screen asks to open is recorded, not shown.
+    fn recording(app: &mut App) -> Arc<Mutex<Vec<PathBuf>>> {
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&opened);
+        app.ctx.open_page = Arc::new(move |path: &Path| {
+            seen.lock().unwrap().push(path.to_path_buf());
+            Ok(())
+        });
+        opened
+    }
+
+    /// I check `h` opens the HTML part in the browser as a guarded page of its own, and leaves
+    /// the text part on screen.
     #[test]
-    fn h_toggles_the_html_view() {
+    fn h_opens_the_html_part_in_the_browser() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&multipart()), out.path());
+        let opened = recording(&mut app);
+        app.key(key(KeyCode::Char('h')));
+        let opened = opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 1, "{opened:?}");
+        assert_eq!(opened[0].extension().unwrap(), "html");
+        let page = fs::read_to_string(&opened[0]).unwrap();
+        assert!(page.contains("<b>html</b>"), "{page}");
+        assert!(page.contains("Content-Security-Policy"), "{page}");
+        let scr = screen(&mut app, 80, 20);
+        assert!(scr.contains("the plain version"), "{scr}");
+        assert!(scr.contains("Opened the HTML part in your browser"), "{scr}");
+    }
+
+    /// I check a message with no HTML part says so and opens nothing, rather than an empty page.
+    #[test]
+    fn h_without_an_html_part_says_so() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&long_message()), out.path());
+        let opened = recording(&mut app);
+        app.key(key(KeyCode::Char('h')));
+        assert!(opened.lock().unwrap().is_empty());
+        let scr = screen(&mut app, 80, 20);
+        assert!(scr.contains("This message has no HTML part"), "{scr}");
+    }
+
+    /// I check a browser that can't start is an error on the status line, and that it points at
+    /// `H`, the source view that works without one.
+    #[test]
+    fn a_failed_open_is_an_error_that_points_at_the_source_view() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&multipart()), out.path());
+        app.ctx.open_page = Arc::new(|_: &Path| Err(std::io::Error::other("no browser here")));
+        app.key(key(KeyCode::Char('h')));
+        let scr = screen(&mut app, 100, 20);
+        assert!(scr.contains("no browser here"), "{scr}");
+        assert!(scr.contains("H shows the HTML source"), "{scr}");
+    }
+
+    /// I check `H` still switches between the plain part and the HTML source in the terminal,
+    /// for when there's no browser to open.
+    #[test]
+    fn capital_h_toggles_the_html_source() {
         let out = tempfile::tempdir().unwrap();
         let (mut app, _d) = open(store_with(&multipart()), out.path());
         let scr = screen(&mut app, 80, 20);
         assert!(scr.contains("the plain version"), "{scr}");
-        app.key(key(KeyCode::Char('h')));
+        app.key(key(KeyCode::Char('H')));
         let scr = screen(&mut app, 80, 20);
         assert!(scr.contains("<b>html</b>"), "{scr}");
         assert!(!scr.contains("the plain version"), "{scr}");
-        app.key(key(KeyCode::Char('h')));
+        app.key(key(KeyCode::Char('H')));
         assert!(screen(&mut app, 80, 20).contains("the plain version"));
+    }
+
+    /// I check the test context itself refuses to open a browser, so a test that forgets its
+    /// recorder fails instead of popping one up.
+    #[test]
+    fn the_test_context_never_opens_a_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = testing::ctx(dir.path(), None);
+        assert!((ctx.open_page)(Path::new("/nowhere.html")).is_err());
     }
 
     /// I check `w` writes exactly the decoded text, names the file on the status line, and never

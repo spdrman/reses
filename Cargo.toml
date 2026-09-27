@@ -28,6 +28,8 @@ html2text = "0.17.1"
 # Both are pure Rust and only add build time; I accept that rather than patch the dependency.
 image = { version = "0.25", default-features = false, features = ["png"] }
 mail-parser = { version = "0.11", features = ["full_encoding"] }
+# Opens a message's HTML part in the default browser (open on macOS, xdg-open and friends on Linux).
+open = "5"
 # The profile loader is async but never waits when it reads from memory, so a minimal
 # executor is all it needs.
 pollster = "0.4"
