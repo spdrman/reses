@@ -719,6 +719,14 @@ pub(crate) mod testing {
         }
     }
 
+    /// I build a key press with Shift held, the way a Mac sends Shift+↑ for paging.
+    pub fn shifted(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            modifiers: KeyModifiers::SHIFT,
+            ..key(code)
+        }
+    }
+
     /// I type `s` one character at a time, letting the jobs settle after each key.
     pub fn chars(app: &mut App, s: &str) {
         for c in s.chars() {

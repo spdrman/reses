@@ -12,13 +12,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::BrowserScreen;
 use crate::aws_profile::Profile;
 use crate::config::{AppConfig, Inbox};
 use crate::s3::{Bucket, Listing, MemoryStore, ObjectInfo, S3Error, Store};
-use crate::tui::testing::{self, chars, key, screen, settle};
+use crate::tui::testing::{self, chars, key, screen, settle, shifted};
 use crate::tui::{App, Session, Status};
 
 const EMAIL: &[u8] = b"Return-Path: <sender@example.com>\r\n\
@@ -427,6 +427,45 @@ fn a_huge_folder_peeks_only_what_is_visible() {
     press(&mut app, KeyCode::PageUp);
     let s = screen(&mut app, 100, 30);
     assert!(!selected_row(&s).contains("obj-04999"), "{s}");
+}
+
+/// I check Shift+↓ and Shift+↑ move the selection a page in a folder, exactly like Page Down and
+/// Page Up, and that the hints say so, so a MacBook keyboard pages without fn.
+#[test]
+fn shift_arrows_page_a_folder_like_the_page_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    for i in 0..200 {
+        s.put("bk", &format!("obj-{i:05}"), TEXT);
+    }
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    // Each run starts from the top, so the screens can be compared like for like.
+    let after = |app: &mut App, keys: &[KeyEvent]| {
+        press(app, KeyCode::Home);
+        // Drawn once first, since the page size is only known after a render.
+        screen(app, 100, 20);
+        for k in keys {
+            app.key(*k);
+            settle(app);
+        }
+        screen(app, 100, 20)
+    };
+    let paged = after(&mut app, &[key(KeyCode::PageDown)]);
+    assert_ne!(
+        paged,
+        after(&mut app, &[key(KeyCode::Down)]),
+        "a page is more than a row"
+    );
+    assert_eq!(after(&mut app, &[shifted(KeyCode::Down)]), paged);
+    let two_down = [key(KeyCode::PageDown), key(KeyCode::PageDown)];
+    let back = after(&mut app, &[two_down[0], two_down[1], key(KeyCode::PageUp)]);
+    assert_eq!(
+        after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]),
+        back
+    );
+    assert!(screen(&mut app, 140, 20).contains("⇧↑↓  page"));
 }
 
 // ---- email marks ----
