@@ -18,12 +18,33 @@ use std::path::{Path, PathBuf};
 
 /// What I put in front of every page: the charset, since the HTML part was decoded to UTF-8,
 /// and the policy that stops the page fetching or running anything.
-pub(crate) const GUARD: &str = "";
+pub(crate) const GUARD: &str = concat!(
+    "<meta charset=\"utf-8\">",
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"",
+    "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; ",
+    "form-action 'none'; base-uri 'none'",
+    "\">",
+);
 
 /// I return `html` with [`GUARD`] in front of it, after a leading doctype if there is one, so
 /// the page doesn't drop into quirks mode.
 pub(crate) fn guarded(html: &str) -> String {
-    html.to_string()
+    // A doctype has to stay the first thing on the page, so the guard goes right after one.
+    let lead = html.len() - html.trim_start().len();
+    let rest = &html[lead..];
+    let at = if rest
+        .get(..9)
+        .is_some_and(|s| s.eq_ignore_ascii_case("<!doctype"))
+    {
+        rest.find('>').map_or(0, |end| lead + end + 1)
+    } else {
+        0
+    };
+    let mut page = String::with_capacity(html.len() + GUARD.len());
+    page.push_str(&html[..at]);
+    page.push_str(GUARD);
+    page.push_str(&html[at..]);
+    page
 }
 
 /// I write `html`, guarded, to a new `.html` file in `dir` that only the user can read, and
@@ -82,7 +103,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write(&dir.path().join("pages"), "<b>hi</b>").unwrap();
         assert_eq!(path.extension().unwrap(), "html");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), guarded("<b>hi</b>"));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            guarded("<b>hi</b>")
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

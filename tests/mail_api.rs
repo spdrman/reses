@@ -10,7 +10,9 @@
 use std::fs;
 use std::path::Path;
 
-use reses::mail::{looks_like_email, save_attachments, save_attachments_report, summarize};
+use reses::mail::{
+    html_part, looks_like_email, save_attachments, save_attachments_report, summarize,
+};
 use time::macros::datetime;
 
 /// A mail fixture's bytes.
@@ -469,4 +471,35 @@ fn bcc_leaves_out_visible_recipients_whatever_their_case() {
     let out = reses::mail::format_message(&raw, false);
     let bcc: Vec<&str> = out.lines().filter(|l| l.starts_with("Bcc:")).collect();
     assert_eq!(bcc, ["Bcc: hidden@example.net"], "{out}");
+}
+
+/// The HTML part comes back decoded but otherwise as written, style block and all, for the
+/// browser to render. A message with only a text part has none.
+#[test]
+fn html_part_is_the_html_body_as_written() {
+    let html = html_part(&fixture("alternative.eml")).expect("alternative.eml has an HTML part");
+    assert!(html.contains("<style>p { color: red; }</style>"), "{html}");
+    assert_eq!(html_part(&fixture("base64-body.eml")), None);
+}
+
+/// An HTML file sent as an attachment isn't the message's HTML part, so it never opens in the
+/// browser in place of the body.
+#[test]
+fn an_attached_html_file_is_not_the_html_part() {
+    let raw = b"From: a@example.com\r\n\
+Subject: report\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"B\"\r\n\
+\r\n\
+--B\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+see attached\r\n\
+--B\r\n\
+Content-Type: text/html; name=\"report.html\"\r\n\
+Content-Disposition: attachment; filename=\"report.html\"\r\n\
+\r\n\
+<p>attached</p>\r\n\
+--B--\r\n";
+    assert_eq!(html_part(raw), None);
 }

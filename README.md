@@ -69,7 +69,7 @@ No file or path is needed.
 2. **Find the mail.** Browse buckets and folders. Objects that are stored email get marked as you scroll, and `s` searches down from the current folder for the folders that hold email.
 3. **Save the inbox.** `i` saves the current bucket and folder. From then on, `reses` opens straight into it.
 
-The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `u` goes back to the accounts. In a message, `h` switches to the HTML part, `w` saves the text and `a` saves the attachments, both into `~/Downloads`.
+The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `u` goes back to the accounts. In a message, `h` opens the HTML part in your default browser, `H` shows its source right there instead (handy over ssh), `w` saves the text and `a` saves the attachments, both into `~/Downloads`. The browser gets the HTML with a Content-Security-Policy on top, so it can't run scripts or load remote images, and tracking pixels never fire.
 
 Settings live in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
 

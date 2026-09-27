@@ -14,6 +14,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use super::inbox::{Handoff, display_from, render_confirm};
 use super::jobs::{Decoded, Done, Generation, Job, JobId, Outcome};
+use super::page;
 use super::saved;
 use super::text::{clean, escape, human_size, width as text_width};
 use super::{Ctx, Session, Transition, View};
@@ -130,6 +131,26 @@ impl MessageScreen {
             handoff.borrow_mut().insert(id);
         }
         Transition::Pop
+    }
+
+    /// I open the HTML part in the default browser, as a guarded page of its own (see
+    /// [`page`]), and leave the text part on screen. A message with no HTML part, or a browser
+    /// that won't start, gets a status line saying so instead.
+    fn open_html(&self, ctx: &mut Ctx) {
+        let Some(message) = &self.message else {
+            return;
+        };
+        let Some(html) = mail::html_part(&message.raw) else {
+            ctx.info("This message has no HTML part.");
+            return;
+        };
+        // Written first, then handed over: the browser reads the file after I've moved on.
+        match page::write(&ctx.page_dir, &html).and_then(|path| (ctx.open_page)(&path)) {
+            Ok(()) => ctx.info("Opened the HTML part in your browser."),
+            Err(e) => ctx.error(format!(
+                "Couldn't open the HTML part: {e}. H shows the HTML source here instead."
+            )),
+        }
     }
 
     /// I write the part that's showing to a new .txt file named after the key, never
@@ -255,7 +276,8 @@ impl View for MessageScreen {
     }
 
     /// I handle a key. An open delete confirmation takes it first and only a bare y deletes;
-    /// otherwise I scroll, flip to HTML, save text or attachments, ask to delete, or go back.
+    /// otherwise I scroll, open the HTML in the browser or flip to its source, save text or
+    /// attachments, ask to delete, or go back.
     fn on_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Transition {
         if self.confirm {
             self.confirm = false;
@@ -281,12 +303,13 @@ impl View for MessageScreen {
             KeyCode::PageDown | KeyCode::Char(' ') => self.scroll(|p, t| p.down(t, p.page())),
             KeyCode::Home | KeyCode::Char('g') => self.scroll(|p, _| p.home()),
             KeyCode::End | KeyCode::Char('G') => self.scroll(|p, t| p.end(t)),
-            KeyCode::Char('h') if self.message.is_some() => {
+            KeyCode::Char('h') if self.message.is_some() => self.open_html(ctx),
+            KeyCode::Char('H') if self.message.is_some() => {
                 self.html = !self.html;
                 // The other part, from its top.
                 self.scroll(|p, t| p.reset(t));
                 ctx.info(if self.html {
-                    "Showing the HTML part."
+                    "Showing the HTML source."
                 } else {
                     "Showing the text part."
                 });
@@ -371,7 +394,9 @@ impl View for MessageScreen {
     fn hints(&self) -> Vec<(&'static str, &'static str)> {
         vec![
             ("↑↓ pgup pgdn", "scroll"),
-            ("h", if self.html { "text" } else { "html" }),
+            // Short labels, so the row still fits delete and back at the demo's 106 columns.
+            ("h", "html"),
+            ("H", if self.html { "text" } else { "source" }),
             ("w", "save text"),
             ("a", "save attachments"),
             ("d", "delete"),
@@ -642,7 +667,10 @@ attached words\r\n\
         assert!(page.contains("Content-Security-Policy"), "{page}");
         let scr = screen(&mut app, 80, 20);
         assert!(scr.contains("the plain version"), "{scr}");
-        assert!(scr.contains("Opened the HTML part in your browser"), "{scr}");
+        assert!(
+            scr.contains("Opened the HTML part in your browser"),
+            "{scr}"
+        );
     }
 
     /// I check a message with no HTML part says so and opens nothing, rather than an empty page.

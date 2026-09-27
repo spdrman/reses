@@ -80,6 +80,12 @@ pub fn format_message(raw: &[u8], prefer_html: bool) -> String {
     lines.join("\n") + "\n"
 }
 
+/// The message's HTML body as written, for a browser to render, or None when it has no HTML part.
+pub fn html_part(raw: &[u8]) -> Option<String> {
+    let input = parts::prepare(raw);
+    parts::Parsed::new(&input).html_part()
+}
+
 /// Header summary for the inbox list. Works on a prefix that stops anywhere, including inside
 /// the headers.
 pub fn summarize(raw: &[u8]) -> Summary {
