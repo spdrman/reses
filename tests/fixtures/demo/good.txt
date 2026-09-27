@@ -76,7 +76,7 @@ and I'll fold it in before the invite goes out.
 
 3. Hiring
    - One backend role is open, interviews start next week
- ↑↓ pgup pgdn  scroll   h  html   w  save text   a  save attachments   d  delete   q  back
+ ↑↓ pgup pgdn  scroll   h  html   H  source   w  save text   a  save attachments   d  delete   q  back
 ────────────────────────────────────────────────────────────────────────────────
  ▄▀▄ re:SES  Message s3://mail-inbound/inbound/5c7e9g1i3k5m7o9q1s3u5w7y9a1c3e5g7i9k1m3o  default (us-east-1)
 Here's a draft agenda for Thursday's planning call. Shout if I missed anything
@@ -106,7 +106,7 @@ I've booked the big room from 10 to 11, and there'll be coffee.
 
 Cheers,
 Mei
- ↑↓ pgup pgdn  scroll   h  html   w  save text   a  save attachments   d  delete   q  back
+ ↑↓ pgup pgdn  scroll   h  html   H  source   w  save text   a  save attachments   d  delete   q  back
 ────────────────────────────────────────────────────────────────────────────────
  ▄▀▄ re:SES  Inbox s3://mail-inbound/inbound/ · 10 messages · 2 not email  default (us-east-1)
  From                  Subject                                                             Date       Size

@@ -501,6 +501,17 @@ impl<'x> Parsed<'x> {
         }
         text.replace("\r\n", "\n").trim().to_string()
     }
+
+    /// The first HTML part that isn't an attachment, decoded but otherwise as written, for a browser
+    /// to render. None when the message has no HTML part, including a message with no headers.
+    pub(super) fn html_part(&self) -> Option<String> {
+        self.msg.as_ref()?;
+        self.leaves()
+            .into_iter()
+            .filter(|p| !is_attachment(p))
+            .find(|p| content_type(p) == "text/html")
+            .map(|p| self.text(p))
+    }
 }
 
 impl Drop for Parsed<'_> {
