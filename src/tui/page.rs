@@ -43,12 +43,26 @@ pub(crate) const GUARD: &str = concat!(
     "\">",
 );
 
+/// The policy for the copy that shows remote content, when the reader asks for it (#69): images,
+/// stylesheets, fonts and media may come from the network, and scripts and form posts still can't.
+pub(crate) const GUARD_REMOTE: &str = concat!(
+    "<meta charset=\"utf-8\">",
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"",
+    "default-src 'none'; img-src data: https: http:; style-src 'unsafe-inline' https: http:; ",
+    "font-src data: https: http:; media-src https: http:; form-action 'none'; base-uri 'none'",
+    "\">",
+);
+
 /// Where this copy came from and when it was opened, for the footer.
 pub(crate) struct Copy<'a> {
     /// The S3 location, `s3://bucket/key`.
     pub location: &'a str,
     /// When the page was made, in the reader's own offset.
     pub opened: OffsetDateTime,
+    /// Whether this copy lets remote content load (#69). The blocked copy is the one that opens.
+    pub remote: bool,
+    /// The file name of the other copy, which this one's chip links to.
+    pub other: &'a str,
 }
 
 /// The cubes and the outlined wordmark, inlined so the page needs neither the network nor
@@ -78,6 +92,8 @@ padding:14px 40px;background:var(--card);border-bottom:1px solid var(--line)}
 font-size:13px;font-weight:600;white-space:nowrap}
 .pill svg{width:12px;height:12px;flex-shrink:0}
 .blocked{background:var(--tint);color:var(--deep);padding:7px 14px}
+.shown{background:#FDF1E6;color:#A4520A;padding:7px 14px}
+a.pill{text-decoration:none}a.pill:hover{filter:brightness(0.96);text-decoration:underline}
 .pass{background:#E6F4F1;color:#0B6E62}.caution{background:#FDF1E6;color:#A4520A}
 .fail{background:#FDECEA;color:#B42318}
 main{max-width:920px;margin:0 auto;padding:40px 16px 56px;display:flex;flex-direction:column;gap:24px}
@@ -128,6 +144,7 @@ padding-top:20px;border-top:1px solid var(--line);font-size:13px;color:var(--sla
 
 /// Icons, drawn as inline strokes so they need nothing from the network.
 const ICON_LOCK: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>"#;
+const ICON_EYE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>"#;
 const ICON_REPLY: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 5 5v5"/></svg>"#;
 const ICON_FILE: &str = r##"<svg viewBox="0 0 24 24" fill="none" stroke="#1D78DE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>"##;
 const ICON_PASS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>"#;
@@ -154,14 +171,14 @@ pub(crate) fn reader(details: &Details, copy: &Copy<'_>) -> String {
     let mut page = String::with_capacity(16 * 1024 + details.html.as_ref().map_or(0, String::len));
     // The policy is the first thing in the head, before anything the page could load.
     page.push_str("<!doctype html>\n<html lang=\"en\"><head>");
-    page.push_str(GUARD);
+    page.push_str(if copy.remote { GUARD_REMOTE } else { GUARD });
     page.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     page.push_str("<base target=\"_blank\">");
     page.push_str(&format!("<title>{}</title>", esc(&title(details))));
     page.push_str("<style>");
     page.push_str(STYLE);
     page.push_str("</style></head><body>");
-    page.push_str(&top_bar());
+    page.push_str(&top_bar(copy));
     page.push_str("<main>");
     page.push_str(&header(details));
     page.push_str(&message(details));
@@ -187,12 +204,27 @@ fn title(details: &Details) -> String {
 }
 
 /// The bar across the top: the logo, what the page is, and that remote content is blocked.
-fn top_bar() -> String {
+fn top_bar(copy: &Copy<'_>) -> String {
+    // The chip is the toggle (#69): a link, in this tab, to the other copy of the page. A page's
+    // policy can't be loosened from inside it, so showing remote content means the other copy.
+    let chip = if copy.remote {
+        format!(
+            "<a class=\"pill shown\" href=\"{}\" target=\"_self\" title=\"Back to the copy that \
+             blocks remote content\">{ICON_EYE}Remote content shown · Block it</a>",
+            esc(copy.other)
+        )
+    } else {
+        format!(
+            "<a class=\"pill blocked\" href=\"{}\" target=\"_self\" title=\"Loading remote content \
+             lets the sender see you opened it\">{ICON_LOCK}Remote content blocked · Load remote \
+             content</a>",
+            esc(copy.other)
+        )
+    };
     format!(
         "<div class=\"bar\"><div class=\"brand\"><span class=\"cubes\">{}</span>\
          <span class=\"wordmark\" role=\"img\" aria-label=\"re:SES\">{}</span>\
-         <span class=\"what\">Static copy of one message</span></div>\
-         <span class=\"pill blocked\">{ICON_LOCK}Remote content blocked</span></div>",
+         <span class=\"what\">Static copy of one message</span></div>{chip}</div>",
         svg(CUBES_SVG),
         svg(WORDMARK_SVG)
     )
@@ -383,9 +415,14 @@ fn about(d: &Details, copy: &Copy<'_>) -> String {
         ),
         (
             "Protection",
-            "Scripts, remote images, fonts and forms are blocked. Links open only when you \
-             click them."
-                .to_string(),
+            if copy.remote {
+                "Remote images, styles and fonts load here, so the sender can see you opened it. \
+                 Scripts and forms are still blocked."
+            } else {
+                "Scripts, remote images, fonts and forms are blocked. Links open only when you \
+                 click them. Loading remote content lets the sender see you opened it."
+            }
+            .to_string(),
         ),
     ]
     .iter()
@@ -570,6 +607,57 @@ fn esc(text: &str) -> String {
     out
 }
 
+/// I write the reader page for `details` as a pair in `dir` (#69): the copy that blocks remote content,
+/// whose path I return since it's the one to open, and beside it the copy that shows it, each
+/// linking to the other by file name. Both are new files only the user can read.
+pub(crate) fn write_reader(
+    dir: &Path,
+    details: &Details,
+    location: &str,
+    opened: OffsetDateTime,
+) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    // The blocked copy takes a fresh name, and its twin the same name with -remote on the end, so
+    // each can link to the other by file name alone.
+    let (mut blocked, blocked_path) = tempfile::Builder::new()
+        .prefix("reses-")
+        .suffix(".html")
+        .tempfile_in(dir)?
+        .keep()
+        .map_err(|e| e.error)?;
+    let stem = blocked_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("reses")
+        .to_string();
+    let blocked_name = format!("{stem}.html");
+    let remote_name = format!("{stem}-remote.html");
+    // The twin is new too (never over someone else's file) and private like the first.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut remote = options.open(blocked_path.with_file_name(&remote_name))?;
+    let copy = |remote, other| Copy {
+        location,
+        opened,
+        remote,
+        other,
+    };
+    io::Write::write_all(
+        &mut remote,
+        reader(details, &copy(true, blocked_name.as_str())).as_bytes(),
+    )?;
+    io::Write::write_all(
+        &mut blocked,
+        reader(details, &copy(false, remote_name.as_str())).as_bytes(),
+    )?;
+    Ok(blocked_path)
+}
+
 /// I write `contents` to a new file in `dir` ending in `suffix` that only the user can read,
 /// and return its path. `dir` is created if it doesn't exist yet, and an earlier file is never
 /// overwritten.
@@ -636,13 +724,107 @@ mod tests {
 
     /// I make the page for `details` as if it was opened from a fixed place at a fixed time.
     fn render(details: &Details) -> String {
+        render_as(details, false)
+    }
+
+    /// I make one of the pair: the copy that blocks remote content, or the one that shows it.
+    fn render_as(details: &Details, remote: bool) -> String {
         reader(
             details,
             &Copy {
                 location: "s3://inbox-bucket/mail/0abc123",
                 opened: datetime!(2026-09-26 21:14:00 -07:00),
+                remote,
+                other: if remote {
+                    "reses-abc.html"
+                } else {
+                    "reses-abc-remote.html"
+                },
             },
         )
+    }
+
+    /// #69: the blocked copy's chip is a link, in the same tab, to the copy that shows remote
+    /// content, and says what that costs.
+    #[test]
+    fn the_blocked_page_offers_to_load_remote_content() {
+        let page = render(&full());
+        assert!(
+            page.contains(
+                "<a class=\"pill blocked\" href=\"reses-abc-remote.html\" target=\"_self\""
+            ),
+            "{page}"
+        );
+        assert!(page.contains("Load remote content"), "{page}");
+        assert!(page.contains("lets the sender see you opened it"), "{page}");
+    }
+
+    /// #69: the copy that shows remote content lets images, styles, fonts and media come from the
+    /// network, still refuses scripts and form posts, and its chip links back to blocking.
+    #[test]
+    fn the_remote_page_loads_remote_content_and_nothing_more() {
+        let page = render_as(&full(), true);
+        let head = page.find("<head>").expect("a head");
+        assert!(
+            page[head + "<head>".len()..].starts_with(GUARD_REMOTE),
+            "{page}"
+        );
+        for rule in [
+            "img-src data: https: http:",
+            "style-src 'unsafe-inline' https: http:",
+            "font-src data: https: http:",
+            "media-src https: http:",
+            "form-action 'none'",
+            "base-uri 'none'",
+        ] {
+            assert!(
+                GUARD_REMOTE.contains(rule),
+                "{rule} missing: {GUARD_REMOTE}"
+            );
+        }
+        assert!(!page.contains("script-src"), "{page}");
+        assert!(
+            page.contains("<a class=\"pill shown\" href=\"reses-abc.html\" target=\"_self\""),
+            "{page}"
+        );
+        assert!(page.contains("Remote content shown · Block it"), "{page}");
+        assert!(page.contains("the sender can see you opened it"), "{page}");
+    }
+
+    /// #69: the reader is written as a pair. The blocked copy is the one to open, its twin sits
+    /// beside it named `-remote`, both are private, and each links to the other by file name.
+    #[test]
+    fn write_reader_writes_both_copies_linked_to_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        let blocked = write_reader(
+            &pages,
+            &full(),
+            "s3://inbox-bucket/mail/0abc123",
+            datetime!(2026-09-26 21:14:00 -07:00),
+        )
+        .unwrap();
+        let stem = blocked.file_stem().unwrap().to_str().unwrap().to_string();
+        let remote = blocked.with_file_name(format!("{stem}-remote.html"));
+        let blocked_page = std::fs::read_to_string(&blocked).unwrap();
+        let remote_page = std::fs::read_to_string(&remote).expect("the remote copy is written too");
+        assert!(
+            blocked_page.contains(&format!("href=\"{stem}-remote.html\"")),
+            "{blocked_page}"
+        );
+        assert!(
+            remote_page.contains(&format!("href=\"{stem}.html\"")),
+            "{remote_page}"
+        );
+        assert!(blocked_page.contains(GUARD) && !blocked_page.contains(GUARD_REMOTE));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&blocked, &remote] {
+                let mode = std::fs::metadata(path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600, "{}", path.display());
+            }
+        }
     }
 
     /// The page is a real document whose head opens with the policy, before anything the page

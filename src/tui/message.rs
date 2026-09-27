@@ -148,13 +148,10 @@ impl MessageScreen {
         }
         let location = format!("s3://{}/{}", self.bucket, self.key);
         let now = OffsetDateTime::now_utc();
-        let copy = page::Copy {
-            location: &location,
-            opened: now.checked_to_offset(ctx.local_offset).unwrap_or(now),
-        };
-        let html = page::reader(&details, &copy);
-        // Written first, then handed over: the browser reads the file after I've moved on.
-        match page::write(&ctx.page_dir, html.as_bytes(), ".html")
+        let opened = now.checked_to_offset(ctx.local_offset).unwrap_or(now);
+        // Both copies are written first, then the blocked one handed over: the browser reads it
+        // after I've moved on, and its chip links to the copy that shows remote content (#69).
+        match page::write_reader(&ctx.page_dir, &details, &location, opened)
             .and_then(|path| (ctx.open_file)(&path))
         {
             Ok(()) => ctx.info("Opened the HTML part in your browser."),
@@ -780,6 +777,13 @@ attached words\r\n\
         assert!(page.contains("alice@example.com"), "{page}");
         assert!(page.contains("About this message"), "{page}");
         assert!(page.contains(&format!("s3://{BUCKET}/{KEY}")), "{page}");
+        // Its twin, the copy that shows remote content, sits beside it for the chip to link to.
+        let stem = opened[0].file_stem().unwrap().to_str().unwrap();
+        assert!(
+            opened[0]
+                .with_file_name(format!("{stem}-remote.html"))
+                .exists()
+        );
         let scr = screen(&mut app, 80, 20);
         assert!(scr.contains("the plain version"), "{scr}");
         assert!(
