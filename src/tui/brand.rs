@@ -14,6 +14,13 @@ use ratatui_image::protocol::StatefulProtocol;
 /// The blue of the logo's colon (`#2EA8F2` in the SVGs).
 pub const LOGO_BLUE: Color = Color::Rgb(0x2E, 0xA8, 0xF2);
 
+/// The three squares of the text-mode mark, in the blues the cubes are drawn in: the colon's blue on
+/// top, and the cube faces' two blues (`#2A8FE9` and `#1D78DE` in reSES-cubes.svg) on the bottom
+/// pair, lighter on the left, darker on the right.
+const CUBE_TOP: Color = LOGO_BLUE;
+const CUBE_LEFT: Color = Color::Rgb(0x2A, 0x8F, 0xE9);
+const CUBE_RIGHT: Color = Color::Rgb(0x1D, 0x78, 0xDE);
+
 /// Header rows in image mode. Text mode keeps the one-row bar.
 pub const IMAGE_ROWS: u16 = 2;
 /// The image header needs at least this much room; below it the header falls back to text.
@@ -256,7 +263,11 @@ fn columns_for(logo: &DynamicImage, (font_w, font_h): (u16, u16)) -> u16 {
     u16::try_from(px_wide.div_ceil(font_w)).unwrap_or(u16::MAX)
 }
 
-/// The wordmark as text, for the header bar: a blue cube mark, `re`, a blue `:`, bold `SES`.
+/// The wordmark as text, for the header bar: the cubes as three squares, `re`, a blue `:`, bold `SES`.
+///
+/// The cubes are `▄▀▄`. A terminal cell is about twice as tall as it's wide, so half a cell is about
+/// a square: the lower halves either side are the bottom pair and the upper half between them sits
+/// on top, like the logo's pyramid, in one row. One square per cell means each gets its own blue.
 ///
 /// The bar is drawn REVERSED, so its colours are the terminal's own swapped and it reads on
 /// any theme. A blue glyph inside it therefore sets the blue as its *background*: reversed,
@@ -265,7 +276,9 @@ pub fn wordmark(bar: Style) -> Vec<Span<'static>> {
     let blue = bar.bg(LOGO_BLUE);
     vec![
         Span::styled(" ", bar),
-        Span::styled("■", blue),
+        Span::styled("▄", bar.bg(CUBE_LEFT)),
+        Span::styled("▀", bar.bg(CUBE_TOP)),
+        Span::styled("▄", bar.bg(CUBE_RIGHT)),
         Span::styled(" ", bar),
         Span::styled("re", bar.remove_modifier(Modifier::BOLD)),
         Span::styled(":", blue.add_modifier(Modifier::BOLD)),
