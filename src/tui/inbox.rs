@@ -118,6 +118,9 @@ pub struct InboxScreen {
     deleted: HashSet<String>,
     started: bool,
     listing_done: bool,
+    /// The status `r` put up, so the refresh can take it down when the listing is in (#62). Only a
+    /// key press clears a status otherwise, which left "Refreshing" on screen after the refresh.
+    refreshing: Option<String>,
     pages: usize,
     last_token: Option<String>,
     error: Option<String>,
@@ -159,6 +162,7 @@ impl InboxScreen {
             deleted: HashSet::new(),
             started: false,
             listing_done: false,
+            refreshing: None,
             pages: 0,
             last_token: None,
             error: None,
@@ -603,6 +607,20 @@ impl InboxScreen {
             .collect();
         frame.render_widget(Paragraph::new(lines), body);
     }
+
+    /// Once the listing has ended, however it ended, I take down the "Refreshing" status I put up,
+    /// but only while it's still showing: a status that came since, like a delete's or an error, is
+    /// newer news and stays.
+    fn end_refresh(&mut self, ctx: &mut Ctx) {
+        if !self.listing_done {
+            return;
+        }
+        if let Some(status) = self.refreshing.take()
+            && matches!(&ctx.status, Some(crate::tui::Status::Info(m)) if *m == status)
+        {
+            ctx.status = None;
+        }
+    }
 }
 
 impl View for InboxScreen {
@@ -844,6 +862,7 @@ impl View for InboxScreen {
             _ => {}
         }
         // New peeks come from the tick, once per pump, not from each result.
+        self.end_refresh(ctx);
         Transition::None
     }
 
@@ -952,7 +971,11 @@ impl InboxScreen {
             }
             KeyCode::Char('r') => {
                 self.load(ctx);
-                ctx.info(format!("Refreshing {}", self.location()));
+                let status = format!("Refreshing {}", self.location());
+                ctx.info(status.clone());
+                self.refreshing = Some(status);
+                // A listing that already ended (say it failed straight away) takes the status down now.
+                self.end_refresh(ctx);
             }
             KeyCode::Char('/') => self.typing = true,
             KeyCode::Char('u') => return Transition::Push(Box::new(AccountsScreen::new(ctx))),
@@ -1525,6 +1548,35 @@ mod tests {
             assert!(!line_with(&scr, "Subject").contains("Size"), "{scr}");
             assert!(row.contains('…'), "width {width}:\n{scr}");
         }
+    }
+
+    /// #62: once a refresh's listing is in, its "Refreshing" status gives way to the key hints
+    /// with no key press, the way the run loop draws it (only a key press clears a status there).
+    #[test]
+    fn a_finished_refresh_clears_its_status() {
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::Char('r')));
+        assert!(
+            matches!(&app.ctx.status, Some(crate::tui::Status::Info(m)) if m.starts_with("Refreshing")),
+            "{:?}",
+            app.ctx.status
+        );
+        settle(&mut app);
+        let scr = screen(&mut app, 100, 12);
+        assert!(!scr.contains("Refreshing"), "{scr}");
+        assert!(scr.contains("q  quit"), "{scr}");
+    }
+
+    /// #62: a status that arrived while the refresh ran, such as a delete finishing, isn't the
+    /// refresh's to clear, so it stays on the bottom line.
+    #[test]
+    fn a_finished_refresh_leaves_a_newer_status_alone() {
+        let (mut app, _d) = app_with(three());
+        app.key(key(KeyCode::Char('r')));
+        app.ctx.info("Deleted s3://inbox-bucket/mail/aaa");
+        settle(&mut app);
+        let scr = screen(&mut app, 100, 12);
+        assert!(scr.contains("Deleted s3://inbox-bucket/mail/aaa"), "{scr}");
     }
 
     /// I check the list is sorted newest first, since that's where new mail should show up.
