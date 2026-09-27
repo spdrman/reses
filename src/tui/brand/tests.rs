@@ -247,7 +247,11 @@ fn a_small_terminal_falls_back_to_the_text_wordmark() {
     // Narrow enough that the title gets cut, the wordmark still shows whole.
     let (mut app, _area, _d) = app(Brand::text());
     let buf = buffer(&mut app, 12, 6);
-    assert!(row(&buf, 0).starts_with(" ▄▀▄ re:SES "), "{:?}", row(&buf, 0));
+    assert!(
+        row(&buf, 0).starts_with(" ▄▀▄ re:SES "),
+        "{:?}",
+        row(&buf, 0)
+    );
     assert_eq!(cols_of(&buf, 0, "▄"), [1, 3]);
     assert_eq!(cols_of(&buf, 0, "▀"), [2]);
 }
@@ -290,7 +294,12 @@ fn text_header_frame() {
     let (mut app, _area, _d) = app(Brand::text());
     let scr = screen(&mut app, 80, 4);
     println!("{scr}");
-    assert!(scr.lines().next().unwrap().starts_with(" ▄▀▄ re:SES  Inbox"));
+    assert!(
+        scr.lines()
+            .next()
+            .unwrap()
+            .starts_with(" ▄▀▄ re:SES  Inbox")
+    );
 }
 
 /// I build an `Env` from name and value pairs, leaving every other variable unset.
