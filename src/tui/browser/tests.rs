@@ -12,13 +12,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::BrowserScreen;
 use crate::aws_profile::Profile;
 use crate::config::{AppConfig, Inbox};
 use crate::s3::{Bucket, Listing, MemoryStore, ObjectInfo, S3Error, Store};
-use crate::tui::testing::{self, chars, key, screen, settle};
+use crate::tui::testing::{self, chars, key, screen, settle, shifted};
 use crate::tui::{App, Session, Status};
 
 const EMAIL: &[u8] = b"Return-Path: <sender@example.com>\r\n\
@@ -429,6 +429,36 @@ fn a_huge_folder_peeks_only_what_is_visible() {
     assert!(!selected_row(&s).contains("obj-04999"), "{s}");
 }
 
+/// I check Shift+↓ and Shift+↑ move the selection a page in a folder, exactly like Page Down and
+/// Page Up, and that the hints say so, so a MacBook keyboard pages without fn.
+#[test]
+fn shift_arrows_page_a_folder_like_the_page_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = MemoryStore::new();
+    for i in 0..200 {
+        s.put("bk", &format!("obj-{i:05}"), TEXT);
+    }
+    let spy = Spy::new(s);
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "bk");
+    // Each run starts from the top, so the screens can be compared like for like.
+    let after = |app: &mut App, keys: &[KeyEvent]| {
+        press(app, KeyCode::Home);
+        for k in keys {
+            app.key(*k);
+            settle(app);
+        }
+        screen(app, 100, 20)
+    };
+    let paged = after(&mut app, &[key(KeyCode::PageDown)]);
+    assert_ne!(paged, after(&mut app, &[key(KeyCode::Down)]), "a page is more than a row");
+    assert_eq!(after(&mut app, &[shifted(KeyCode::Down)]), paged);
+    let two_down = [key(KeyCode::PageDown), key(KeyCode::PageDown)];
+    let back = after(&mut app, &[two_down[0], two_down[1], key(KeyCode::PageUp)]);
+    assert_eq!(after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]), back);
+    assert!(screen(&mut app, 140, 20).contains("⇧↑↓  page"));
+}
+
 // ---- email marks ----
 
 /// Moving around a folder peeks each visible object exactly once with a 4 KiB range and marks only
@@ -825,7 +855,7 @@ fn cell_col(line: &str, needle: &str) -> usize {
 fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
     let dir = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
-    let wide = "受信メール保存フォルダの中にある長い名前のファイルです";
+    let wide = "åä¿¡ã¡ã¼ã«ä¿å­ãã©ã«ãã®ä¸­ã«ããé·ãååã®ãã¡ã¤ã«ã§ã";
     s.put("bk", "a-plain-ascii-name", TEXT);
     s.put("bk", wide, TEXT);
     let spy = Spy::new(s);
@@ -834,7 +864,7 @@ fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
     let width = 50;
     let screen_text = screen(&mut app, width, 12);
     let ascii = line_with(&screen_text, "a-plain-ascii");
-    let cjk = line_with(&screen_text, "受");
+    let cjk = line_with(&screen_text, "å");
     assert!(
         cjk.contains("37 B"),
         "the size fell off the row:\n{screen_text}"
@@ -853,7 +883,7 @@ fn wide_names_are_cut_by_display_width_and_keep_the_columns_lined_up() {
 fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
     let dir = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
-    let wide = "受信メール保存フォルダの中にある長い名前のフォルダです/";
+    let wide = "åä¿¡ã¡ã¼ã«ä¿å­ãã©ã«ãã®ä¸­ã«ããé·ãååã®ãã©ã«ãã§ã/";
     s.put("bk", &format!("{wide}m1"), EMAIL);
     s.put("bk", "plain/m1", EMAIL);
     let spy = Spy::new(s);
@@ -861,7 +891,7 @@ fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
     open(&mut app, "bk");
     press(&mut app, KeyCode::Char('s'));
     let screen_text = screen(&mut app, 50, 12);
-    let cjk = line_with(&screen_text, "受");
+    let cjk = line_with(&screen_text, "å");
     assert!(
         cjk.contains("1 email"),
         "the count fell off the row:\n{screen_text}"
@@ -1062,7 +1092,7 @@ fn a_wide_name_that_fits_is_shown_whole() {
     let dir = tempfile::tempdir().unwrap();
     let s = MemoryStore::new();
     // Ten characters, twenty columns: the column must be sized in columns to hold it.
-    let wide = "受信メール保存フォルダ";
+    let wide = "åä¿¡ã¡ã¼ã«ä¿å­ãã©ã«ã";
     s.put("bk", "a", TEXT);
     s.put("bk", wide, EMAIL);
     s.put("bk", &format!("{wide}/m1"), EMAIL);

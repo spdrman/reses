@@ -506,7 +506,7 @@ mod tests {
     use crate::s3::{S3Error, Store};
     use crate::tui::inbox::InboxScreen;
     use crate::tui::inbox::fixtures::*;
-    use crate::tui::testing::{self, key, screen, settle};
+    use crate::tui::testing::{self, key, screen, settle, shifted};
     use crate::tui::{App, Status};
 
     const KEY: &str = "mail/msg1";
@@ -638,6 +638,40 @@ attached words\r\n\
         let (mut app, _d) = open(store_with(raw.as_bytes()), out.path());
         let scr = screen(&mut app, 60, 20);
         assert!(scr.contains("END"), "{scr}");
+    }
+
+    /// I check Shift+↓ and Shift+↑ page the message exactly like Page Down and Page Up, and that
+    /// Space and b do too, so a MacBook keyboard pages without reaching for fn.
+    #[test]
+    fn shift_arrows_space_and_b_page_like_the_page_keys() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&long_message()), out.path());
+        // Each run starts from the top, so the screens can be compared like for like.
+        let after = |app: &mut App, keys: &[KeyEvent]| {
+            app.key(key(KeyCode::Home));
+            for k in keys {
+                app.key(*k);
+            }
+            screen(app, 80, 20)
+        };
+        let paged = after(&mut app, &[key(KeyCode::PageDown)]);
+        assert_ne!(paged, after(&mut app, &[key(KeyCode::Down)]), "a page is more than a line");
+        assert_eq!(after(&mut app, &[shifted(KeyCode::Down)]), paged);
+        assert_eq!(after(&mut app, &[key(KeyCode::Char(' '))]), paged);
+        let two_down = [key(KeyCode::PageDown), key(KeyCode::PageDown)];
+        let back = after(&mut app, &[two_down[0], two_down[1], key(KeyCode::PageUp)]);
+        assert_eq!(after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]), back);
+        assert_eq!(after(&mut app, &[two_down[0], two_down[1], key(KeyCode::Char('b'))]), back);
+    }
+
+    /// I check the hints name keys a MacBook has: Shift+arrows for paging, not Page Up/Down.
+    #[test]
+    fn the_hints_name_paging_keys_a_mac_has() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _d) = open(store_with(&long_message()), out.path());
+        let scr = screen(&mut app, 120, 20);
+        assert!(scr.contains("⇧↑↓  page"), "{scr}");
+        assert!(!scr.contains("pgup"), "{scr}");
     }
 
     /// I stand in for the browser: every page the screen asks to open is recorded, not shown.

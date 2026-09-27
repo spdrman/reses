@@ -1368,7 +1368,7 @@ mod tests {
     use crate::s3::Store;
     use crate::tui::App;
     use crate::tui::jobs::Job;
-    use crate::tui::testing::{self, chars, key, screen, settle};
+    use crate::tui::testing::{self, chars, key, screen, settle, shifted};
 
     const NOW: time::OffsetDateTime = datetime!(2026-09-25 15:00 UTC);
 
@@ -2192,6 +2192,44 @@ mod tests {
         assert!(s.peeks() < 100, "{} peeks for 200 rows", s.peeks());
         // Everything is still listed, peeked or not.
         assert!(scr.contains("200 messages"), "{scr}");
+    }
+
+    /// I check Shift+↓ and Shift+↑ move the selection a page, exactly like Page Down and Page Up,
+    /// and that the hints say so, so a MacBook keyboard pages the inbox without fn.
+    #[test]
+    fn shift_arrows_page_the_inbox_like_the_page_keys() {
+        let s = Timed::new();
+        for i in 0..60 {
+            s.put_received(
+                BUCKET,
+                &format!("mail/m{i:03}"),
+                &email(
+                    "a@example.com",
+                    &format!("Number {i:03}"),
+                    "25 Sep 2026 10:00:00 +0000",
+                ),
+                OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(i),
+            );
+        }
+        let (mut app, _d) = app_with(s);
+        // Each run starts from the top, so the screens can be compared like for like.
+        let after = |app: &mut App, keys: &[KeyEvent]| {
+            app.key(key(KeyCode::Home));
+            settle(app);
+            for k in keys {
+                app.key(*k);
+                settle(app);
+            }
+            screen(app, 80, 12)
+        };
+        let paged = after(&mut app, &[key(KeyCode::PageDown)]);
+        assert_ne!(paged, after(&mut app, &[key(KeyCode::Down)]), "a page is more than a row");
+        assert_eq!(after(&mut app, &[shifted(KeyCode::Down)]), paged);
+        let two_down = [key(KeyCode::PageDown), key(KeyCode::PageDown)];
+        let back = after(&mut app, &[two_down[0], two_down[1], key(KeyCode::PageUp)]);
+        assert_eq!(after(&mut app, &[two_down[0], two_down[1], shifted(KeyCode::Up)]), back);
+        let scr = screen(&mut app, 120, 12);
+        assert!(scr.contains("⇧↑↓  page"), "{scr}");
     }
 
     /// I check a taller screen gets its extra rows peeked on the next pump, without waiting for a key.
