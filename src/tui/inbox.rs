@@ -1681,7 +1681,6 @@ mod tests {
             "Keys",
             "straight to the accounts",
             "up to the S3 folder",
-            "open Settings",
             "ctrl-c",
             "On every screen",
         ] {

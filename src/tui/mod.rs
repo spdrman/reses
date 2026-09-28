@@ -12,7 +12,6 @@ pub(crate) mod jobs;
 pub(crate) mod message;
 pub(crate) mod page;
 pub mod saved;
-pub(crate) mod settings;
 pub mod text;
 
 use std::panic::PanicHookInfo;
@@ -170,10 +169,10 @@ pub(crate) struct Ctx {
     /// Opens a file with the system's default app for it: a page in the browser, a `.eml` in the mail
     /// app. Tests swap in a recorder, so no test ever starts either.
     pub open_file: OpenFile,
-    /// Where I write pages and `.eml` copies. I keep them in the user's private cache until they age out.
+    /// Parent of random per-message directories; the OS chooses its platform temp location.
     pub page_dir: PathBuf,
-    /// I require a working cache directory before I let the user open the inbox.
-    pub cache_error: Option<String>,
+    /// Keep detached browser/mail-app copies readable until the app exits.
+    pub opened_pages: Vec<tempfile::TempDir>,
     jobs: Jobs,
 }
 
@@ -184,7 +183,7 @@ impl Ctx {
     /// I build the shared context with no session, no status, UTC for dates and the text logo.
     /// `main` fills in the rest with the builders below.
     pub fn new(config: AppConfig, config_path: PathBuf, creds_path: PathBuf, jobs: Jobs) -> Self {
-        let page_dir = page::cache_dir(config.temp_dir.as_deref());
+        let page_dir = std::env::temp_dir();
         Self {
             config,
             config_path,
@@ -195,7 +194,7 @@ impl Ctx {
             brand: brand::Brand::text(),
             open_file: Arc::new(|path: &Path| open::that_detached(path)),
             page_dir,
-            cache_error: None,
+            opened_pages: Vec::new(),
             jobs,
         }
     }
@@ -282,12 +281,6 @@ pub enum Start {
 /// The first screen: straight into the saved inbox when there is one and `start` allows it,
 /// else account selection.
 pub(crate) fn initial_view(ctx: &mut Ctx, start: Start) -> Box<dyn View> {
-    if let Some(error) = ctx.cache_error.clone() {
-        ctx.error(format!(
-            "The cache directory is not usable: {error}. Set an alternative in Settings."
-        ));
-        return Box::new(settings::SettingsScreen::new(true, Some(start)));
-    }
     if start == Start::SavedInbox
         && let Some(inbox) = ctx.config.inbox.clone()
     {
@@ -392,19 +385,6 @@ impl App {
         // dismisses it can't also start a delete.
         if self.help {
             self.help = false;
-            return;
-        }
-        let in_settings = self
-            .stack
-            .last()
-            .is_some_and(|top| top.title() == "Settings");
-        if key.code == KeyCode::Char('s')
-            && !in_settings
-            && !self.stack.last().is_some_and(|top| top.taking_text())
-        {
-            self.apply(Transition::Push(Box::new(settings::SettingsScreen::new(
-                false, None,
-            ))));
             return;
         }
         let Some(top) = self.stack.last_mut() else {
@@ -565,7 +545,6 @@ fn hints_line(hints: &[(&'static str, &'static str)], cols: usize) -> Line<'stat
 /// The keys that work on every screen, listed under the view's own in the `?` overlay.
 const GLOBAL_KEYS: &[(&str, &str)] = &[
     ("?", "show or hide this help"),
-    ("s", "open Settings"),
     ("ctrl-z", "suspend reses, back with fg"),
     ("ctrl-c", "quit"),
 ];
@@ -700,12 +679,9 @@ pub fn run(
     // After entering the alternate screen, as the picker asks, and before the job pool:
     // like the local offset, it's read while nothing else is running.
     let brand = brand::Brand::detect();
-    let mut ctx = Ctx::new(config, config_path, creds_path, Jobs::pool(8))
+    let ctx = Ctx::new(config, config_path, creds_path, Jobs::pool(8))
         .with_local_offset(local_offset)
         .with_brand(brand);
-    if let Err(error) = page::check_cache_dir(&ctx.page_dir) {
-        ctx.cache_error = Some(error.to_string());
-    }
     let mut app = App::new(ctx, start);
     if let Some(e) = unreadable {
         app.ctx.error(format!(
@@ -767,6 +743,8 @@ pub fn run(
     for (bucket, key) in &dropped {
         eprintln!("{}", dropped_delete_line(bucket, key));
     }
+    // Dropping the retained TempDirs removes every opened copy on normal exit.
+    drop(app);
     result
 }
 
@@ -811,7 +789,7 @@ pub(crate) mod testing {
                 path.display()
             )))
         });
-        ctx.page_dir = dir.join("pages");
+        ctx.page_dir = dir.to_path_buf();
         if let Some(store) = store {
             ctx.session = Some(Session {
                 profile: Profile {
