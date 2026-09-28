@@ -461,7 +461,10 @@ fn no_screen_uses_a_colour_that_vanishes_on_some_theme() {
     app.key(key(KeyCode::Enter));
     settle(&mut app);
     assert_no_fragile_colours(&mut app, "folder");
-    app.key(key(KeyCode::Char('s')));
+    #[cfg(target_os = "macos")]
+    app.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::SUPER));
+    #[cfg(not(target_os = "macos"))]
+    app.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
     settle(&mut app);
     assert_no_fragile_colours(&mut app, "search");
 

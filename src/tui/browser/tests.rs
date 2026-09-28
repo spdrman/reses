@@ -186,6 +186,21 @@ fn press(app: &mut App, code: KeyCode) {
     settle(app);
 }
 
+/// I build the platform's search chord.
+fn search_event() -> KeyEvent {
+    #[cfg(target_os = "macos")]
+    let modifiers = ratatui::crossterm::event::KeyModifiers::SUPER;
+    #[cfg(not(target_os = "macos"))]
+    let modifiers = ratatui::crossterm::event::KeyModifiers::CONTROL;
+    KeyEvent::new(KeyCode::Char('f'), modifiers)
+}
+
+/// I start a folder search and let its jobs settle.
+fn press_search(app: &mut App) {
+    app.key(search_event());
+    settle(app);
+}
+
 /// Move the selection to the row showing `name` and press Enter.
 fn open(app: &mut App, name: &str) {
     press(app, KeyCode::Home);
@@ -587,7 +602,7 @@ fn s_searches_down_from_the_folder_and_lists_folders_holding_email() {
     let spy = Spy::new(mail_store());
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "mail");
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     let s = screen(&mut app, 100, 20);
     assert!(
         line_with(&s, "inbound/2025/sep/").contains("3 emails"),
@@ -625,7 +640,7 @@ fn search_from_a_folder_stays_inside_it() {
     open(&mut app, "inbound/");
     // Only count what the search itself peeks, not the rows the folder views showed.
     spy.peeks.lock().unwrap().clear();
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     let per_key = spy.peeks_per_key();
     assert_eq!(per_key.len(), 7, "everything under inbound/: {per_key:?}");
     assert!(
@@ -642,7 +657,7 @@ fn enter_on_a_search_result_jumps_to_that_folder() {
     let spy = Spy::new(mail_store());
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "mail");
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     open(&mut app, "inbound/2025/sep/");
     let s = screen(&mut app, 100, 20);
     assert!(s.contains("mail/inbound/2025/sep/"), "{s}");
@@ -663,7 +678,7 @@ fn a_search_can_be_stopped() {
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "bk");
     // Start the search and let one round of work finish, then stop it.
-    app.key(key(KeyCode::Char('s')));
+    app.key(search_event());
     app.pump();
     app.pump();
     let s = screen(&mut app, 100, 30);
@@ -690,7 +705,7 @@ fn search_needs_a_bucket() {
     let dir = tempfile::tempdir().unwrap();
     let spy = Spy::new(mail_store());
     let mut app = app_on(dir.path(), &spy);
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     assert!(
         status_error(&app).contains("bucket"),
         "{:?}",
@@ -824,7 +839,7 @@ fn search_stops_on_a_repeated_token() {
     spy.endless.store(0, Ordering::SeqCst);
     open(&mut app, "loop");
     spy.endless.store(1, Ordering::SeqCst);
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     assert_eq!(loop_lists(&spy, None), 2, "the repeat is not followed");
     let s = screen(&mut app, 100, 20);
     assert!(s.contains("continuation token"), "{s}");
@@ -840,7 +855,7 @@ fn search_stops_at_the_page_cap() {
     spy.endless.store(0, Ordering::SeqCst);
     open(&mut app, "loop");
     spy.endless.store(2, Ordering::SeqCst);
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     assert_eq!(loop_lists(&spy, None), 7);
     let s = screen(&mut app, 100, 20);
     assert!(s.contains("7 pages"), "{s}");
@@ -898,7 +913,7 @@ fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
     let spy = Spy::new(s);
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "bk");
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     let screen_text = screen(&mut app, 50, 12);
     let cjk = line_with(&screen_text, "受");
     assert!(
@@ -1060,7 +1075,7 @@ fn stopping_a_search_drops_its_queued_peeks() {
     open_pooled(&mut app, "bk");
     // The folder view peeks nothing: the only row is a folder.
     *spy.hold.lock().unwrap() = true;
-    press_pooled(&mut app, KeyCode::Char('s'));
+    press_search_pooled(&mut app);
     pump_until(&mut app, "the first search peek", |_| spy.peek_count() == 1);
     press_pooled(&mut app, KeyCode::Char('x'));
     release(&spy);
@@ -1073,6 +1088,10 @@ fn stopping_a_search_drops_its_queued_peeks() {
 /// I press a key on an app with a real pool and pump once, without waiting for it to settle.
 fn press_pooled(app: &mut App, code: KeyCode) {
     app.key(key(code));
+    app.pump();
+}
+fn press_search_pooled(app: &mut App) {
+    app.key(search_event());
     app.pump();
 }
 
@@ -1112,7 +1131,7 @@ fn a_wide_name_that_fits_is_shown_whole() {
     let spaced = spaced.trim_end();
     let s = screen(&mut app, 100, 12);
     assert!(s.contains(spaced), "cut although it fits:\n{s}");
-    press(&mut app, KeyCode::Char('s'));
+    press_search(&mut app);
     let s = screen(&mut app, 100, 12);
     assert!(s.contains(spaced), "cut in the search results:\n{s}");
 }

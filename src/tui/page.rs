@@ -18,12 +18,11 @@
 //! Anything more (a threaded reply, a forward with attachments) is `o` in reses, which opens
 //! the message itself in the mail app.
 //!
-//! Pages and `.eml` copies are written to their own files (readable only by the user) and kept,
-//! because the browser or mail app reads them after reses has moved on. They live in the
-//! system temp dir, which the OS clears.
-
+//! I keep pages and `.eml` copies in the user's private application cache. I prune files only
+//! after they have been there for 30 days, so a browser or mail app has time to read them.
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use time::OffsetDateTime;
@@ -33,6 +32,112 @@ use time::macros::format_description;
 use super::text::human_size;
 use crate::mail::Details;
 
+const STALE_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// I choose the user's configured directory or the platform's per-user cache location.
+pub(crate) fn cache_dir(alternative: Option<&Path>) -> PathBuf {
+    if let Some(dir) = alternative {
+        return dir.to_path_buf();
+    }
+
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Library/Caches");
+
+    #[cfg(target_os = "linux")]
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(|| PathBuf::from(".cache"));
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let base = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".cache"))
+        .unwrap_or_else(|| PathBuf::from(".cache"));
+
+    base.join("reses")
+}
+
+/// I verify that the selected directory can hold a private file that I can write and read back.
+pub(crate) fn check_cache_dir(dir: &Path) -> io::Result<()> {
+    prepare_cache_dir(dir)?;
+    let mut probe = tempfile::NamedTempFile::new_in(dir)?;
+    io::Write::write_all(&mut probe, b"reSES cache check")?;
+    use std::io::{Read, Seek, SeekFrom};
+    probe.seek(SeekFrom::Start(0))?;
+    let mut contents = Vec::new();
+    probe.read_to_end(&mut contents)?;
+    if contents != b"reSES cache check" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "cache read-back failed",
+        ));
+    }
+    Ok(())
+}
+
+/// I create a private cache directory and discard only this app's files older than 30 days.
+fn prepare_cache_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        match builder.create(dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)?;
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the reSES cache path is not a directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    let now = SystemTime::now();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("reses-")
+                || !matches!(
+                    Path::new(name.as_ref())
+                        .extension()
+                        .and_then(|ext| ext.to_str()),
+                    Some("html" | "eml")
+                )
+            {
+                continue;
+            }
+            let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_file()
+                && metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| now.duration_since(modified).ok())
+                    .is_some_and(|age| age > STALE_AFTER)
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
 /// What I put first in every page's head: the charset, since the HTML part was decoded to
 /// UTF-8, and the policy that stops the page fetching or running anything.
 pub(crate) const GUARD: &str = concat!(
@@ -616,7 +721,7 @@ pub(crate) fn write_reader(
     location: &str,
     opened: OffsetDateTime,
 ) -> io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
+    prepare_cache_dir(dir)?;
     // The blocked copy takes a fresh name, and its twin the same name with -remote on the end, so
     // each can link to the other by file name alone.
     let (mut blocked, blocked_path) = tempfile::Builder::new()
@@ -662,7 +767,7 @@ pub(crate) fn write_reader(
 /// and return its path. `dir` is created if it doesn't exist yet, and an earlier file is never
 /// overwritten.
 pub(crate) fn write(dir: &Path, contents: &[u8], suffix: &str) -> io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
+    prepare_cache_dir(dir)?;
     let (mut file, path) = tempfile::Builder::new()
         .prefix("reses-")
         .suffix(suffix)
@@ -1016,5 +1121,52 @@ mod tests {
         }
         let again = write(&dir.path().join("pages"), b"<b>hi</b>", ".html").unwrap();
         assert_ne!(path, again, "a second file overwrote the first");
+    }
+    /// I verify directory access with a real private file and enforce private directory permissions.
+    #[test]
+    fn cache_check_requires_writable_private_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        check_cache_dir(&cache).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let not_a_directory = dir.path().join("file");
+        std::fs::write(&not_a_directory, b"not a directory").unwrap();
+        assert!(check_cache_dir(&not_a_directory).is_err());
+    }
+    /// I prune only old reSES HTML and message files, leaving recent and unrelated files alone.
+    #[test]
+    fn cache_pruning_preserves_recent_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("reses-old.html");
+        let recent = dir.path().join("reses-recent.html");
+        let unrelated = dir.path().join("other.html");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&recent, b"recent").unwrap();
+        std::fs::write(&unrelated, b"unrelated").unwrap();
+        let old_time = SystemTime::now() - STALE_AFTER - Duration::from_secs(1);
+        std::fs::File::open(&old)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old_time))
+            .unwrap();
+
+        prepare_cache_dir(dir.path()).unwrap();
+
+        assert!(!old.exists());
+        assert!(recent.exists());
+        assert!(unrelated.exists());
+    }
+
+    /// I use an explicit alternative path instead of the platform default when one is configured.
+    #[test]
+    fn alternative_cache_dir_wins() {
+        let path = PathBuf::from("/user/selected/cache");
+        assert_eq!(cache_dir(Some(&path)), path);
     }
 }

@@ -3,8 +3,8 @@
 //! SES drops raw mail into S3 wherever its receipt rule says, and people rarely remember the
 //! exact prefix, so this screen lets them walk the account like a file manager until they find
 //! it. I list one level at a time with a delimiter and peek the first few KB of each object on
-//! screen to mark which ones look like email. `s` runs a flat listing of everything below a
-//! folder and groups the email it finds by folder, for when the mail is buried deeper. `i`
+//! screen to mark which ones look like email. `Ctrl+F` on Linux and `Cmd+F` on macOS run a flat
+//! listing of everything below a folder and group the email it finds by folder. `i`
 //! saves the current (or found) folder as the inbox and opens it. Every listing is paged with
 //! a guard against a server that never stops handing out tokens, and every job is stamped with
 //! a generation so work for a folder I've left gets skipped instead of run.
@@ -34,6 +34,20 @@ const SEARCH_IN_FLIGHT: usize = 16;
 const HEADER_LINES: u16 = 2;
 /// Most pages one listing or search follows (10 million keys at S3's 1000 a page).
 const MAX_PAGES: usize = 10_000;
+#[cfg(target_os = "macos")]
+const SEARCH_KEY: &str = "cmd-f";
+#[cfg(not(target_os = "macos"))]
+const SEARCH_KEY: &str = "ctrl-f";
+
+#[cfg(target_os = "macos")]
+fn search_modifier() -> KeyModifiers {
+    KeyModifiers::SUPER
+}
+
+#[cfg(not(target_os = "macos"))]
+fn search_modifier() -> KeyModifiers {
+    KeyModifiers::CONTROL
+}
 
 /// Guards a run of continuation tokens against a server that never stops handing them out.
 struct Paging {
@@ -478,7 +492,9 @@ impl BrowserScreen {
                 let here = self.location.clone();
                 self.go(here, ctx);
             }
-            KeyCode::Char('s') => self.start_search(ctx),
+            KeyCode::Char('f') if key.modifiers.contains(search_modifier()) => {
+                self.start_search(ctx)
+            }
             KeyCode::Char('i') => match self.location.clone() {
                 Location::Folder { bucket, prefix } => {
                     return self.save_inbox(bucket, prefix, ctx);
@@ -904,7 +920,7 @@ impl View for BrowserScreen {
                 ("enter", "open"),
                 ("bksp", "up"),
                 ("/", "filter"),
-                ("s", "search"),
+                (SEARCH_KEY, "search"),
                 ("i", "inbox"),
                 ("esc", "up"),
                 ("⇧↑↓", "page"),
@@ -921,7 +937,7 @@ impl View for BrowserScreen {
             ("enter  →  l", "open the bucket or folder"),
             ("bksp  ←  h", "up a folder"),
             ("/", "filter the rows, esc clears it"),
-            ("s", "search every folder below this one for email"),
+            (SEARCH_KEY, "search every folder below this one for email"),
             ("i", "save this folder as the inbox and open it"),
             ("r", "reload"),
             (

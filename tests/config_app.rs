@@ -12,10 +12,11 @@ use std::path::PathBuf;
 
 use reses::config::{AppConfig, ConfigError, Inbox};
 
-/// A config with every field set, so a round trip that loses one shows up.
+/// I set every config field so a round trip that loses one fails.
 fn sample() -> AppConfig {
     AppConfig {
         default_profile: Some("work".into()),
+        temp_dir: Some("/home/user/cache/reses".into()),
         inbox: Some(Inbox {
             profile: "work".into(),
             bucket: "mail-bucket".into(),
@@ -107,7 +108,7 @@ fn loads_a_hand_written_file() {
     let path = dir.path().join("config.toml");
     fs::write(
         &path,
-        "default_profile = \"work\"\n\n[inbox]\nprofile = \"work\"\nbucket = \"mail-bucket\"\n\
+        "default_profile = \"work\"\ntemp_dir = \"/home/user/cache/reses\"\n\n[inbox]\nprofile = \"work\"\nbucket = \"mail-bucket\"\n\
          prefix = \"inbound/\"\nregion = \"eu-west-1\"\n",
     )
     .unwrap();

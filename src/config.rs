@@ -21,13 +21,14 @@ pub struct Inbox {
     pub region: Option<String>,
 }
 
-/// Everything in the settings file. Both parts are optional, so a first run starts from the
-/// default and fills them in as the user picks an account and a bucket.
+/// I store reSES's default account, optional temporary directory, and saved inbox in this file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
     /// The account the accounts screen marks as default and starts on.
     pub default_profile: Option<String>,
-    /// The saved inbox location, if the user has picked one.
+    /// I store an alternative directory for temporary rendered files here.
+    pub temp_dir: Option<PathBuf>,
+    /// The saved inbox location, if I have picked one.
     pub inbox: Option<Inbox>,
 }
 
