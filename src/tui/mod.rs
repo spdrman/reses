@@ -174,7 +174,7 @@ pub(crate) struct Ctx {
     /// Opens a file with the system's default app for it: a page in the browser, a `.eml` in the mail
     /// app. Tests swap in a recorder, so no test ever starts either.
     pub open_file: OpenFile,
-    /// Parent of random per-message directories; the OS chooses its platform temp location.
+    /// Parent for private per-message directories, from config or the OS default.
     pub page_dir: PathBuf,
     /// Keep detached browser/mail-app copies readable until the app exits.
     pub opened_pages: Vec<tempfile::TempDir>,
@@ -188,7 +188,7 @@ impl Ctx {
     /// I build the shared context with no session, no status, UTC for dates and the text logo.
     /// `main` fills in the rest with the builders below.
     pub fn new(config: AppConfig, config_path: PathBuf, creds_path: PathBuf, jobs: Jobs) -> Self {
-        let page_dir = std::env::temp_dir();
+        let page_dir = config.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
         Self {
             config,
             config_path,
