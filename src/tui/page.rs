@@ -18,10 +18,8 @@
 //! Anything more (a threaded reply, a forward with attachments) is `o` in reses, which opens
 //! the message itself in the mail app.
 //!
-//! Pages and `.eml` copies are written to their own files (readable only by the user) and kept,
-//! because the browser or mail app reads them after reses has moved on. They live in the
-//! system temp dir, which the OS clears.
-
+//! Each opened page or `.eml` copy lives in a private temporary directory for as long as its
+//! caller keeps that directory alive.
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -607,40 +605,19 @@ fn esc(text: &str) -> String {
     out
 }
 
-/// I write the reader page for `details` as a pair in `dir` (#69): the copy that blocks remote content,
-/// whose path I return since it's the one to open, and beside it the copy that shows it, each
-/// linking to the other by file name. Both are new files only the user can read.
+/// I write the reader page for `details` as a pair in a fresh private directory under `dir`
+/// (#69). The blocked copy is the one to open; its remote-content twin sits beside it, and each
+/// links to the other by file name. The caller keeps the directory alive while it is needed.
 pub(crate) fn write_reader(
     dir: &Path,
     details: &Details,
     location: &str,
     opened: OffsetDateTime,
-) -> io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    // The blocked copy takes a fresh name, and its twin the same name with -remote on the end, so
-    // each can link to the other by file name alone.
-    let (mut blocked, blocked_path) = tempfile::Builder::new()
-        .prefix("reses-")
-        .suffix(".html")
-        .tempfile_in(dir)?
-        .keep()
-        .map_err(|e| e.error)?;
-    let stem = blocked_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("reses")
-        .to_string();
-    let blocked_name = format!("{stem}.html");
-    let remote_name = format!("{stem}-remote.html");
-    // The twin is new too (never over someone else's file) and private like the first.
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut remote = options.open(blocked_path.with_file_name(&remote_name))?;
+) -> io::Result<(tempfile::TempDir, PathBuf)> {
+    let directory = private_directory(dir)?;
+    let blocked_path = directory.path().join("email.html");
+    let mut remote = private_file(&directory.path().join("email-remote.html"))?;
+    let mut blocked = private_file(&blocked_path)?;
     let copy = |remote, other| Copy {
         location,
         opened,
@@ -649,28 +626,52 @@ pub(crate) fn write_reader(
     };
     io::Write::write_all(
         &mut remote,
-        reader(details, &copy(true, blocked_name.as_str())).as_bytes(),
+        reader(details, &copy(true, "email.html")).as_bytes(),
     )?;
     io::Write::write_all(
         &mut blocked,
-        reader(details, &copy(false, remote_name.as_str())).as_bytes(),
+        reader(details, &copy(false, "email-remote.html")).as_bytes(),
     )?;
-    Ok(blocked_path)
+    Ok((directory, blocked_path))
 }
 
-/// I write `contents` to a new file in `dir` ending in `suffix` that only the user can read,
-/// and return its path. `dir` is created if it doesn't exist yet, and an earlier file is never
-/// overwritten.
-pub(crate) fn write(dir: &Path, contents: &[u8], suffix: &str) -> io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let (mut file, path) = tempfile::Builder::new()
-        .prefix("reses-")
-        .suffix(suffix)
-        .tempfile_in(dir)?
-        .keep()
-        .map_err(|e| e.error)?;
+/// I write a `.eml` copy to a fixed-name file in a fresh private directory under `dir`.
+/// The directory's owner controls how long the mail app can read the copy.
+pub(crate) fn write(dir: &Path, contents: &[u8]) -> io::Result<(tempfile::TempDir, PathBuf)> {
+    let directory = private_directory(dir)?;
+    let path = directory.path().join("message.eml");
+    let mut file = private_file(&path)?;
     io::Write::write_all(&mut file, contents)?;
-    Ok(path)
+    Ok((directory, path))
+}
+
+/// A distinct, cryptographically randomized directory for one opened message.
+fn private_directory(dir: &Path) -> io::Result<tempfile::TempDir> {
+    let directory = tempfile::Builder::new().prefix("reSES-").tempdir_in(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(directory)
+}
+
+/// Create a file without inheriting an existing name or exposing its contents to other users.
+fn private_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -736,9 +737,9 @@ mod tests {
                 opened: datetime!(2026-09-26 21:14:00 -07:00),
                 remote,
                 other: if remote {
-                    "reses-abc.html"
+                    "email.html"
                 } else {
-                    "reses-abc-remote.html"
+                    "email-remote.html"
                 },
             },
         )
@@ -750,9 +751,7 @@ mod tests {
     fn the_blocked_page_offers_to_load_remote_content() {
         let page = render(&full());
         assert!(
-            page.contains(
-                "<a class=\"pill blocked\" href=\"reses-abc-remote.html\" target=\"_self\""
-            ),
+            page.contains("<a class=\"pill blocked\" href=\"email-remote.html\" target=\"_self\""),
             "{page}"
         );
         assert!(page.contains("Load remote content"), "{page}");
@@ -784,47 +783,68 @@ mod tests {
         }
         assert!(!page.contains("script-src"), "{page}");
         assert!(
-            page.contains("<a class=\"pill shown\" href=\"reses-abc.html\" target=\"_self\""),
+            page.contains("<a class=\"pill shown\" href=\"email.html\" target=\"_self\""),
             "{page}"
         );
         assert!(page.contains("Remote content shown · Block it"), "{page}");
         assert!(page.contains("the sender can see you opened it"), "{page}");
     }
 
-    /// #69: the reader is written as a pair. The blocked copy is the one to open, its twin sits
-    /// beside it named `-remote`, both are private, and each links to the other by file name.
+    /// #69: both copies live in the same private directory and link to their sibling by name.
     #[test]
     fn write_reader_writes_both_copies_linked_to_each_other() {
-        let dir = tempfile::tempdir().unwrap();
-        let pages = dir.path().join("pages");
-        let blocked = write_reader(
-            &pages,
+        let parent = tempfile::tempdir().unwrap();
+        let (directory, blocked) = write_reader(
+            parent.path(),
             &full(),
             "s3://inbox-bucket/mail/0abc123",
             datetime!(2026-09-26 21:14:00 -07:00),
         )
         .unwrap();
-        let stem = blocked.file_stem().unwrap().to_str().unwrap().to_string();
-        let remote = blocked.with_file_name(format!("{stem}-remote.html"));
+        assert_eq!(directory.path().parent(), Some(parent.path()));
+        assert!(
+            directory
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("reSES-")
+        );
+        assert_eq!(blocked, directory.path().join("email.html"));
+        let remote = directory.path().join("email-remote.html");
         let blocked_page = std::fs::read_to_string(&blocked).unwrap();
         let remote_page = std::fs::read_to_string(&remote).expect("the remote copy is written too");
         assert!(
-            blocked_page.contains(&format!("href=\"{stem}-remote.html\"")),
+            blocked_page.contains("href=\"email-remote.html\""),
+            "{blocked_page}"
+        );
+        assert!(remote_page.contains("href=\"email.html\""), "{remote_page}");
+        assert!(
+            blocked_page.contains("Your Q3 numbers are in"),
             "{blocked_page}"
         );
         assert!(
-            remote_page.contains(&format!("href=\"{stem}.html\"")),
+            remote_page.contains("Your Q3 numbers are in"),
             "{remote_page}"
         );
         assert!(blocked_page.contains(GUARD) && !blocked_page.contains(GUARD_REMOTE));
+        assert!(remote_page.contains(GUARD_REMOTE));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(directory.path())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
             for path in [&blocked, &remote] {
                 let mode = std::fs::metadata(path).unwrap().permissions().mode();
                 assert_eq!(mode & 0o777, 0o600, "{}", path.display());
             }
         }
+        drop(directory);
+        assert!(!blocked.exists());
+        assert!(!remote.exists());
     }
 
     /// The page is a real document whose head opens with the policy, before anything the page
@@ -1001,20 +1021,66 @@ mod tests {
         assert!(!page.contains(">pass<"), "{page}");
     }
 
-    /// The file is new, ends in the suffix, holds exactly the bytes and only the user can read it.
+    /// Separate opens get distinct directories, even for identical contents, and dropping one
+    /// leaves the other untouched. The filename never carries message metadata.
     #[test]
-    fn write_makes_a_private_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write(&dir.path().join("pages"), b"<b>hi</b>", ".html").unwrap();
-        assert_eq!(path.extension().unwrap(), "html");
-        assert_eq!(std::fs::read(&path).unwrap(), b"<b>hi</b>");
+    fn write_makes_private_independent_files() {
+        let parent = tempfile::tempdir().unwrap();
+        let (first_dir, first) = write(parent.path(), b"first message").unwrap();
+        let (second_dir, second) = write(parent.path(), b"second message").unwrap();
+        assert_ne!(first_dir.path(), second_dir.path());
+        assert_eq!(first_dir.path().parent(), Some(parent.path()));
+        assert_eq!(second_dir.path().parent(), Some(parent.path()));
+        assert!(
+            first_dir
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("reSES-")
+        );
+        assert_eq!(first, first_dir.path().join("message.eml"));
+        assert_eq!(second, second_dir.path().join("message.eml"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"first message");
+        assert_eq!(std::fs::read(&second).unwrap(), b"second message");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
+            for directory in [&first_dir, &second_dir] {
+                let mode = std::fs::metadata(directory.path())
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o700);
+            }
+            for path in [&first, &second] {
+                let mode = std::fs::metadata(path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
         }
-        let again = write(&dir.path().join("pages"), b"<b>hi</b>", ".html").unwrap();
-        assert_ne!(path, again, "a second file overwrote the first");
+        drop(first_dir);
+        assert!(!first.exists());
+        assert_eq!(std::fs::read(&second).unwrap(), b"second message");
+        drop(second_dir);
+        assert!(!second.exists());
+    }
+
+    /// A missing system-temp parent is an error, not a reason to persist the message elsewhere.
+    #[test]
+    fn write_requires_an_existing_parent() {
+        let parent = tempfile::tempdir().unwrap();
+        let missing = parent.path().join("missing");
+        assert!(write(&missing, b"not cached").is_err());
+        assert!(!missing.exists());
+        assert!(
+            write_reader(
+                &missing,
+                &full(),
+                "s3://inbox-bucket/mail/0abc123",
+                datetime!(2026-09-26 21:14:00 -07:00),
+            )
+            .is_err()
+        );
+        assert!(!missing.exists());
     }
 }
