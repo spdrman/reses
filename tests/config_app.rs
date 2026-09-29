@@ -1,10 +1,8 @@
-//! reses's own settings file: where it lives, how it loads and saves, and what it refuses.
+//! reses's settings file: where it lives, how it loads and saves, and what it refuses.
 //!
-//! The file remembers the default profile and the inbox (profile, bucket, prefix, region), so
-//! a restart opens straight onto the mail. I test the path lookup as a pure function over the
-//! three environment values, and everything else against real files in a temp dir per test.
-//! The inbox gets checked on load and on save, because a hand-edited bucket or prefix would
-//! otherwise only fail later as a confusing S3 error.
+//! It remembers the default profile, inbox and optional message temporary directory. Path
+//! lookup is tested as a pure function over the environment; settings use real isolated files.
+//! A bad inbox or relative temp path must fail at load rather than break later operations.
 
 use std::ffi::OsString;
 use std::fs;
@@ -22,6 +20,7 @@ fn sample() -> AppConfig {
             prefix: "inbound/".into(),
             region: Some("eu-west-1".into()),
         }),
+        temp_dir: Some(PathBuf::from("/private/tmp/reses-mail")),
     }
 }
 
@@ -107,11 +106,37 @@ fn loads_a_hand_written_file() {
     let path = dir.path().join("config.toml");
     fs::write(
         &path,
-        "default_profile = \"work\"\n\n[inbox]\nprofile = \"work\"\nbucket = \"mail-bucket\"\n\
+        "default_profile = \"work\"\ntemp_dir = \"/private/tmp/reses-mail\"\n\n[inbox]\nprofile = \"work\"\nbucket = \"mail-bucket\"\n\
          prefix = \"inbound/\"\nregion = \"eu-west-1\"\n",
     )
     .unwrap();
     assert_eq!(AppConfig::load(&path).unwrap(), sample());
+}
+/// Old configurations without a temporary directory keep using the OS default.
+#[test]
+fn old_config_without_temp_dir_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "default_profile = \"work\"\n").unwrap();
+    assert_eq!(AppConfig::load(&path).unwrap().temp_dir, None);
+}
+
+/// Relative paths would resolve differently on a later launch and must never be persisted.
+#[test]
+fn relative_temp_dir_is_rejected_on_load_and_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "temp_dir = \"relative\"\n").unwrap();
+    assert!(matches!(
+        AppConfig::load(&path).unwrap_err(),
+        ConfigError::Parse { .. }
+    ));
+    let mut config = sample();
+    config.temp_dir = Some(PathBuf::from("relative"));
+    assert!(matches!(
+        config.save(&path).unwrap_err(),
+        ConfigError::Write { .. }
+    ));
 }
 
 /// Saving on first run creates ~/.config/reses/ and anything above it.

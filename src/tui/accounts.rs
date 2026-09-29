@@ -25,8 +25,8 @@ pub struct AccountsScreen {
     /// Region shown for each profile: its own, else the one in ~/.aws/config.
     regions: Vec<Option<String>>,
     file_exists: bool,
-    /// First screen of the app, where q quits. Anywhere else (pushed from the inbox with `u`)
-    /// a session is already open when this is built, and q goes back to it.
+    /// Root accounts screen is allowed to follow the selected session. When pushed over another
+    /// view it keeps the existing context until a new inbox is saved.
     root: bool,
     selected: usize,
     form: Option<AccountForm>,
@@ -34,8 +34,8 @@ pub struct AccountsScreen {
 }
 
 impl AccountsScreen {
-    /// I build the screen, load the profiles and start the selection on the default account
-    /// if there is one. It's the root screen only when no session is open yet.
+    /// Build the first screen or an account picker over the current session. On the first
+    /// screen, q quits; when pushed over another view, q goes back.
     pub fn new(ctx: &mut Ctx) -> Self {
         let mut screen = Self {
             profiles: Vec::new(),
@@ -56,6 +56,12 @@ impl AccountsScreen {
         {
             screen.selected = i;
         }
+        screen
+    }
+    /// The settings picker is always a child view, even before an account is connected.
+    pub(crate) fn from_settings(ctx: &mut Ctx) -> Self {
+        let mut screen = Self::new(ctx);
+        screen.root = false;
         screen
     }
 
