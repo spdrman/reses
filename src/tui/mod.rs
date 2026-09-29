@@ -12,6 +12,7 @@ pub(crate) mod jobs;
 pub(crate) mod message;
 pub(crate) mod page;
 pub mod saved;
+pub(crate) mod settings;
 pub mod text;
 
 use std::panic::PanicHookInfo;
@@ -83,6 +84,10 @@ pub(crate) trait View {
     /// Whether the view is taking typed text right now (a filter, a form field), so a `?` is a
     /// character for it and not a request for help.
     fn taking_text(&self) -> bool {
+        false
+    }
+    /// Settings is already open; don't push another copy when `s` is pressed there.
+    fn is_settings(&self) -> bool {
         false
     }
     /// The account this view works in, when it holds its own. The header bar shows it in
@@ -169,8 +174,10 @@ pub(crate) struct Ctx {
     /// Opens a file with the system's default app for it: a page in the browser, a `.eml` in the mail
     /// app. Tests swap in a recorder, so no test ever starts either.
     pub open_file: OpenFile,
-    /// Where pages and `.eml` copies are written. The system temp dir, so the OS clears them.
+    /// Parent of random per-message directories; the OS chooses its platform temp location.
     pub page_dir: PathBuf,
+    /// Keep detached browser/mail-app copies readable until the app exits.
+    pub opened_pages: Vec<tempfile::TempDir>,
     jobs: Jobs,
 }
 
@@ -181,6 +188,7 @@ impl Ctx {
     /// I build the shared context with no session, no status, UTC for dates and the text logo.
     /// `main` fills in the rest with the builders below.
     pub fn new(config: AppConfig, config_path: PathBuf, creds_path: PathBuf, jobs: Jobs) -> Self {
+        let page_dir = std::env::temp_dir();
         Self {
             config,
             config_path,
@@ -190,7 +198,8 @@ impl Ctx {
             local_offset: UtcOffset::UTC,
             brand: brand::Brand::text(),
             open_file: Arc::new(|path: &Path| open::that_detached(path)),
-            page_dir: std::env::temp_dir(),
+            page_dir,
+            opened_pages: Vec::new(),
             jobs,
         }
     }
@@ -391,6 +400,14 @@ impl App {
             self.help = true;
             return;
         }
+        if key.code == KeyCode::Char('s')
+            && key.modifiers.is_empty()
+            && !top.taking_text()
+            && !top.is_settings()
+        {
+            self.apply(Transition::Push(Box::new(settings::SettingsScreen::new())));
+            return;
+        }
         let t = top.on_key(key, &mut self.ctx);
         self.apply(t);
     }
@@ -538,14 +555,15 @@ fn hints_line(hints: &[(&'static str, &'static str)], cols: usize) -> Line<'stat
     Line::from(spans)
 }
 
-/// The keys that work on every screen, listed under the view's own in the `?` overlay.
+/// Shared shortcuts, listed under the view's own in the `?` overlay.
 const GLOBAL_KEYS: &[(&str, &str)] = &[
     ("?", "show or hide this help"),
+    ("s", "settings (except while typing or already there)"),
     ("ctrl-z", "suspend reses, back with fg"),
     ("ctrl-c", "quit"),
 ];
 
-/// The `?` overlay (#68): every key the top view takes, then the ones that work everywhere, in a
+/// The `?` overlay (#68): every key the top view takes, then the shared shortcuts, in a
 /// box over the body. When the body is too short for the list, the list is cut at the bottom,
 /// never squeezed.
 fn render_help(frame: &mut Frame, area: Rect, keys: &[(&'static str, &'static str)]) {
@@ -739,6 +757,8 @@ pub fn run(
     for (bucket, key) in &dropped {
         eprintln!("{}", dropped_delete_line(bucket, key));
     }
+    // Dropping the retained TempDirs removes every opened copy on normal exit.
+    drop(app);
     result
 }
 
@@ -783,7 +803,7 @@ pub(crate) mod testing {
                 path.display()
             )))
         });
-        ctx.page_dir = dir.join("pages");
+        ctx.page_dir = dir.to_path_buf();
         if let Some(store) = store {
             ctx.session = Some(Session {
                 profile: Profile {

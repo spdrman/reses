@@ -66,12 +66,15 @@ reses
 No file or path is needed.
 
 1. **Pick an account.** It lists the profiles in `~/.aws/credentials`. `a` adds one: the keys you type are written back to that file in the standard AWS format. Other profiles, comments and layout stay as they were, and the file is kept at mode 0600. `d` makes a profile the default.
-2. **Find the mail.** Browse buckets and folders. Objects that are stored email get marked as you scroll, and `s` searches down from the current folder for the folders that hold email.
+2. **Find the mail.** Browse buckets and folders. Objects that are stored email get marked as you scroll. Press Ctrl+F on Linux or Cmd+F on macOS to search below the current folder for folders that hold email.
 3. **Save the inbox.** `i` saves the current bucket and folder. From then on, `reses` opens straight into it.
 
 The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `Esc` goes back up through the S3 folders to the accounts, `u` goes back to the accounts in one step. Press `?` on any screen for every key it takes. In every list and in a message, `↑↓` move a row or a line and Shift+`↑↓` move a page (Page Up and Page Down work too, and a message also pages with Space and `b`). In a message, `h` opens it in your default browser as a re:SES reader page (the email with its headers above and a note on delivery and origin below, and Reply and Reply all links for your mail app), `o` opens the message itself in your mail app for a threaded reply or a forward with its attachments, `H` shows the HTML source right there instead (handy over ssh), `w` saves the text and `a` saves the attachments, both into `~/Downloads`. The browser gets the HTML with a Content-Security-Policy on top, so it can't run scripts or load remote images, and tracking pixels never fire.
 
-Settings live in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
+Each browser page and message copy is private under the OS temporary directory (`/tmp` on Linux, the user's temporary directory on macOS) and removed when the app exits. Read browser-opened files while reSES is still running.
+Press `s` outside a text field to open Settings. It shows the saved inbox and the OS temporary directory (read-only); `c` clears the saved inbox after confirmation without deleting S3 mail. Choose a new inbox with `i` in the S3 browser.
+
+Configuration lives in `~/.config/reses/config.toml` (`$RESES_CONFIG` or `$XDG_CONFIG_HOME` move it). `$AWS_SHARED_CREDENTIALS_FILE` and `$AWS_CONFIG_FILE` are honoured the way the AWS CLI honours them.
 
 The header shows the logo as an image in iTerm2, WezTerm, Ghostty, kitty, foot and mlterm, and as a styled `re:SES` everywhere else. It goes by the environment and never asks the terminal anything, so a terminal that doesn't answer can't swallow your keys. `RESES_LOGO=text` always uses the text, and `RESES_LOGO=image` asks the terminal what it supports, for trying an unlisted one (a terminal that never replies can then eat keypresses until you quit).
 
