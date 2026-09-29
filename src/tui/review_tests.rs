@@ -241,7 +241,7 @@ fn a_paste_goes_into_the_filter_as_text() {
     assert!(scr.contains("/AliceExample"), "{scr}");
 }
 
-/// Ctrl and Alt chords aren't typed as letters into the inbox filter or the browser's.
+/// Ctrl, Alt and Cmd chords aren't typed as letters into the inbox filter or the browser's.
 #[test]
 fn ctrl_and_alt_chords_are_not_typed_into_filters() {
     let (mut app, _d) = inbox_app(three_senders());
@@ -263,6 +263,7 @@ fn ctrl_and_alt_chords_are_not_typed_into_filters() {
     app.key(key(KeyCode::Char('/')));
     app.key(with_mods(KeyCode::Char('a'), KeyModifiers::CONTROL));
     app.key(with_mods(KeyCode::Char('x'), KeyModifiers::ALT));
+    app.key(with_mods(KeyCode::Char('f'), KeyModifiers::SUPER));
     app.key(key(KeyCode::Char('i')));
     let scr = screen(&mut app, 100, 20);
     assert!(scr.contains("/i_"), "{scr}");
@@ -461,7 +462,10 @@ fn no_screen_uses_a_colour_that_vanishes_on_some_theme() {
     app.key(key(KeyCode::Enter));
     settle(&mut app);
     assert_no_fragile_colours(&mut app, "folder");
-    app.key(key(KeyCode::Char('s')));
+    app.key(with_mods(
+        KeyCode::Char('f'),
+        super::browser::SEARCH_MODIFIER,
+    ));
     settle(&mut app);
     assert_no_fragile_colours(&mut app, "search");
 
