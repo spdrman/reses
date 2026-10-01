@@ -1,5 +1,5 @@
 # Shared helpers for running reses's Docker work on the UGREEN NAS. Sourced, not run, by
-# scripts/ci-docker.sh, demo/record.sh and scripts/render-brand.sh.
+# scripts/ci-docker.sh and demo/record.sh.
 #
 # I keep every rule the owner set for that machine in one place, so no script can drift from
 # them: the NAS itself only ever runs ssh, docker, and small reads and writes (tar, mkdir, cat,

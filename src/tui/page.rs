@@ -65,37 +65,50 @@ pub(crate) struct Copy<'a> {
     pub other: &'a str,
 }
 
-/// The cubes and the outlined wordmark, inlined so the page needs neither the network nor
-/// Poppins. Their XML prologs are cut, since they can't sit inside a page.
-const CUBES_SVG: &str = include_str!("../../assets/brand/reSES-cubes.svg");
-const WORDMARK_SVG: &str = include_str!("../../assets/brand/reSES-wordmark.svg");
+/// The canonical logo, inlined once as an SVG sprite. Its named groups let the reader compose
+/// the cubes and wordmark independently without carrying separate logo assets.
+const LOGO_SVG: &str = include_str!("../../assets/brand/reSES-logo.svg");
+const CUBES_MARK: &str =
+    r##"<svg viewBox="182 5 556 520" aria-hidden="true"><use href="#cubes"></use></svg>"##;
+const WORDMARK_MARK: &str =
+    r##"<svg viewBox="20 525 870 235" aria-hidden="true"><use href="#wordmark"></use></svg>"##;
 
 /// The reader's styles, in the Tidewater palette and type from `docs/branding.md`. The page
 /// can't fetch fonts, so each stack names the brand face first and falls back to the system's.
 const STYLE: &str = r#"
-:root{--ink:#0E1B2C;--slate:#4A5A6E;--paper:#F7F9FC;--card:#FFFFFF;--line:#DDE5EF;
---tint:#E8F3FD;--deep:#1462CF;--channel:#1D78DE;
+:root{color-scheme:light dark;
+--ink:#0E1B2C;--slate:#4A5A6E;--paper:#F7F9FC;--card:#FFFFFF;--line:#DDE5EF;
+--tint:#E8F3FD;--deep:#1462CF;--channel:#1D78DE;--link-hover:#0F52BE;
+--shown-bg:#FDF1E6;--shown-text:#A4520A;--pass-bg:#E6F4F1;--pass-text:#0B6E62;
+--caution-bg:#FDF1E6;--caution-text:#A4520A;--fail-bg:#FDECEA;--fail-text:#B42318;
 --sans:'IBM Plex Sans',-apple-system,'Segoe UI',system-ui,sans-serif;
 --display:'Poppins',-apple-system,'Segoe UI',system-ui,sans-serif;
 --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{
+--ink:#F7F9FC;--slate:#AEBBCD;--paper:#0B1220;--card:#141F30;--line:#2B3A4F;
+--tint:#152F4D;--deep:#66B8FF;--channel:#65B7FF;--link-hover:#91CCFF;
+--shown-bg:#3C2A18;--shown-text:#FFB86B;--pass-bg:#15352F;--pass-text:#62D5C5;
+--caution-bg:#3C2A18;--caution-text:#FFB86B;--fail-bg:#432523;--fail-text:#FF8F87}}
 *{box-sizing:border-box}
 html{background:var(--paper)}
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--sans)}
-a{color:var(--deep)}a:hover{color:#0F52BE}
+a{color:var(--deep)}a:hover{color:var(--link-hover)}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
 padding:14px 40px;background:var(--card);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:12px}
 .brand .cubes svg{display:block;height:30px;width:auto}
-.brand .wordmark svg{display:block;height:20px;width:auto}
+.brand .wordmark svg{display:block;height:20px;width:auto;color:var(--ink)}
 .brand .what{margin-left:8px;font-size:14px;color:var(--slate)}
+.logo-source{position:absolute;width:0;height:0;overflow:hidden}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
 font-size:13px;font-weight:600;white-space:nowrap}
 .pill svg{width:12px;height:12px;flex-shrink:0}
 .blocked{background:var(--tint);color:var(--deep);padding:7px 14px}
-.shown{background:#FDF1E6;color:#A4520A;padding:7px 14px}
+.shown{background:var(--shown-bg);color:var(--shown-text);padding:7px 14px}
 a.pill{text-decoration:none}a.pill:hover{filter:brightness(0.96);text-decoration:underline}
-.pass{background:#E6F4F1;color:#0B6E62}.caution{background:#FDF1E6;color:#A4520A}
-.fail{background:#FDECEA;color:#B42318}
+.pass{background:var(--pass-bg);color:var(--pass-text)}
+.caution{background:var(--caution-bg);color:var(--caution-text)}
+.fail{background:var(--fail-bg);color:var(--fail-text)}
 main{max-width:920px;margin:0 auto;padding:40px 16px 56px;display:flex;flex-direction:column;gap:24px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:18px}
 .head{padding:32px 36px;display:flex;flex-direction:column;gap:22px}
@@ -146,7 +159,7 @@ padding-top:20px;border-top:1px solid var(--line);font-size:13px;color:var(--sla
 const ICON_LOCK: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>"#;
 const ICON_EYE: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>"#;
 const ICON_REPLY: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 5 5v5"/></svg>"#;
-const ICON_FILE: &str = r##"<svg viewBox="0 0 24 24" fill="none" stroke="#1D78DE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>"##;
+const ICON_FILE: &str = r##"<svg viewBox="0 0 24 24" fill="none" stroke="var(--channel)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>"##;
 const ICON_PASS: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>"#;
 const ICON_CAUTION: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16.5v.5"/></svg>"#;
 const ICON_FAIL: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>"#;
@@ -177,18 +190,19 @@ pub(crate) fn reader(details: &Details, copy: &Copy<'_>) -> String {
     page.push_str(&format!("<title>{}</title>", esc(&title(details))));
     page.push_str("<style>");
     page.push_str(STYLE);
-    page.push_str("</style></head><body>");
+    page.push_str("</style></head><body><div class=\"logo-source\" aria-hidden=\"true\">");
+    page.push_str(svg(LOGO_SVG));
+    page.push_str("</div>");
     page.push_str(&top_bar(copy));
     page.push_str("<main>");
     page.push_str(&header(details));
     page.push_str(&message(details));
     page.push_str(&about(details, copy));
     page.push_str(&format!(
-        "<div class=\"foot\"><div class=\"brand\"><span class=\"cubes\">{}</span>\
+        "<div class=\"foot\"><div class=\"brand\"><span class=\"cubes\">{CUBES_MARK}</span>\
          <span>Read with re:SES, a terminal inbox for the mail Amazon SES keeps in S3.</span></div>\
          <span>A static copy: nothing on this page can send, reply or delete. Reply only opens \
-         your own mail app.</span></div>",
-        svg(CUBES_SVG)
+         your own mail app.</span></div>"
     ));
     page.push_str("</main></body></html>\n");
     page
@@ -222,11 +236,9 @@ fn top_bar(copy: &Copy<'_>) -> String {
         )
     };
     format!(
-        "<div class=\"bar\"><div class=\"brand\"><span class=\"cubes\">{}</span>\
-         <span class=\"wordmark\" role=\"img\" aria-label=\"re:SES\">{}</span>\
-         <span class=\"what\">Static copy of one message</span></div>{chip}</div>",
-        svg(CUBES_SVG),
-        svg(WORDMARK_SVG)
+        "<div class=\"bar\"><div class=\"brand\"><span class=\"cubes\">{CUBES_MARK}</span>\
+         <span class=\"wordmark\" role=\"img\" aria-label=\"re:SES\">{WORDMARK_MARK}</span>\
+         <span class=\"what\">Static copy of one message</span></div>{chip}</div>"
     )
 }
 
@@ -318,7 +330,8 @@ fn message(d: &Details) -> String {
     let html = d.html.as_deref().unwrap_or("");
     format!(
         "<section class=\"card message\"><div class=\"mail\"><template shadowrootmode=\"open\">\
-         <style>:host{{all:initial;display:block;overflow-wrap:anywhere}}img{{max-width:100%;height:auto}}</style>\
+         <style>:host{{all:initial;display:block;overflow-wrap:anywhere;color-scheme:light dark;\
+         color:CanvasText}}img{{max-width:100%;height:auto}}</style>\
          {}</template></div></section>",
         contained(html)
     )
@@ -586,7 +599,7 @@ fn offset_label(date: OffsetDateTime) -> String {
     )
 }
 
-/// An SVG from `assets/brand` without its XML prolog, ready to inline.
+/// The canonical SVG without its XML prolog, ready to inline.
 fn svg(source: &str) -> &str {
     source.find("<svg").map_or(source, |at| &source[at..])
 }

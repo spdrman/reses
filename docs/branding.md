@@ -4,10 +4,11 @@ This is how re:SES looks wherever it draws something bigger than a terminal: the
 `h` opens in the browser, and anything else that needs the brand. It's calm and legible, and
 quietly blue. The mail is the loud part, so everything around it stays out of its way.
 
-The logo lives in [`assets/brand/`](../assets/brand/): `reSES-logo.svg` (cubes over wordmark),
-`reSES-cubes.svg`, `reSES-wordmark.svg` and their `-light` variants for dark grounds, all
-rendered by `scripts/render-brand.sh`. The text-mode header draws the cubes as `▄▀▄` in the
-three cube blues.
+The sole logo asset is [`assets/brand/reSES-logo.svg`](../assets/brand/reSES-logo.svg). Its
+`#cubes` and `#wordmark` groups let a consumer split the mark without duplicating it; the default
+render shows the complete vertical logo and adapts its outlined wordmark to light or dark colour
+schemes. The terminal build composes those same groups into the horizontal raster required by
+terminal image protocols. The text-mode fallback draws the cubes as `▄▀▄` in the three cube blues.
 
 ## Colour
 
@@ -30,6 +31,12 @@ three cube blues.
 The cube blues come straight from the logo's faces and are for marks, never for text: they don't
 reach 4.5:1 on white. Text that needs to be blue uses Deep. A status never relies on colour
 alone: it also carries a word (pass, fail) and an icon.
+
+The reader declares both light and dark colour schemes and follows the browser's
+`prefers-color-scheme` setting automatically. Dark mode uses the same semantic palette with
+lighter text and links on navy paper and cards. The sender's HTML remains isolated and untouched;
+browser-default colours inside it follow the active scheme, while colours authored by the sender
+remain as sent.
 
 ## Type
 

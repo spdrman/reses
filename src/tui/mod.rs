@@ -545,9 +545,34 @@ const GLOBAL_KEYS: &[(&str, &str)] = &[
     ("ctrl-c", "quit"),
 ];
 
-/// The `?` overlay (#68): every key the top view takes, then the ones that work everywhere, in a
-/// box over the body. When the body is too short for the list, the list is cut at the bottom,
-/// never squeezed.
+#[cfg(debug_assertions)]
+const BUILD_PROFILE: &str = "debug";
+#[cfg(not(debug_assertions))]
+const BUILD_PROFILE: &str = "release";
+
+/// The build running this UI. Cargo supplies the package identity, while `std` reports the
+/// compilation target rather than the machine that happened to launch it.
+fn build_info_line() -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            env!("CARGO_PKG_NAME"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::raw(env!("CARGO_PKG_VERSION")),
+        Span::raw(" · "),
+        Span::raw(std::env::consts::OS),
+        Span::raw("/"),
+        Span::raw(std::env::consts::ARCH),
+        Span::raw(" · "),
+        Span::raw(BUILD_PROFILE),
+    ])
+}
+
+/// The `?` overlay (#68): the running build, every key the top view takes, then the ones that work
+/// everywhere, in a box over the body. When the body is too short for the list, the list is cut at
+/// the bottom, never squeezed.
 fn render_help(frame: &mut Frame, area: Rect, keys: &[(&'static str, &'static str)]) {
     let key_width = keys
         .iter()
@@ -564,7 +589,8 @@ fn render_help(frame: &mut Frame, area: Rect, keys: &[(&'static str, &'static st
             Span::raw(format!(" {what} ")),
         ])
     };
-    let mut lines: Vec<Line> = keys.iter().map(row).collect();
+    let mut lines = vec![build_info_line(), Line::raw("")];
+    lines.extend(keys.iter().map(row));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         " On every screen",

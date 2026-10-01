@@ -1,9 +1,9 @@
 //! The re:SES logo in the header bar.
 //!
 //! A terminal that can draw images (Kitty, iTerm2, WezTerm, Ghostty, anything with sixel) gets
-//! the real logo, the cubes left of the wordmark, from the PNGs `scripts/render-brand.sh`
-//! renders. Every other terminal gets the wordmark as styled text: a block-pixel version of a
-//! logo two rows tall would be unreadable.
+//! the real logo: `build.rs` splits the canonical SVG into cubes and wordmark and lays them out
+//! horizontally for the terminal protocol. Every other terminal gets the wordmark as styled text,
+//! because a block-pixel version of a logo two rows tall would be unreadable.
 
 use image::DynamicImage;
 use ratatui::style::{Color, Modifier, Style};
@@ -11,11 +11,11 @@ use ratatui::text::Span;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 
-/// The blue of the logo's colon (`#2EA8F2` in the SVGs).
+/// The blue of the logo's colon (`#2EA8F2` in the canonical SVG).
 pub const LOGO_BLUE: Color = Color::Rgb(0x2E, 0xA8, 0xF2);
 
 /// The three squares of the text-mode mark, in the blues the cubes are drawn in: the colon's blue on
-/// top, and the cube faces' two blues (`#2A8FE9` and `#1D78DE` in reSES-cubes.svg) on the bottom
+/// top, and the cube faces' two blues (`#2A8FE9` and `#1D78DE` in the canonical SVG) on the bottom
 /// pair, lighter on the left, darker on the right.
 const CUBE_TOP: Color = LOGO_BLUE;
 const CUBE_LEFT: Color = Color::Rgb(0x2A, 0x8F, 0xE9);
@@ -27,10 +27,10 @@ pub const IMAGE_ROWS: u16 = 2;
 pub const MIN_IMAGE_WIDTH: u16 = 60;
 pub const MIN_IMAGE_HEIGHT: u16 = 12;
 
-/// Dark text, for light backgrounds.
-const HEADER_PNG: &[u8] = include_bytes!("../../assets/brand/tui/reses-header.png");
-/// Light text, for dark backgrounds.
-const HEADER_LIGHT_PNG: &[u8] = include_bytes!("../../assets/brand/tui/reses-header-light.png");
+/// Dark text, generated from the canonical SVG for light backgrounds.
+const HEADER_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reses-header.png"));
+/// Light text, generated from the canonical SVG for dark backgrounds.
+const HEADER_LIGHT_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reses-header-light.png"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Background {

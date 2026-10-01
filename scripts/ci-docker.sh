@@ -178,13 +178,12 @@ cargo test --locked --no-fail-fast -- --ignored --test-threads=1' ;;
     [ -z "$names" ] || dk network rm $names >/dev/null
     names="$(dk volume ls --format '{{.Name}}' | grep -E '^reses-' || true)"
     [ -z "$names" ] || dk volume rm $names >/dev/null
-    names="$(dk image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^reses-(ci|brand):' || true)"
+    names="$(dk image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^reses-ci:' || true)"
     [ -z "$names" ] || dk rmi $names >/dev/null
     # The pinned images reses pulled or built from. A digest reference only goes if nothing else
     # tags that image, so an alpine:3 that was already there stays.
     for i in "$NAS_VHS_IMAGE" "$NAS_MINIO_IMAGE" \
-      "$(sed -n 's/^FROM \([^ ]*\).*/\1/p' "$REPO_ROOT/docker/ci.Dockerfile" | head -1)" \
-      "$(sed -n "s/^DOCKERFILE='FROM \([^ ]*\).*/\1/p" "$REPO_ROOT/scripts/render-brand.sh")"; do
+      "$(sed -n 's/^FROM \([^ ]*\).*/\1/p' "$REPO_ROOT/docker/ci.Dockerfile" | head -1)"; do
       dk rmi "$i" >/dev/null 2>&1 || true
     done
     nas mkdir -p "$NAS_SCRATCH"
