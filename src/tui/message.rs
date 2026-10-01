@@ -149,11 +149,16 @@ impl MessageScreen {
         let location = format!("s3://{}/{}", self.bucket, self.key);
         let now = OffsetDateTime::now_utc();
         let opened = now.checked_to_offset(ctx.local_offset).unwrap_or(now);
-        // Both copies are written first, then the blocked one handed over: the browser reads it
-        // after I've moved on, and its chip links to the copy that shows remote content (#69).
-        match page::write_reader(&ctx.page_dir, &details, &location, opened)
-            .and_then(|path| (ctx.open_file)(&path))
-        {
+        // Keep both private HTML copies alive while reSES runs; the browser may read them
+        // after the detached open call returns, including when switching the remote-content chip.
+        let opened_page = page::write_reader(&ctx.page_dir, &details, &location, opened).and_then(
+            |(dir, path)| {
+                (ctx.open_file)(&path)?;
+                ctx.opened_pages.push(dir);
+                Ok(())
+            },
+        );
+        match opened_page {
             Ok(()) => ctx.info("Opened the HTML part in your browser."),
             Err(e) => ctx.error(format!(
                 "Couldn't open the HTML part: {e}. H shows the HTML source here instead."
@@ -168,9 +173,12 @@ impl MessageScreen {
         let Some(message) = &self.message else {
             return;
         };
-        match page::write(&ctx.page_dir, &message.raw, ".eml")
-            .and_then(|path| (ctx.open_file)(&path))
-        {
+        let opened_message = page::write(&ctx.page_dir, &message.raw).and_then(|(dir, path)| {
+            (ctx.open_file)(&path)?;
+            ctx.opened_pages.push(dir);
+            Ok(())
+        });
+        match opened_message {
             Ok(()) => ctx.info("Opened the message in your mail app."),
             Err(e) => ctx.error(format!("Couldn't open the message in your mail app: {e}")),
         }
@@ -557,8 +565,9 @@ thread_local! {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
+    use parking_lot::Mutex;
     use ratatui::crossterm::event::KeyCode;
 
     use super::*;
@@ -753,7 +762,7 @@ attached words\r\n\
         let opened = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&opened);
         app.ctx.open_file = Arc::new(move |path: &Path| {
-            seen.lock().unwrap().push(path.to_path_buf());
+            seen.lock().push(path.to_path_buf());
             Ok(())
         });
         opened
@@ -767,7 +776,7 @@ attached words\r\n\
         let (mut app, _d) = open(store_with(&multipart()), out.path());
         let opened = recording(&mut app);
         app.key(key(KeyCode::Char('h')));
-        let opened = opened.lock().unwrap().clone();
+        let opened = opened.lock().clone();
         assert_eq!(opened.len(), 1, "{opened:?}");
         assert_eq!(opened[0].extension().unwrap(), "html");
         let page = fs::read_to_string(&opened[0]).unwrap();
@@ -801,7 +810,7 @@ attached words\r\n\
         let (mut app, _d) = open(store_with(&raw), out.path());
         let opened = recording(&mut app);
         app.key(key(KeyCode::Char('o')));
-        let opened = opened.lock().unwrap().clone();
+        let opened = opened.lock().clone();
         assert_eq!(opened.len(), 1, "{opened:?}");
         assert_eq!(opened[0].extension().unwrap(), "eml");
         assert_eq!(fs::read(&opened[0]).unwrap(), raw);
@@ -813,6 +822,51 @@ attached words\r\n\
         }
         let scr = screen(&mut app, 100, 20);
         assert!(scr.contains("Opened the message in your mail app"), "{scr}");
+    }
+
+    /// Detached viewers still read their files after open returns. Reopening the same HTML
+    /// and opening its mail copy use separate directories, all removed at app exit.
+    #[test]
+    fn opened_pages_survive_until_app_exit_then_disappear() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _home) = open(store_with(&multipart()), out.path());
+        let opened = recording(&mut app);
+        app.key(key(KeyCode::Char('h')));
+        app.key(key(KeyCode::Char('h')));
+        app.key(key(KeyCode::Char('o')));
+        let paths = opened.lock().clone();
+        assert_eq!(paths.len(), 3);
+        let first_html_dir = paths[0].parent().unwrap().to_path_buf();
+        let second_html_dir = paths[1].parent().unwrap().to_path_buf();
+        let mail_dir = paths[2].parent().unwrap().to_path_buf();
+        assert_ne!(first_html_dir, second_html_dir);
+        assert_ne!(first_html_dir, mail_dir);
+        assert_ne!(second_html_dir, mail_dir);
+        assert!(paths.iter().all(|path| path.exists()));
+        assert!(first_html_dir.join("email-remote.html").exists());
+        assert!(second_html_dir.join("email-remote.html").exists());
+        app.key(key(KeyCode::Esc));
+        assert!(app.quit);
+        assert!(first_html_dir.exists() && second_html_dir.exists() && mail_dir.exists());
+        drop(app);
+        assert!(!first_html_dir.exists() && !second_html_dir.exists() && !mail_dir.exists());
+    }
+
+    /// A launcher error must not retain a private copy nobody can view.
+    #[test]
+    fn failed_browser_open_removes_its_directory_immediately() {
+        let out = tempfile::tempdir().unwrap();
+        let (mut app, _home) = open(store_with(&multipart()), out.path());
+        let seen = Arc::new(Mutex::new(None::<PathBuf>));
+        let captured = Arc::clone(&seen);
+        app.ctx.open_file = Arc::new(move |path: &Path| {
+            *captured.lock() = Some(path.to_path_buf());
+            Err(std::io::Error::other("browser refused"))
+        });
+        app.key(key(KeyCode::Char('h')));
+        let path = seen.lock().clone().unwrap();
+        assert!(!path.parent().unwrap().exists());
+        assert!(app.ctx.opened_pages.is_empty());
     }
 
     /// I check a mail app that won't start is an error on the status line, not a silent no-op.
@@ -842,7 +896,7 @@ attached words\r\n\
         let (mut app, _d) = open(store_with(&long_message()), out.path());
         let opened = recording(&mut app);
         app.key(key(KeyCode::Char('h')));
-        assert!(opened.lock().unwrap().is_empty());
+        assert!(opened.lock().is_empty());
         let scr = screen(&mut app, 80, 20);
         assert!(scr.contains("This message has no HTML part"), "{scr}");
     }

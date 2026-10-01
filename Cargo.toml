@@ -74,6 +74,7 @@ aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 bytes = "1"
 http-body = "1"
 http = "1"
+parking_lot = "0.12"
 # tests/tui_pty.rs runs the app on a real pty. 0.38 is the rustix ratatui-image already builds.
 rustix = { version = "0.38", features = ["pty", "process", "termios"] }
 # The workflow tests read .github/workflows as YAML rather than grepping lines, so a job-level

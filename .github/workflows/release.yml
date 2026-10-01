@@ -1,14 +1,32 @@
 name: Release
 
-# Pushing main to `release` publishes a GitHub release: three binaries, each built natively on
-# its own platform and checked against the mail goldens there before anything goes out. The tag
-# is `v<version>` from Cargo.toml. scripts/release-version.sh refuses a version whose tag already
-# exists, a commit that isn't on main, and a commit whose ci.yml runs didn't all pass, so
-# nothing CI hasn't passed can ship. The MinIO suite runs here too. tests/release_workflow.rs
-# pins this contract and tests/release_version.rs tests the script.
+# Release procedure (used for v0.2.7):
+# 1. Inspect the last tag/release and bump the package version in BOTH Cargo.toml and Cargo.lock
+#    on a branch from main. Open a version-bump PR. If a fix belongs in this release, verify its
+#    PR's "Fixes #issue" is listed under closingIssuesReferences, then merge the fix first; check
+#    that the issue closed. Merge the updated main into the version branch so its checks exercise
+#    the combined tree. Wait for its push CI and this workflow's PR dry run to pass, then merge
+#    the version PR to main.
+# 2. Wait for ci.yml's PUSH run on the resulting main merge commit to finish successfully with
+#    every job passing. Do not release a PR merge-ref, an earlier branch SHA, or merely a green
+#    PR check. Check that v<version> does not already exist.
+# 3. Fast-forward the local release branch from origin/release to that exact tested origin/main
+#    commit (`git switch release && git merge --ff-only origin/main`), then push release normally
+#    (`git push origin release`). Do not create another merge commit on release: that new SHA
+#    would not be on main and would not have passed main's push CI. Never force-push release.
+# 4. Watch this push workflow finish. The version job refuses an existing tag, a SHA not on main,
+#    or absent/failed/skipped ci.yml push jobs on that exact SHA. The release separately runs
+#    tests, the MinIO integration suite, and native builds plus goldens for three targets.
+#    Publish creates the tag at that SHA, drafts the release, checks all six assets (three
+#    archives, two .debs, SHA256SUMS), then makes the release public. On publish failure it
+#    removes only the tag/draft created by that run, so investigate before trying again.
+# 5. Verify the run, published (not draft) release, tag == tested main == release SHA, all six
+#    assets, and an archive's SHA256SUMS checksum and executable version. Only after success,
+#    make any process-documentation changes in a separate PR to main; do NOT push a docs-only
+#    commit to release at the same version (the existing tag makes the guard reject it).
 #
-# Every action is pinned to a full commit SHA, because these jobs build what gets shipped, and a
-# moved tag could swap the binary before it's uploaded.
+# tests/release_workflow.rs pins the workflow contract; tests/release_version.rs tests the guard.
+# Every action is pinned to a full commit SHA: a moved action tag could swap a shipped binary.
 
 on:
   push:

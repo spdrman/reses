@@ -3,9 +3,9 @@
 //! SES drops raw mail into S3 wherever its receipt rule says, and people rarely remember the
 //! exact prefix, so this screen lets them walk the account like a file manager until they find
 //! it. I list one level at a time with a delimiter and peek the first few KB of each object on
-//! screen to mark which ones look like email. `s` runs a flat listing of everything below a
-//! folder and groups the email it finds by folder, for when the mail is buried deeper. `i`
-//! saves the current (or found) folder as the inbox and opens it. Every listing is paged with
+//! screen to mark which ones look like email. Ctrl+F (Cmd+F on macOS) runs a flat listing of
+//! everything below a folder and groups the email it finds by folder, for when the mail is buried
+//! deeper. `i` saves the current (or found) folder as the inbox and opens it. Every listing is paged with
 //! a guard against a server that never stops handing out tokens, and every job is stamped with
 //! a generation so work for a folder I've left gets skipped instead of run.
 
@@ -36,6 +36,15 @@ const HEADER_LINES: u16 = 2;
 const MAX_PAGES: usize = 10_000;
 
 /// Guards a run of continuation tokens against a server that never stops handing them out.
+#[cfg(target_os = "macos")]
+pub(super) const SEARCH_MODIFIER: KeyModifiers = KeyModifiers::SUPER;
+#[cfg(not(target_os = "macos"))]
+pub(super) const SEARCH_MODIFIER: KeyModifiers = KeyModifiers::CONTROL;
+#[cfg(target_os = "macos")]
+const SEARCH_KEY: &str = "⌘f";
+#[cfg(not(target_os = "macos"))]
+const SEARCH_KEY: &str = "ctrl+f";
+
 struct Paging {
     pages: usize,
     last: Option<String>,
@@ -400,7 +409,9 @@ impl BrowserScreen {
     /// so I say so instead.
     fn start_search(&mut self, ctx: &mut Ctx) {
         let Location::Folder { bucket, prefix } = &self.location else {
-            ctx.error("open a bucket first, then press s to search it");
+            ctx.error(format!(
+                "open a bucket first, then press {SEARCH_KEY} to search it"
+            ));
             return;
         };
         let mut search = Search::new(
@@ -417,11 +428,11 @@ impl BrowserScreen {
     /// doesn't want, so the caller can treat them as navigation.
     fn filter_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            // A ctrl or alt chord is a command, not text for the filter.
+            // Modified letters are commands, not text for the filter.
             KeyCode::Char(_)
-                if key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
                 return true;
             }
@@ -452,6 +463,18 @@ impl BrowserScreen {
             self.peek_visible(ctx);
             return Transition::None;
         }
+        // Only the platform's search chord is a modified browser command.
+        if key.code == KeyCode::Char('f') && key.modifiers == SEARCH_MODIFIER {
+            self.start_search(ctx);
+            self.peek_visible(ctx);
+            return Transition::None;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
+            return Transition::None;
+        }
         let page = self.visible.max(1) as isize;
         match key.code {
             KeyCode::Char('q') => return Transition::Pop,
@@ -478,7 +501,6 @@ impl BrowserScreen {
                 let here = self.location.clone();
                 self.go(here, ctx);
             }
-            KeyCode::Char('s') => self.start_search(ctx),
             KeyCode::Char('i') => match self.location.clone() {
                 Location::Folder { bucket, prefix } => {
                     return self.save_inbox(bucket, prefix, ctx);
@@ -499,6 +521,12 @@ impl BrowserScreen {
         let Some(search) = self.search.as_mut() else {
             return Transition::None;
         };
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
+            return Transition::None;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 search.stop();
@@ -904,7 +932,7 @@ impl View for BrowserScreen {
                 ("enter", "open"),
                 ("bksp", "up"),
                 ("/", "filter"),
-                ("s", "search"),
+                (SEARCH_KEY, "search"),
                 ("i", "inbox"),
                 ("esc", "up"),
                 ("⇧↑↓", "page"),
@@ -921,7 +949,7 @@ impl View for BrowserScreen {
             ("enter  →  l", "open the bucket or folder"),
             ("bksp  ←  h", "up a folder"),
             ("/", "filter the rows, esc clears it"),
-            ("s", "search every folder below this one for email"),
+            (SEARCH_KEY, "search every folder below this one for email"),
             ("i", "save this folder as the inbox and open it"),
             ("r", "reload"),
             (

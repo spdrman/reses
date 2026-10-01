@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use super::BrowserScreen;
+use super::{BrowserScreen, SEARCH_KEY, SEARCH_MODIFIER};
 use crate::aws_profile::Profile;
 use crate::config::{AppConfig, Inbox};
 use crate::s3::{Bucket, Listing, MemoryStore, ObjectInfo, S3Error, Store};
@@ -186,6 +186,12 @@ fn press(app: &mut App, code: KeyCode) {
     settle(app);
 }
 
+/// Press the platform-specific search chord and finish its work.
+fn search(app: &mut App) {
+    app.key(KeyEvent::new(KeyCode::Char('f'), SEARCH_MODIFIER));
+    settle(app);
+}
+
 /// Move the selection to the row showing `name` and press Enter.
 fn open(app: &mut App, name: &str) {
     press(app, KeyCode::Home);
@@ -245,7 +251,9 @@ fn starts_at_the_bucket_list() {
     open(&mut app, "mail");
     let s = screen(&mut app, 80, 12);
     let footer = s.lines().last().unwrap();
-    for hint in ["enter", "open", "up", "filter", "search", "inbox"] {
+    for hint in [
+        "enter", "open", "up", "filter", SEARCH_KEY, "search", "inbox",
+    ] {
         assert!(footer.contains(hint), "missing {hint}: {footer}");
     }
 }
@@ -582,12 +590,12 @@ fn a_filter_that_matches_nothing_says_so() {
 /// Search from the bucket root walks everything flat and lists only the folders holding email, with
 /// their counts and progress.
 #[test]
-fn s_searches_down_from_the_folder_and_lists_folders_holding_email() {
+fn search_chord_searches_down_from_the_folder_and_lists_folders_holding_email() {
     let dir = tempfile::tempdir().unwrap();
     let spy = Spy::new(mail_store());
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "mail");
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     let s = screen(&mut app, 100, 20);
     assert!(
         line_with(&s, "inbound/2025/sep/").contains("3 emails"),
@@ -625,7 +633,7 @@ fn search_from_a_folder_stays_inside_it() {
     open(&mut app, "inbound/");
     // Only count what the search itself peeks, not the rows the folder views showed.
     spy.peeks.lock().unwrap().clear();
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     let per_key = spy.peeks_per_key();
     assert_eq!(per_key.len(), 7, "everything under inbound/: {per_key:?}");
     assert!(
@@ -642,7 +650,7 @@ fn enter_on_a_search_result_jumps_to_that_folder() {
     let spy = Spy::new(mail_store());
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "mail");
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     open(&mut app, "inbound/2025/sep/");
     let s = screen(&mut app, 100, 20);
     assert!(s.contains("mail/inbound/2025/sep/"), "{s}");
@@ -663,7 +671,7 @@ fn a_search_can_be_stopped() {
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "bk");
     // Start the search and let one round of work finish, then stop it.
-    app.key(key(KeyCode::Char('s')));
+    app.key(KeyEvent::new(KeyCode::Char('f'), SEARCH_MODIFIER));
     app.pump();
     app.pump();
     let s = screen(&mut app, 100, 30);
@@ -684,18 +692,68 @@ fn a_search_can_be_stopped() {
     assert_eq!(app.stack.len(), 1);
 }
 
-/// Pressing s on the bucket list is refused, since there is nothing to search yet.
+/// Searching on the bucket list is refused, since there is nothing to search yet.
 #[test]
 fn search_needs_a_bucket() {
     let dir = tempfile::tempdir().unwrap();
     let spy = Spy::new(mail_store());
     let mut app = app_on(dir.path(), &spy);
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     assert!(
-        status_error(&app).contains("bucket"),
+        status_error(&app).contains(&format!("press {SEARCH_KEY}")),
         "{:?}",
         app.ctx.status
     );
+}
+
+/// Only the platform chord starts search; modified browser keys cannot open, save, or quit.
+#[test]
+fn modified_keys_do_not_invoke_browser_commands() {
+    use ratatui::crossterm::event::KeyModifiers;
+
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    let other = if SEARCH_MODIFIER == KeyModifiers::SUPER {
+        KeyModifiers::CONTROL
+    } else {
+        KeyModifiers::SUPER
+    };
+    for (letter, modifier) in [
+        ('f', other),
+        ('f', SEARCH_MODIFIER | KeyModifiers::SHIFT),
+        ('i', KeyModifiers::CONTROL),
+        ('q', KeyModifiers::ALT),
+        ('r', KeyModifiers::SUPER),
+    ] {
+        app.key(KeyEvent::new(KeyCode::Char(letter), modifier));
+        settle(&mut app);
+    }
+    assert_eq!(app.stack.len(), 1);
+    assert!(app.ctx.config.inbox.is_none());
+    assert!(!dir.path().join("config.toml").exists());
+    let view = screen(&mut app, 100, 20);
+    assert!(view.contains("mail/"), "{view}");
+    assert!(
+        !view.contains("searching") && !view.contains("10 objects"),
+        "{view}"
+    );
+}
+
+/// A search chord is not filter text or a search command while editing the filter.
+#[test]
+fn search_chord_does_not_interrupt_filter_typing() {
+    let dir = tempfile::tempdir().unwrap();
+    let spy = Spy::new(mail_store());
+    let mut app = app_on(dir.path(), &spy);
+    open(&mut app, "mail");
+    press(&mut app, KeyCode::Char('/'));
+    app.key(KeyEvent::new(KeyCode::Char('f'), SEARCH_MODIFIER));
+    press(&mut app, KeyCode::Char('m'));
+    let view = screen(&mut app, 100, 20);
+    assert!(view.contains("/m_"), "{view}");
+    assert!(!view.contains("searching"), "{view}");
 }
 
 // ---- save as inbox ----
@@ -824,7 +882,7 @@ fn search_stops_on_a_repeated_token() {
     spy.endless.store(0, Ordering::SeqCst);
     open(&mut app, "loop");
     spy.endless.store(1, Ordering::SeqCst);
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     assert_eq!(loop_lists(&spy, None), 2, "the repeat is not followed");
     let s = screen(&mut app, 100, 20);
     assert!(s.contains("continuation token"), "{s}");
@@ -840,7 +898,7 @@ fn search_stops_at_the_page_cap() {
     spy.endless.store(0, Ordering::SeqCst);
     open(&mut app, "loop");
     spy.endless.store(2, Ordering::SeqCst);
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     assert_eq!(loop_lists(&spy, None), 7);
     let s = screen(&mut app, 100, 20);
     assert!(s.contains("7 pages"), "{s}");
@@ -898,7 +956,7 @@ fn wide_folder_names_in_search_results_keep_their_counts_on_screen() {
     let spy = Spy::new(s);
     let mut app = app_on(dir.path(), &spy);
     open(&mut app, "bk");
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     let screen_text = screen(&mut app, 50, 12);
     let cjk = line_with(&screen_text, "受");
     assert!(
@@ -1060,7 +1118,8 @@ fn stopping_a_search_drops_its_queued_peeks() {
     open_pooled(&mut app, "bk");
     // The folder view peeks nothing: the only row is a folder.
     *spy.hold.lock().unwrap() = true;
-    press_pooled(&mut app, KeyCode::Char('s'));
+    app.key(KeyEvent::new(KeyCode::Char('f'), SEARCH_MODIFIER));
+    app.pump();
     pump_until(&mut app, "the first search peek", |_| spy.peek_count() == 1);
     press_pooled(&mut app, KeyCode::Char('x'));
     release(&spy);
@@ -1112,7 +1171,7 @@ fn a_wide_name_that_fits_is_shown_whole() {
     let spaced = spaced.trim_end();
     let s = screen(&mut app, 100, 12);
     assert!(s.contains(spaced), "cut although it fits:\n{s}");
-    press(&mut app, KeyCode::Char('s'));
+    search(&mut app);
     let s = screen(&mut app, 100, 12);
     assert!(s.contains(spaced), "cut in the search results:\n{s}");
 }

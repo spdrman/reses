@@ -1,9 +1,9 @@
-//! reses's own settings: the default account and the saved inbox location.
+//! reses's own settings: the default account, saved inbox and message temporary directory.
 //!
 //! They live in one small TOML file (see [`AppConfig::default_path`]) that serde reads and
 //! writes whole. I keep them apart from the AWS files on purpose: those belong to the user and
-//! the AWS tools, while this file is reses's alone, so I can rewrite it freely. I validate an
-//! inbox both when loading and before saving, because a bad one would stop reses from starting.
+//! the AWS tools, while this file is reses's alone, so I can rewrite it freely. Invalid paths
+//! and inboxes are caught on load and save, before they can break startup or S3 browsing.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -21,14 +21,17 @@ pub struct Inbox {
     pub region: Option<String>,
 }
 
-/// Everything in the settings file. Both parts are optional, so a first run starts from the
-/// default and fills them in as the user picks an account and a bucket.
+/// Everything in the settings file. All fields are optional so a first run uses the OS
+/// temporary directory and starts on the account picker until an inbox is saved.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppConfig {
     /// The account the accounts screen marks as default and starts on.
     pub default_profile: Option<String>,
     /// The saved inbox location, if the user has picked one.
     pub inbox: Option<Inbox>,
+    /// Parent for private opened-message directories, or the OS default when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temp_dir: Option<PathBuf>,
 }
 
 /// Why the settings file couldn't be read or written. Each variant names the path, so the
@@ -107,6 +110,21 @@ impl AppConfig {
         PathBuf::from(home.unwrap_or_default()).join(".config/reses/config.toml")
     }
 
+    fn validate(&self) -> Result<(), String> {
+        if let Some(inbox) = &self.inbox {
+            inbox.validate()?;
+        }
+        if let Some(dir) = &self.temp_dir
+            && !dir.is_absolute()
+        {
+            return Err(format!(
+                "message temporary directory {} must be absolute",
+                dir.display()
+            ));
+        }
+        Ok(())
+    }
+
     /// Read the settings at `path`. A missing file loads as the default config, and a saved
     /// inbox that fails [`Inbox::validate`] is a parse error, so a hand-edited mistake is caught
     /// here rather than as a confusing S3 failure later.
@@ -128,9 +146,7 @@ impl AppConfig {
             message,
         };
         let config: Self = toml::from_str(&text).map_err(|e| parse_err(e.to_string()))?;
-        if let Some(inbox) = &config.inbox {
-            inbox.validate().map_err(parse_err)?;
-        }
+        config.validate().map_err(parse_err)?;
         Ok(config)
     }
 
@@ -141,12 +157,9 @@ impl AppConfig {
             path: path.to_path_buf(),
             source,
         };
-        // Writing an inbox that load would then refuse would stop reses from starting.
-        if let Some(inbox) = &self.inbox {
-            inbox
-                .validate()
-                .map_err(|m| write_err(std::io::Error::new(std::io::ErrorKind::InvalidInput, m)))?;
-        }
+        // Writing an invalid setting would stop reses from starting on the next run.
+        self.validate()
+            .map_err(|m| write_err(std::io::Error::new(std::io::ErrorKind::InvalidInput, m)))?;
         // Serialise, then hand the bytes to the same atomic writer the credentials file uses.
         let text = toml::to_string_pretty(self)
             .map_err(|e| write_err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;

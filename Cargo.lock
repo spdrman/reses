@@ -2294,6 +2294,7 @@ dependencies = [
  "image",
  "mail-parser",
  "open",
+ "parking_lot",
  "percent-encoding",
  "pollster",
  "ratatui",
