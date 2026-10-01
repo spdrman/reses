@@ -10,6 +10,13 @@
    xmlns:svg="http://www.w3.org/2000/svg">
   <defs
      id="defs31">
+    <style>
+      .wordmark-theme { color: #141b2b; }
+
+      @media (prefers-color-scheme: dark) {
+        .wordmark-theme { color: #f7f9fc; }
+      }
+    </style>
     <linearGradient
        id="top"
        x1="0"
@@ -100,16 +107,19 @@
          stroke-width="6"
          stroke-linejoin="round"
          stroke-linecap="round"
-         vector-effect="non-scaling-stroke"
          id="path28" />
     </g>
-  </defs>
-  <g
-     stroke-linejoin="round"
-     id="g67">
-    <g
-       transform="translate(455,20)"
-       id="g41">
+    <mask id="gap-top" maskUnits="userSpaceOnUse" x="-2000" y="-2000" width="4000" height="4000">
+      <rect x="-2000" y="-2000" width="4000" height="4000" fill="#ffffff" />
+      <use href="#sil" xlink:href="#sil" transform="translate(-130 212)" fill="#000000" stroke="#000000" stroke-width="30" stroke-linejoin="round" />
+      <use href="#sil" xlink:href="#sil" transform="translate(140 212)" fill="#000000" stroke="#000000" stroke-width="30" stroke-linejoin="round" />
+    </mask>
+    <mask id="gap-left" maskUnits="userSpaceOnUse" x="-2000" y="-2000" width="4000" height="4000">
+      <rect x="-2000" y="-2000" width="4000" height="4000" fill="#ffffff" />
+      <use href="#sil" xlink:href="#sil" transform="translate(270 0)" fill="#000000" stroke="#000000" stroke-width="30" stroke-linejoin="round" />
+    </mask>
+  <g id="cubes" stroke-linejoin="round">
+    <g transform="translate(455,20)" mask="url(#gap-top)" id="g41">
       <use
          href="#t"
          xlink:href="#t"
@@ -136,16 +146,7 @@
          xlink:href="#env"
          id="use39" />
     </g>
-    <g
-       transform="translate(325,232)"
-       id="g53">
-      <use
-         href="#sil"
-         xlink:href="#sil"
-         fill="#ffffff"
-         stroke="#ffffff"
-         stroke-width="30"
-         id="use43" />
+    <g transform="translate(325,232)" mask="url(#gap-left)" id="g53">
       <use
          href="#t"
          xlink:href="#t"
@@ -176,13 +177,6 @@
        transform="translate(595,232)"
        id="g65">
       <use
-         href="#sil"
-         xlink:href="#sil"
-         fill="#ffffff"
-         stroke="#ffffff"
-         stroke-width="30"
-         id="use55" />
-      <use
          href="#t"
          xlink:href="#t"
          fill="#2a8fe9"
@@ -209,10 +203,11 @@
          id="use63" />
     </g>
   </g>
+  <g id="wordmark">
   <g
      aria-label="re"
      id="text69"
-     style="font-size:265px;font-family:Poppins, 'Helvetica Neue', Arial, sans-serif;fill:#141b2b">
+     style="font-size:265px;font-family:Poppins, 'Helvetica Neue', Arial, sans-serif;fill:currentColor">
     <path
        d="m 82.755282,618.365 q 7.250755,-12.455 20.543808,-19.345 13.59516,-6.89 32.93051,-6.89 v 24.91 h -7.25076 q -46.223558,0 -46.223558,43.99 V 740 H 55.262838 V 594.78 h 27.492444 z"
        id="path81" />
@@ -235,7 +230,7 @@
   <g
      aria-label="SES"
      id="text75"
-     style="font-weight:800;font-size:258px;font-family:Poppins, 'Helvetica Neue', Arial, sans-serif;fill:#141b2b">
+     style="font-weight:800;font-size:258px;font-family:Poppins, 'Helvetica Neue', Arial, sans-serif;fill:currentColor">
     <path
        d="m 503.40035,741.806 q -31.09392,0 -51.06481,-14.964 -19.9709,-15.222 -21.48768,-43.344 h 52.8344 q 0.75838,9.546 5.56151,13.932 4.80313,4.386 12.38701,4.386 6.8255,0 11.12303,-3.354 4.55033,-3.612 4.55033,-9.804 0,-7.998 -7.33109,-12.384 -7.33109,-4.386 -23.76283,-9.804 -17.44294,-5.934 -28.31317,-11.352 -10.61744,-5.676 -18.70691,-16.254 -7.83668,-10.836 -7.83668,-28.12201 0,-17.544 8.59507,-29.928 8.59506,-12.642 23.76283,-19.092 15.16777,-6.45 34.38027,-6.45 31.09393,0 49.54805,14.964 18.70691,14.706 19.97089,41.538 h -53.84558 q -0.25279,-8.256 -5.05592,-12.384 -4.55033,-4.128 -11.88142,-4.128 -5.56151,0 -9.10066,3.354 -3.53914,3.354 -3.53914,9.546 0,5.16 3.79194,9.03 4.04474,3.612 9.85905,6.45001 5.81431,2.58 17.19013,6.708 16.93735,5.934 27.80758,11.868 11.12303,5.676 18.95971,16.254 8.08947,10.32 8.08947,26.316 0,16.254 -8.08947,29.154 -7.83668,12.9 -23.00445,20.382 -14.91497,7.482 -35.39146,7.482 z"
        id="path86" />
@@ -245,5 +240,11 @@
     <path
        d="m 798.66653,741.806 q -31.09393,0 -51.06482,-14.964 -19.97089,-15.222 -21.48767,-43.344 h 52.83439 q 0.75839,9.546 5.56151,13.932 4.80313,4.386 12.38701,4.386 6.8255,0 11.12303,-3.354 4.55033,-3.612 4.55033,-9.804 0,-7.998 -7.33108,-12.384 -7.33109,-4.386 -23.76284,-9.804 -17.44293,-5.934 -28.31317,-11.352 -10.61743,-5.676 -18.70691,-16.254 -7.83668,-10.836 -7.83668,-28.12201 0,-17.544 8.59507,-29.928 8.59507,-12.642 23.76284,-19.092 15.16776,-6.45 34.38027,-6.45 31.09392,0 49.54804,14.964 18.70691,14.706 19.97089,41.538 h -53.84557 q -0.2528,-8.256 -5.05592,-12.384 -4.55033,-4.128 -11.88142,-4.128 -5.56152,0 -9.10066,3.354 -3.53915,3.354 -3.53915,9.546 0,5.16 3.79194,9.03 4.04474,3.612 9.85905,6.45001 5.81431,2.58 17.19014,6.708 16.93734,5.934 27.80757,11.868 11.12303,5.676 18.95971,16.254 8.08948,10.32 8.08948,26.316 0,16.254 -8.08948,29.154 -7.83668,12.9 -23.00444,20.382 -14.91498,7.482 -35.39146,7.482 z"
        id="path90" />
+  </g>
+  </g>
+  </defs>
+  <use href="#cubes" xlink:href="#cubes" />
+  <g class="wordmark-theme">
+    <use href="#wordmark" xlink:href="#wordmark" />
   </g>
 </svg>

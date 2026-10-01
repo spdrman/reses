@@ -1669,8 +1669,9 @@ mod tests {
         assert!(!app.quit);
     }
 
-    /// #68: `?` lists every inbox key, `u` included, and the keys that work everywhere. Any key
-    /// takes it down and does nothing else, so a `d` that closes it doesn't also start a delete.
+    /// #68: `?` identifies this build, lists every inbox key, `u` included, and the keys that work
+    /// everywhere. Any key takes it down and does nothing else, so a `d` that closes it doesn't
+    /// also start a delete.
     #[test]
     fn question_mark_lists_every_key_and_any_key_closes_it() {
         let store = three();
@@ -1686,6 +1687,14 @@ mod tests {
         ] {
             assert!(scr.contains(text), "{text} missing:\n{scr}");
         }
+        let build = format!(
+            "reses {} · {}/{} · {}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            crate::tui::BUILD_PROFILE,
+        );
+        assert!(scr.contains(&build), "build identity missing:\n{scr}");
         app.key(key(KeyCode::Char('d')));
         let scr = screen(&mut app, 100, 24);
         assert!(!scr.contains("On every screen"), "{scr}");

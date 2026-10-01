@@ -1,6 +1,6 @@
 [package]
 name = "reses"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 authors = ["Roman Goldmann <roman@devshell.org>"]
 rust-version = "1.98"
@@ -23,9 +23,10 @@ aws-types = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
 html2text = "0.17.1"
-# reses asks for PNG only: the header logo is the one image it decodes. ratatui-image turns on
-# image's jpeg feature regardless, so zune-jpeg and moxcms (colour management) get built too.
-# Both are pure Rust and only add build time; I accept that rather than patch the dependency.
+# reses asks for PNG only: the generated terminal header is the one image it decodes.
+# ratatui-image turns on image's jpeg feature regardless, so zune-jpeg and moxcms (colour
+# management) get built too. Both are pure Rust and only add build time; I accept that rather
+# than patch the dependency.
 image = { version = "0.25", default-features = false, features = ["png"] }
 mail-parser = { version = "0.11", features = ["full_encoding"] }
 # Opens a message's HTML part in the default browser (open on macOS, xdg-open and friends on Linux).
@@ -54,6 +55,11 @@ toml = "0.8"
 # already builds.
 unicode-segmentation = "1"
 unicode-width = "0.2"
+
+[build-dependencies]
+# The repository keeps one outlined SVG. At compile time resvg extracts its named cubes and
+# wordmark groups into the two raster colours terminal image protocols require.
+resvg = { version = "0.48.1", default-features = false }
 
 # Marks saved attachments with com.apple.quarantine on macOS. The same rustix
 # ratatui-image already builds.

@@ -1,8 +1,5 @@
 <h1 align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/reSES-logo-light.svg">
-    <img src="assets/brand/reSES-logo.svg" alt="re:SES" width="300">
-  </picture>
+  <img src="assets/brand/reSES-logo.svg" alt="re:SES" width="300">
 </h1>
 
 <p align="center">
@@ -69,7 +66,7 @@ No file or path is needed.
 2. **Find the mail.** Browse buckets and folders. Objects that are stored email get marked as you scroll. Press Ctrl+F on Linux or Cmd+F on macOS to search below the current folder for folders that hold email.
 3. **Save the inbox.** `i` saves the current bucket and folder. From then on, `reses` opens straight into it.
 
-The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `Esc` goes back up through the S3 folders to the accounts, `u` goes back to the accounts in one step. Press `?` on any screen for every key it takes. In every list and in a message, `↑↓` move a row or a line and Shift+`↑↓` move a page (Page Up and Page Down work too, and a message also pages with Space and `b`). In a message, `h` opens it in your default browser as a re:SES reader page (the email with its headers above and a note on delivery and origin below, and Reply and Reply all links for your mail app), `o` opens the message itself in your mail app for a threaded reply or a forward with its attachments, `H` shows the HTML source right there instead (handy over ssh), `w` saves the text and `a` saves the attachments, both into `~/Downloads`. The browser gets the HTML with a Content-Security-Policy on top, so it can't run scripts or load remote images, and tracking pixels never fire.
+The inbox shows From, Subject, Date and Size, newest first. Enter opens a message, `d` deletes it from S3 after you confirm with `y`, `/` filters, `r` refreshes, and `Esc` goes back up through the S3 folders to the accounts, `u` goes back to the accounts in one step. Press `?` on any screen for every key it takes; the top of that help also identifies the running version, target OS and architecture, and debug or release build. In every list and in a message, `↑↓` move a row or a line and Shift+`↑↓` move a page (Page Up and Page Down work too, and a message also pages with Space and `b`). In a message, `h` opens it in your default browser as a re:SES reader page (the email with its headers above and a note on delivery and origin below, and Reply and Reply all links for your mail app), `o` opens the message itself in your mail app for a threaded reply or a forward with its attachments, `H` shows the HTML source right there instead (handy over ssh), `w` saves the text and `a` saves the attachments, both into `~/Downloads`. The browser gets the HTML with a Content-Security-Policy on top, so it can't run scripts or load remote images, and tracking pixels never fire.
 
 Each browser page and message copy is private under the OS temporary directory (`/tmp` on Linux, the user's temporary directory on macOS) by default, and removed when the app exits. Read browser-opened files while reSES is still running.
 Press `s` outside a text field to open Settings. Use ↑/↓ or Tab to select **Saved inbox** or **Message temporary directory**, then Enter. Saved inbox opens the account and S3-folder picker; press `i` in the chosen folder to save it. `c` on the inbox row clears the selection after confirmation without deleting S3 mail. For message copies, enter or paste an existing, writable absolute directory and press Enter; Ctrl+U clears the input, Esc cancels, and `r` on the row restores the OS default. A chosen directory applies immediately and persists across launches; private per-message subdirectories are still used.
